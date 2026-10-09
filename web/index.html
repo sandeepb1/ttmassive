@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#0b0d10" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ttm" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>ttm</title>
+  </head>
+  <body>
+    <div id="login" hidden>
+      <form id="login-form">
+        <h1>ttm</h1>
+        <input id="pw" type="password" placeholder="Password" autocomplete="current-password" required />
+        <button type="submit">Sign in</button>
+        <p id="login-err" role="alert"></p>
+      </form>
+    </div>
+    <div id="app" hidden>
+      <button type="button" id="usage" aria-label="Plan usage: tap for details">usage…</button>
+      <div id="status" aria-live="polite"></div>
+      <button type="button" id="menu-btn" aria-label="Sessions">☰</button>
+      <div id="fontctl">
+        <button type="button" id="font-dec" aria-label="Smaller text">A−</button>
+        <button type="button" id="font-inc" aria-label="Larger text">A+</button>
+      </div>
+      <div id="viewtoggle" role="group" aria-label="View" hidden>
+        <button type="button" data-view="chat">Chat</button>
+        <button type="button" data-view="term">Terminal</button>
+      </div>
+      <div id="term"></div>
+      <div id="chat" hidden></div>
+      <div id="stopped-bar" class="bar" hidden></div>
+      <div id="prompt-bar" class="bar" hidden></div>
+      <div id="keybar" role="toolbar" aria-label="Terminal keys"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

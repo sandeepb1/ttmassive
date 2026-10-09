@@ -1,0 +1,86 @@
+# ttm configuration.
+# Default location: $XDG_CONFIG_HOME/ttm/config.toml (usually ~/.config/ttm/config.toml),
+# or pass --config <file> / set TTM_CONFIG.
+
+# Address to listen on. ttm speaks plain HTTP: keep it on loopback and put a
+# TLS reverse proxy in front (see contrib/Caddyfile.example). Anyone who gets
+# in has a shell as this user, so never expose it without TLS.
+bind = "127.0.0.1:7681"
+
+# --- Login ---------------------------------------------------------------
+# Generate with: ttm hash-password
+password_hash = "$argon2id$REPLACE_ME"
+# Alternative to password_hash: a plaintext password. Prefer setting it through
+# the TTM_PASSWORD environment variable (or TTM_PASSWORD_HASH) so it stays out
+# of this file.
+# password = "..."
+
+# Trust X-Forwarded-For / X-Forwarded-Proto from the reverse proxy. Turn this on
+# only when ttm is reachable exclusively through that proxy: it makes the login
+# rate limit per real client IP and marks the session cookie Secure.
+trust_proxy = false
+
+# How long a login stays valid, in hours (default 30 days).
+session_ttl_hours = 720
+
+# Where ttm keeps state.json, the session cookie key, the VAPID push key and the
+# notification token. Default: ~/.local/share/ttm (Linux), ~/Library/Application Support/ttm (macOS).
+# data_dir = "/var/lib/ttm"
+
+# --- Push notifications ---------------------------------------------------
+# Contact URI sent to browser push services. Use a real mailto: or https: URL;
+# Apple's push service rejects invalid ones.
+vapid_subject = "mailto:you@example.com"
+
+# Control socket the `ttm` CLI uses to talk to the daemon. Default: <data_dir>/ttm.sock.
+# Unix socket paths are limited to about 100 bytes; set this if your data_dir path is long.
+# socket = "/tmp/ttm.sock"
+
+# Where agent hook processes reach this server. Default: http://127.0.0.1:<bind port>.
+# notify_url = "http://127.0.0.1:7681"
+
+# --- Presets -------------------------------------------------------------
+# Shown as buttons in the sessions drawer. `command` runs through `sh -c`.
+# Start agents from presets: only preset sessions get notification hooks.
+
+[[presets]]
+name = "claude"                 # 1-64 chars of A-Z a-z 0-9 - _
+command = "claude"
+dir = "~/projects"
+restart = "never"               # "never" (default) or "on_failure"
+# autostart = true              # start (or restore) it whenever the daemon starts
+
+[[presets]]
+name = "codex"
+command = "codex"
+dir = "~/projects"
+
+[[presets]]
+name = "build-watch"
+command = "cargo watch -x test"
+dir = "~/projects/app"
+restart = "on_failure"          # respawn when it exits non-zero or is killed
+max_restarts = 5                # then stay dead so you can read what happened
+backoff_secs = 2                # doubles each attempt: 2s, 4s, 8s...
+# Linux only (systemd cgroup limits); ignored with a warning on macOS.
+# memory_mb = 4096
+# cpu_percent = 200             # 100 = one core
+# Resume the Claude/Codex conversation when it is restarted automatically (default true).
+# resume_on_restart = true
+# Always start this preset with the agent's "skip every permission check" options: Claude Code gets
+# IS_SANDBOX=1 and --dangerously-skip-permissions, Codex gets --yolo (replacing any -a / -s options).
+# Only for a machine where that is acceptable. You can also ask for it per session from the app
+# (the "Skip permissions" switch when starting a session) or with `ttm new <preset> --yolo`.
+# yolo = false
+# Extra environment for this session.
+# env = { RUST_LOG = "debug" }
+# Which agent this is, if it can't be guessed from the command:
+# "claude", "codex" or "other". "other" alerts after output goes quiet.
+# agent = "other"
+# idle_alert_secs = 20
+
+# --- Groups --------------------------------------------------------------
+# Start several presets together: `ttm group start dev`, or the "▶ dev" chip in the app.
+[[groups]]
+name = "dev"
+presets = ["claude", "build-watch"]

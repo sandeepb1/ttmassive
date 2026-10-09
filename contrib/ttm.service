@@ -1,0 +1,28 @@
+# systemd *user* service. Install:
+#   mkdir -p ~/.config/systemd/user ~/.config/ttm
+#   cp contrib/ttm.service ~/.config/systemd/user/
+#   $EDITOR ~/.config/ttm/env          # TTM_PASSWORD_HASH=... (chmod 600)
+#   systemctl --user daemon-reload && systemctl --user enable --now ttm
+#   loginctl enable-linger "$USER"     # keep it running when you are logged out
+#
+# A user service (not a system one) is deliberate: tmux sessions and the agents
+# inside them should run as you, and preset resource limits use `systemd-run --user`.
+[Unit]
+Description=ttm remote terminal for AI agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/ttm serve
+EnvironmentFile=-%h/.config/ttm/env
+# Services get a minimal PATH. Include wherever `claude`, `codex`, `tmux` and your
+# other tools live, or presets will fail with "command not found".
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=3
+# Only stop ttm itself. The tmux server (and your agents) must survive a ttm
+# restart or upgrade; that is what makes reconnecting work.
+KillMode=process
+
+[Install]
+WantedBy=default.target

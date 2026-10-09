@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent. Install (replace /Users/YOU first; launchd does not expand ~ or $HOME):
+    cp contrib/com.ttm.server.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ttm.server.plist
+  Stop / reload:
+    launchctl bootout gui/$(id -u)/com.ttm.server
+  Logs: /tmp/ttm.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ttm.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/ttm</string>
+    <string>serve</string>
+    <string>--config</string>
+    <string>/Users/YOU/.config/ttm/config.toml</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Include wherever claude, codex and tmux live (Homebrew, ~/.local/bin, ...). -->
+    <key>PATH</key>
+    <string>/Users/YOU/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Do not kill the tmux server (and your agents) when ttm stops or restarts. -->
+  <key>AbandonProcessGroup</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/ttm.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/ttm.log</string>
+</dict>
+</plist>

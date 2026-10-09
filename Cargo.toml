@@ -1,0 +1,42 @@
+[package]
+name = "ttmassive"
+version = "0.1.0"
+edition = "2024"
+description = "Remote terminal for AI coding agents: tmux over WebSocket, as an installable PWA"
+rust-version = "1.88"
+
+[dependencies]
+anyhow = "1.0.104"
+argon2 = "0.6.0"
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+base64 = "0.23.1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dashmap = "6.2.1"
+hmac = "0.13.0"
+ignore = "0.4.33"
+libc = "0.2.190"
+mime_guess = "2.0.5"
+portable-pty = "0.9.0"
+rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+rust-embed = "8.13.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+subtle = "2.6.1"
+time = { version = "0.3.55", features = ["parsing"] }
+tokio = { version = "1.53.2", features = ["full"] }
+toml = "1.1.7"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+web-push = { version = "0.11.0", default-features = false, features = ["hyper-client"] }
+
+[[bin]]
+name = "ttm"
+path = "src/main.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

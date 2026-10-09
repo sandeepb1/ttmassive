@@ -1,0 +1,7 @@
+# Caddy obtains and renews the TLS certificate automatically and proxies
+# WebSockets without extra configuration. Point DNS at this machine first.
+#
+# In config.toml set:  trust_proxy = true
+terminal.example.com {
+	reverse_proxy 127.0.0.1:7681
+}

@@ -1,0 +1,5 @@
+target
+web/node_modules
+web/dist
+.memsearch/
+.DS_Store

@@ -1,0 +1,31 @@
+# nginx server block. Obtain the certificate with certbot or similar.
+#
+# In config.toml set:  trust_proxy = true
+map $http_upgrade $connection_upgrade {
+	default upgrade;
+	''      close;
+}
+
+server {
+	listen 443 ssl;
+	http2 on;
+	server_name terminal.example.com;
+
+	ssl_certificate     /etc/letsencrypt/live/terminal.example.com/fullchain.pem;
+	ssl_certificate_key /etc/letsencrypt/live/terminal.example.com/privkey.pem;
+
+	location / {
+		proxy_pass http://127.0.0.1:7681;
+		proxy_http_version 1.1;
+		proxy_set_header Upgrade $http_upgrade;
+		proxy_set_header Connection $connection_upgrade;
+		# $http_host keeps the port; ttm compares it with the WebSocket Origin.
+		proxy_set_header Host $http_host;
+		# Overwrite rather than append, so a client cannot spoof its address.
+		proxy_set_header X-Forwarded-For $remote_addr;
+		proxy_set_header X-Forwarded-Proto $scheme;
+		# Idle terminals must not be cut off; ttm sends a ping every 20s.
+		proxy_read_timeout 3600s;
+		proxy_send_timeout 3600s;
+	}
+}
