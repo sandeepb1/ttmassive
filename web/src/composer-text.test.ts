@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  isResumeCommand,
   applySuggestion,
   attachmentToken,
   findTrigger,
@@ -78,4 +79,12 @@ test('uploaded images are pulled out of a sent message for thumbnails', () => {
 test('path-like tricks in a message cannot point the thumbnail elsewhere', () => {
   const r = splitUploads('@/a/uploads/../../etc/passwd.png');
   assert.deepEqual(r.images, []);
+});
+
+test('only a bare /resume opens the picker', () => {
+  assert.equal(isResumeCommand('/resume'), true);
+  assert.equal(isResumeCommand('  /resume \n'), true);
+  assert.equal(isResumeCommand('/resume 4f2a'), false);
+  assert.equal(isResumeCommand('/resumes'), false);
+  assert.equal(isResumeCommand('please /resume'), false);
 });

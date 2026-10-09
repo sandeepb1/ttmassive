@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.295
+▝▜██████▀  Opus Plan · Claude Pro
+ ▝▝   ▝▝   ~/code
+
+  ⎿  SessionStart:startup says: [memsearch v0.4.21] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus: 
+     ~/.memsearch/milvus.db | collection: ms_code_00000000
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Resume session                                                                                                       
+   ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ ⌕ Search…                                                                                                      │
+   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+     code                                                                                                            
+
+   ❯ Rust todo CLI                                                                
+     17 minutes ago · HEAD · 297.3KB                                                                                 
+                                                                                 
+     (session)                                                                                                        
+     46 minutes ago · HEAD · 5.4KB                                                                                      
+                                        
+     Ctrl+A to show all projects · Ctrl+B to only show current branch · Space to preview · Ctrl+R to rename · Type to
+     search · Esc to cancel                                      

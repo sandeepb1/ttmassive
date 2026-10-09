@@ -263,6 +263,7 @@ pub fn picker_open(screen: &str) -> bool {
         || parse_codex_levels(screen).is_some()
         || codex_rows(screen, CODEX_PERMISSIONS).is_some()
         || screen.contains("Enable full access?")
+        || crate::resume::resume_open(screen)
 }
 
 /// Is a model or effort menu (or its confirmation) showing?

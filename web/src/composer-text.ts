@@ -69,3 +69,9 @@ export function splitUploads(text: string): { text: string; images: string[] } {
   });
   return { text: rest.trim(), images };
 }
+
+/** `/resume` on its own opens an interactive list in the agent, so it is not sent as a message.
+ * With an argument (`/resume abc123`) it resumes that conversation directly and is sent as typed. */
+export function isResumeCommand(text: string): boolean {
+  return text.trim() === '/resume';
+}

@@ -15,6 +15,7 @@ mod ops;
 mod placeholder;
 mod pty;
 mod question;
+mod resume;
 mod screen;
 mod scrollback;
 mod server;

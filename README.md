@@ -27,9 +27,10 @@ already use.
 ```
 
 Contents: [Security](#security) · [Requirements](#requirements) · [Build and run](#build-and-run)
-· [Using the app](#using-the-app) · [Chat view](#chat-view) · [Modes, toggles and launch options](#modes-toggles-and-launch-options)
-· [Plan usage](#plan-usage) · [Command line](#command-line) · [Configuration](#configuration)
-· [How it works](#how-it-works) · [Development](#development) · [Status](#status)
+· [Using the app](#using-the-app) · [Chat view](#chat-view) · [Modes, toggles and launch
+options](#modes-toggles-and-launch-options) · [Plan usage](#plan-usage) · [Command
+line](#command-line) · [Configuration](#configuration) · [How it works](#how-it-works) ·
+[Development](#development) · [Status](#status)
 
 ## Security
 
@@ -337,6 +338,15 @@ interrupts the agent.
   defaults for new sessions are never changed from the chat. The chip updates as soon as you
   switch. If you switch inside the terminal view, Claude's chip follows from its log straight
   away, and Codex's follows when it next replies.
+- `/resume`: typing `/resume` on its own opens a picker instead of sending a message, because in
+  both agents it opens an interactive list of earlier conversations. ttm opens the agent's own
+  list, reads the rows off the screen, and shows them in a sheet. Tap a row to resume it. The
+  sheet has a search box, Newer and Older buttons for paging, and (for Claude) a button that
+  switches between this project and all projects. Rows show when the conversation was last used
+  and, for Claude, its branch, size and folder. Picking a row only resumes it and changes no
+  setting. `/resume <id>` with an argument is sent as typed. Codex's list shows only the
+  current folder's conversations, and ttm doesn't switch its filter. The chat follows the new
+  conversation as soon as Claude reports it. Codex's follows when its next turn ends.
 - Suggested replies (Claude): after some turns Claude shows a greyed-out suggestion in its empty
   input box, such as "go ahead with step 2". The chat shows it as a chip above the composer. Tap
   it to put the text in the box, then edit it or send it. ttm reads the suggestion from the
@@ -565,6 +575,9 @@ settings are `bind`, `password_hash`, `trust_proxy`, `session_ttl_hours`, `data_
   - `POST .../upload` saves an attached image.
   - `POST .../model/open`, `.../model/choose`, `.../model/level`, `.../model/close` and
     `POST .../effort` drive the agent's model menu.
+  - `POST .../resume/open`, `.../resume/search`, `.../resume/scope`, `.../resume/page` and
+    `.../resume/choose` drive the agent's `/resume` list. The agent's list closes with
+    `.../model/close`.
   - `POST .../mode`, `.../reasoning`, `.../command`, `.../permissions/open` and
     `.../permissions/choose` drive modes, reasoning, quick commands and Codex permissions.
 
@@ -592,8 +605,8 @@ ttm uses the shared tmux server `tmux -L ttm`, so sessions from a throwaway test
 show up in a real ttm running on the same machine. When you test anything that drives an agent's
 own menus, set `CODEX_HOME` (or `CLAUDE_CONFIG_DIR`) to a throwaway copy for the server process,
 and delete the copy afterwards. Those menus have a "make this the default" key one press away
-from the safe one, and a copy of the config folder holds your login. Keep the copy's path short: a long one made a
-test session die at startup.
+from the safe one, and a copy of the config folder holds your login. Keep the copy's path short: a
+long one made a test session die at startup.
 
 In debug builds the server reads `web/dist` from disk, so rebuilding the UI doesn't need a Rust
 rebuild. Release builds embed it. On macOS the default data directory is
@@ -616,18 +629,20 @@ covered:
 The chat view was checked on the tablet against a live Claude Code session: messages and tool
 calls, a two-question form answered by tapping (one single choice, one multiple choice), a typed
 answer, a dismissed question, `/` and `@` suggestions, attaching a photo through Android's picker
-(Claude described it correctly), switching model and effort, and a suggested reply sent from its
-chip. After the model and effort switches, `~/.claude/settings.json` was byte-for-byte unchanged.
-A Claude session started from the folder shortcut opened straight into chat.
+(Claude described it correctly), switching model and effort, a suggested reply sent from its
+chip, and the `/resume` picker (search, all projects, paging and picking a conversation). After
+the model and effort switches, `~/.claude/settings.json` was byte-for-byte unchanged. A Claude
+session started from the folder shortcut opened straight into chat.
 
 A live Codex session was checked the same way: messages and shell commands in the chat, an
 approval answered with the button (the file was then created), a slash and `@` suggestion, an
 image Codex read and described, the mode sheet (Default to Plan and back), the More sheet, a
-cancelled Full Access confirmation, and switching Codex's model and reasoning level (through the
-real picker on the tablet, and through the API for every level). That was done with `CODEX_HOME`
-pointed at a throwaway copy of the Codex folder, so a bug couldn't have touched the real config.
-Afterwards the copy was deleted and `~/.codex/config.toml` was byte-for-byte unchanged. The model
-Codex then ran its turn with matched the switch.
+cancelled Full Access confirmation, the `/resume` picker (search and picking a conversation, through the API), and
+switching Codex's model and reasoning level (through the real picker on the tablet, and through
+the API for every level). That was done with `CODEX_HOME` pointed at a throwaway copy of the Codex
+folder, so a bug couldn't have touched the real config. Afterwards the copy was deleted and
+`~/.codex/config.toml` was byte-for-byte unchanged. The model Codex then ran its turn with matched
+the switch.
 
 The launchd service was run from `~/.local/bin`, which exposed and fixed two bugs: a binary in
 `~/Documents` that hung at startup, and sessions that all showed as stopped because a service

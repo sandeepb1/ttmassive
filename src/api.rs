@@ -12,7 +12,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 
 use crate::{
-    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, modelmenu, modes, notify, ops, sessions, suggest, tmux, uploads, usage,
+    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, modelmenu, modes, notify, ops, resume, sessions, suggest, tmux, uploads, usage,
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -35,6 +35,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/message", post(session_message))
         .route("/api/sessions/{id}/question", post(session_question))
         .route("/api/sessions/{id}/suggest", get(session_suggest))
+        .route("/api/sessions/{id}/resume/open", post(resume_open))
+        .route("/api/sessions/{id}/resume/search", post(resume_search))
+        .route("/api/sessions/{id}/resume/scope", post(resume_scope))
+        .route("/api/sessions/{id}/resume/page", post(resume_page))
+        .route("/api/sessions/{id}/resume/choose", post(resume_choose))
         .route("/api/sessions/{id}/model/open", post(model_open))
         .route("/api/sessions/{id}/model/choose", post(model_choose))
         .route("/api/sessions/{id}/model/level", post(model_level))
@@ -528,6 +533,91 @@ async fn model_level(State(st): State<Arc<AppState>>, Path(id): Path<String>, Js
     }
     let _typing = st.driver.lock().await;
     match modelmenu::codex_level(&id, b.number).await {
+        Ok(message) => Json(serde_json::json!({ "message": message })).into_response(),
+        Err(e) => {
+            let _ = modelmenu::close(&id).await;
+            server_error(&e)
+        }
+    }
+}
+
+/// Open the agent's own `/resume` list and read it. It stays open until a pick or `model/close`.
+async fn resume_open(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let _typing = st.driver.lock().await;
+    match resume::open(&st, &id).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => {
+            let _ = modelmenu::close(&id).await; // do not leave a half-opened list behind
+            server_error(&e)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ResumeSearch {
+    query: String,
+    /// How many characters are in the box now, to erase first.
+    #[serde(default)]
+    previous: usize,
+}
+
+async fn resume_search(State(st): State<Arc<AppState>>, Path(id): Path<String>, Json(b): Json<ResumeSearch>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let _typing = st.driver.lock().await;
+    match resume::search(&st, &id, &b.query, b.previous).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => server_error(&e),
+    }
+}
+
+async fn resume_scope(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let _typing = st.driver.lock().await;
+    match resume::scope(&st, &id).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => server_error(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ResumePage {
+    down: bool,
+}
+
+async fn resume_page(State(st): State<Arc<AppState>>, Path(id): Path<String>, Json(b): Json<ResumePage>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let _typing = st.driver.lock().await;
+    match resume::page(&st, &id, b.down).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => server_error(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ResumeChoose {
+    title: String,
+    meta: String,
+    /// Where the row was in the list the caller saw, to tell apart rows that look the same.
+    #[serde(default)]
+    index: usize,
+}
+
+/// Resume the conversation with this title and meta line. The list closes as it opens.
+async fn resume_choose(State(st): State<Arc<AppState>>, Path(id): Path<String>, Json(b): Json<ResumeChoose>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let _typing = st.driver.lock().await;
+    match resume::choose_for(&st, &id, &b.title, &b.meta, b.index).await {
         Ok(message) => Json(serde_json::json!({ "message": message })).into_response(),
         Err(e) => {
             let _ = modelmenu::close(&id).await;

@@ -1,0 +1,40 @@
+▝▜██████▀  Opus Plan · Claude Pro
+ ▝▝   ▝▝   ~/code      
+
+  ⎿  SessionStart:startup says: [memsearch v0.4.21] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus: 
+     ~/.memsearch/milvus.db | collection: ms_code_00000000                                            
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Resume session (1 of 50)                                                                                             
+   ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ ⌕ Search…                                                                                                      │
+   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                     
+   ❯ fix-login-redirect
+     6 seconds ago · HEAD · 46.3MB · /Users/me/code/app
+                                                                            
+     tidy-onboarding-copy  ⧉ 1
+     40 seconds ago · main · 10.8MB · /Users/me/code/site
+                                                                             
+     release-triage-plan
+     3 minutes ago · main · 92.4MB · /Users/me/code/site
+                                                                            
+     Rust todo CLI
+     18 minutes ago · HEAD · 297.3KB · /Users/me/code
+                                                                    
+     (session)
+     47 minutes ago · HEAD · 5.4KB · /Users/me/code
+                                                                  
+     Revert default API host                                                                                      
+     6 hours ago · HEAD · 472.4KB · /Users/me                                                                   
+                                                                                                                     
+     /clear                                                                                                          
+     6 hours ago · HEAD · 24.1KB · /Users/me/code/app                                           
+                                                                          
+     /compact                                                                     
+     6 hours ago · HEAD · 30.2KB · /Users/me/code/app                                           
+                                                                                 
+   ↓ /clear                                                                                                           
+     6 hours ago · HEAD · 19.9KB · /Users/me/code/app                                              
+                                                                          
+     Ctrl+A to only show current repo · Ctrl+B to only show current branch · Space to preview · Ctrl+R to rename ·   
+     Type to search · Esc to cancel                                   

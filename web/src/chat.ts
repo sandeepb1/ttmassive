@@ -18,11 +18,12 @@ import {
   type ChatResponse,
 } from './chat-model';
 import { renderItem, type RenderCtx } from './chat-render';
-import { applySuggestion, attachmentToken, findTrigger, insertToken, removeToken, type Trigger } from './composer-text';
+import { applySuggestion, attachmentToken, findTrigger, insertToken, isResumeCommand, removeToken, type Trigger } from './composer-text';
 import { prepareImage } from './image';
 import { ModeSheet } from './mode-sheet';
 import { ModelPicker } from './model-picker';
 import { MoreSheet } from './more-sheet';
+import { ResumeSheet } from './resume-sheet';
 import type { QuestionRequest } from './question-form';
 import { el } from './dom';
 
@@ -86,6 +87,7 @@ export class ChatView {
   private picker: ModelPicker | null = null;
   private modeSheet: ModeSheet | null = null;
   private moreSheet: MoreSheet | null = null;
+  private resumeSheet: ResumeSheet | null = null;
   private modeChip = el('button', 'c-mode');
   private moreBtn = el('button', 'c-more', '⋯');
   private suggestions: Suggestion[] = [];
@@ -289,6 +291,7 @@ export class ChatView {
     this.picker?.close();
     this.modeSheet?.close();
     this.moreSheet?.close();
+    this.resumeSheet?.close();
     for (const a of this.attachments) URL.revokeObjectURL(a.thumb);
     this.ro.disconnect();
     this.host.replaceChildren();
@@ -414,6 +417,18 @@ export class ChatView {
       effort: currentEffort(this.store),
       hasLast: lastUserMessage(this.store.items) !== null,
     });
+  }
+
+  private openResume() {
+    this.resumeSheet ??= new ResumeSheet(this.host, this.session, {
+      onUnauthorized: this.hooks.onUnauthorized,
+      onResumed: (text) => {
+        this.say(text);
+        this.stuck = true;
+        void this.poll();
+      },
+    });
+    void this.resumeSheet.open();
   }
 
   /** Put your last message back in the box, to change and send as a new message. */
@@ -635,6 +650,16 @@ export class ChatView {
   private async send() {
     const text = this.input.value.trim();
     if (!text || this.blocked || this.sending) return;
+    // `/resume` opens a list in the agent: show that list here instead of sending a message.
+    if (isResumeCommand(text) && (this.agent === 'claude' || this.agent === 'codex')) {
+      this.input.value = '';
+      this.closeSuggestions();
+      this.grow();
+      this.saveDraft();
+      this.syncControls();
+      this.openResume();
+      return;
+    }
     this.sending = true;
     this.syncControls();
     const r = await fetch(this.path('message'), {
