@@ -1,182 +1,218 @@
 import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/jetbrains-mono/wght.css';
 import './style.css';
-import { initTheme } from './theme';
+import { initTheme, setAgentAccent } from './theme';
 import { initUiScale } from './scale';
-import { TerminalSession } from './term';
-import { SessionSidebar } from './sessions';
-import { PromptBar, StoppedBar } from './bars';
+import { SessionSidebar, type SessionView } from './sessions';
 import { UsageView } from './usage';
-import { ChatView } from './chat';
 import { Layout } from './layout';
 import { edgeSwipe } from './gestures';
 import { RightBar } from './rightbar';
 import { SettingsSheet } from './settings';
-import { icon } from './icons';
-import { chooseView } from './chat-model';
-import type { Analysis } from './protocol';
+import { Pane, type PaneEvents } from './pane';
 
 initTheme();
 initUiScale();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const layout = new Layout($('app'));
-let session: TerminalSession | null = null;
 let sidebar: SessionSidebar | null = null;
 let rightbar: RightBar | null = null;
 let settings: SettingsSheet | null = null;
 let usage: UsageView | null = null;
-let chat: ChatView | null = null;
-let view: 'chat' | 'term' = 'term';
-/** Whether this session's starting view has been picked yet. */
-let viewChosen = false;
-let current = '';
+
+/** The open panes: one, or two side by side on a wide screen. */
+const panes: Pane[] = [];
+let focused: Pane | null = null;
+/** The screen is wide enough for two panes. */
+let canSplit = false;
+/** In split view the session list is an icon rail; this widens it back to the full list. */
+let railOpen = false;
+
+const SPLIT_KEY = 'ttm.split';
 
 function sessionName(): string {
   const n = decodeURIComponent(location.hash.slice(1));
   return /^[A-Za-z0-9_-]{1,64}$/.test(n) ? n : 'main';
 }
 
-const viewKey = (name: string) => `ttm.view.${name}`;
+// ---------------------------------------------------------------------- panes
 
-function savedView(name: string): string | null {
-  try {
-    return localStorage.getItem(viewKey(name));
-  } catch {
-    return null;
-  }
-}
-
-/** Show the chat or the terminal for the current session. `remember` keeps it for next time. */
-function setView(next: 'chat' | 'term', remember: boolean) {
-  view = next;
-  $('app').classList.toggle('chat-mode', next === 'chat');
-  for (const b of $('viewtoggle').querySelectorAll('button')) {
-    b.setAttribute('aria-pressed', String(b.dataset.view === next));
-  }
-  if (next === 'chat') {
-    chat?.show();
-  } else {
-    chat?.hide();
-    session?.focus();
-  }
-  if (remember) {
-    try {
-      localStorage.setItem(viewKey(current), next);
-    } catch {
-      /* the choice just isn't remembered */
+const paneEvents: PaneEvents = {
+  onUnauthorized: () => showLogin(),
+  onActivate: (p) => focus(p),
+  onChange: (p, what) => {
+    if (what === 'name') {
+      sidebar?.reload();
+      saveSplit();
     }
+    if (p !== focused) return;
+    switch (what) {
+      case 'name':
+        updateHash();
+        rightbar?.setSession(p.name);
+        rightbar?.setStatus(p.statusText);
+        break;
+      case 'status':
+        rightbar?.setStatus(p.statusText);
+        break;
+      case 'info':
+        rightbar?.setInfo(p.info, p.actions);
+        break;
+      case 'data':
+        rightbar?.setData(p.data);
+        break;
+      case 'agent':
+        setAgentAccent(p.agent);
+        break;
+    }
+  },
+  onSplit: () => void split(),
+  onClose: (p) => closePane(p),
+  onMenu: () => toggleList(),
+  onPanel: () => layout.toggle('right'),
+};
+
+function createPane(): Pane {
+  const p = new Pane(paneEvents);
+  $('panes').append(p.el);
+  panes.push(p);
+  applySplit();
+  return p;
+}
+
+/** Make `p` the pane the sidebars describe and the keyboard types into. */
+function focus(p: Pane) {
+  if (focused === p) return;
+  focused?.setFocused(false);
+  focused = p;
+  p.setFocused(true);
+  setAgentAccent(p.agent);
+  rightbar?.setSession(p.name);
+  rightbar?.setStatus(p.statusText);
+  rightbar?.setInfo(p.info, p.actions);
+  rightbar?.setData(p.data);
+  updateHash();
+  sidebar?.reload();
+  saveSplit();
+}
+
+function updateHash() {
+  if (focused && location.hash.slice(1) !== focused.name) history.replaceState(null, '', `#${encodeURIComponent(focused.name)}`);
+}
+
+/** Open a session in the focused pane. */
+function openSession(name: string) {
+  if (!focused) focus(createPane());
+  focused?.open(name);
+}
+
+/** Put the focused pane's neighbour on screen: a second session beside this one. */
+async function split(name?: string) {
+  if (!focused || panes.length >= 2 || !canSplit) return;
+  let target = name;
+  if (!target) {
+    const r = await fetch('/api/sessions').catch(() => null);
+    const list = r?.ok ? ((await r.json()) as SessionView[]) : [];
+    const others = list.filter((s) => s.id !== focused?.name);
+    target = (others.find((s) => s.status === 'running') ?? others[0])?.id;
+  }
+  if (!target) return focused.say('No other session to show. Start one from the sidebar.');
+  const p = createPane();
+  p.open(target);
+  focus(p);
+  applySplit();
+}
+
+/** Open a session beside the one you are in: in the other pane, or a new one. */
+function openInSplit(id: string) {
+  if (!canSplit || !focused) return openSession(id);
+  const other = panes.find((p) => p !== focused);
+  if (other) {
+    other.open(id);
+    focus(other);
+  } else {
+    void split(id);
   }
 }
+
+function closePane(p: Pane) {
+  if (panes.length < 2) return;
+  const rest = panes.filter((x) => x !== p);
+  panes.splice(panes.indexOf(p), 1);
+  p.dispose();
+  if (focused === p) {
+    focused = null;
+    focus(rest[0]!);
+  }
+  applySplit();
+  saveSplit();
+}
+
+/** The layout classes, and which panes show: with two open but no room, only the focused one does. */
+function applySplit() {
+  const squeezed = panes.length === 2 && !canSplit;
+  for (const p of panes) p.el.hidden = squeezed && p !== focused;
+  const shown = panes.filter((p) => !p.el.hidden);
+  // The list and details buttons live in the outer headers: first pane on the left, last on the right.
+  for (const p of panes) {
+    p.el.classList.toggle('is-first', p === shown[0]);
+    p.el.classList.toggle('is-last', p === shown[shown.length - 1]);
+  }
+  $('app').classList.toggle('is-split', shown.length === 2);
+  $('app').classList.toggle('can-split', canSplit);
+  $('app').classList.toggle('rail-open', railOpen);
+}
+
+/** The list button: in split view the rail widens; otherwise the sidebar slides in or out. */
+function toggleList() {
+  if ($('app').classList.contains('is-split') && layout.placement('left') === 'pinned') {
+    railOpen = !railOpen;
+    applySplit();
+  } else {
+    layout.toggle('left');
+  }
+}
+
+function saveSplit() {
+  // On a screen too narrow for two panes the app shows one: don't let that wipe the split you had.
+  if (!canSplit) return;
+  try {
+    if (panes.length === 2) {
+      localStorage.setItem(SPLIT_KEY, JSON.stringify({ names: panes.map((p) => p.name), focus: panes.indexOf(focused!) }));
+    } else {
+      localStorage.removeItem(SPLIT_KEY);
+    }
+  } catch {
+    /* not remembered */
+  }
+}
+
+function loadSplit(): { names: string[]; focus: number } | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SPLIT_KEY) ?? 'null') as { names?: unknown; focus?: unknown } | null;
+    const names = Array.isArray(raw?.names) ? raw.names.filter((n): n is string => typeof n === 'string') : [];
+    if (names.length === 2 && names.every((n) => /^[A-Za-z0-9_-]{1,64}$/.test(n))) return { names, focus: raw?.focus === 1 ? 1 : 0 };
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------- app
 
 function showLogin() {
-  session?.dispose();
-  session = null;
-  chat?.dispose();
-  chat = null;
+  for (const p of panes) p.dispose();
+  panes.length = 0;
+  focused = null;
+  setAgentAccent(null);
+  $('app').classList.remove('is-split');
   usage?.stop();
   sidebar?.setActive(false);
   layout.dismissOverlays();
   $('app').hidden = true;
   $('login').hidden = false;
   $<HTMLInputElement>('pw').focus();
-}
-
-let connMsg = '';
-let activityMsg = '';
-function renderStatus() {
-  const text = connMsg || activityMsg;
-  $('status').textContent = text;
-  rightbar?.setStatus(text);
-}
-
-const ACTIVITY: Record<Analysis['activity'], string> = {
-  working: 'working…',
-  waiting: 'waiting for you',
-  idle: '',
-  unknown: '',
-};
-
-let promptBar: PromptBar | null = null;
-let stoppedBar: StoppedBar | null = null;
-
-function openSession(name: string) {
-  session?.dispose();
-  chat?.dispose();
-  current = name;
-  viewChosen = false;
-  $('viewtoggle').hidden = true;
-  setView('term', false);
-  $('title-name').textContent = name;
-  rightbar?.setSession(name);
-  sidebar?.reload();
-  const thisChat: ChatView = new ChatView($('chat'), name, {
-    onUnauthorized: showLogin,
-    sheetHost: $('main'),
-    onData: (data) => {
-      if (chat === thisChat) rightbar?.setData(data);
-    },
-    onInfo: (info) => {
-      if (chat !== thisChat) return;
-      rightbar?.setInfo(info, {
-        model: () => thisChat.openModelPicker(),
-        mode: () => thisChat.openModeSheet(),
-        more: () => thisChat.openMoreSheet(),
-        resume: () => thisChat.openResumeSheet(),
-      });
-    },
-    onEligible: (eligible) => {
-      if (chat !== thisChat) return; // a session we have already left
-      $('viewtoggle').hidden = !eligible;
-      if (!eligible) return setView('term', false);
-      if (!viewChosen) {
-        viewChosen = true;
-        setView(chooseView(savedView(name), true), false);
-      }
-    },
-  });
-  chat = thisChat;
-  void thisChat.probe();
-  if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${encodeURIComponent(name)}`);
-  connMsg = '';
-  activityMsg = '';
-  renderStatus();
-  const sess = new TerminalSession(
-    $('term'),
-    name,
-    (s) => {
-      connMsg = s;
-      renderStatus();
-    },
-    showLogin,
-    $('keybar'),
-    {
-      onStopped: (resumable) => stoppedBar?.show(resumable),
-      onScreen: (a) => {
-        promptBar?.render(a);
-        activityMsg = a ? ACTIVITY[a.activity] : '';
-        renderStatus();
-      },
-    },
-  );
-  session = sess;
-  promptBar = new PromptBar($('prompt-bar'), (choice, id) => sess.answer(choice, id));
-  stoppedBar = new StoppedBar($('stopped-bar'), async (fresh) => {
-    const r = await fetch(`/api/sessions/${encodeURIComponent(name)}/restore`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ fresh }),
-    }).catch(() => null);
-    if (!r) return 'Server unreachable';
-    if (!r.ok) return await r.text();
-    stoppedBar?.hide();
-    sess.reconnect();
-    return null;
-  });
-  promptBar.render(null);
-  stoppedBar.hide();
-  sess.connect();
-  sess.focus();
 }
 
 async function logout() {
@@ -190,30 +226,48 @@ function showApp() {
   usage ??= new UsageView($('usage'), showLogin);
   sidebar ??= new SessionSidebar(
     $('left'),
-    () => current,
+    () => focused?.name ?? '',
     openSession,
     showLogin,
-    { navigated: () => layout.dismissOverlays(), collapse: () => layout.toggle('left'), openSettings },
+    {
+      navigated: () => {
+        layout.dismissOverlays();
+        // Picking a session from the widened list puts the rail back, so the panes get their room again.
+        if (railOpen) {
+          railOpen = false;
+          applySplit();
+        }
+      },
+      collapse: () => toggleList(),
+      openSettings,
+      openInSplit,
+      shown: () => panes.map((p) => p.name),
+    },
     (id) => usage?.tokensLabel(id),
   );
   rightbar ??= new RightBar($('right'), usage.body, {
     collapse: () => layout.toggle('right'),
     refreshUsage: () => usage?.refreshNow(),
-    search: (q) => chat?.search(q) ?? [],
-    jump: showMessage,
+    search: (q) => focused?.search(q) ?? [],
+    jump: (id) => {
+      layout.dismissOverlays(); // on a phone the sidebar would cover the message
+      focused?.showMessage(id);
+    },
   });
   usage.start(); // before syncPanels: start() resets what the sidebar asked the usage view to watch
   syncPanels();
-  openSession(sessionName());
-}
-
-/** Bring a message found by search into view in the chat, switching to the chat if needed. */
-function showMessage(id: string) {
-  const go = () => chat?.jumpTo(id);
-  layout.dismissOverlays(); // on a phone the sidebar would cover it
-  if (view === 'chat') return void go();
-  setView('chat', true);
-  window.setTimeout(go, 700); // the chat scrolls to the end once it has loaded: land after that
+  const name = sessionName();
+  const saved = loadSplit();
+  if (saved && canSplit && saved.names.includes(name)) {
+    // Bring back the two panes you had, focused on the one the address names.
+    const [a, b] = [createPane(), createPane()];
+    a.open(saved.names[0]!);
+    b.open(saved.names[1]!);
+    focus(saved.names[1] === name ? b : a);
+    applySplit();
+  } else {
+    openSession(name);
+  }
 }
 
 function openSettings() {
@@ -221,17 +275,23 @@ function openSettings() {
   settings ??= new SettingsSheet($('app'), {
     onUnauthorized: showLogin,
     logout: () => void logout(),
-    currentSession: () => current,
-    terminalFont: () => session?.font ?? null,
-    setTerminalFont: (px) => session?.setFont(px),
+    currentSession: () => focused?.name ?? '',
+    terminalFont: () => focused?.terminalFont ?? null,
+    setTerminalFont: (px) => {
+      for (const p of panes) p.setTerminalFont(px);
+    },
   });
   settings.open();
 }
 
-/** Poll and refresh only what is on screen, and keep hidden sidebars out of the tab order. */
+/** Poll and refresh only what is on screen, keep hidden sidebars out of the tab order, and decide
+ *  whether there is room for two panes. */
 function syncPanels() {
   const left = layout.isVisible('left');
   const right = layout.isVisible('right');
+  canSplit = layout.placement('right') === 'pinned';
+  if (!canSplit) railOpen = false;
+  applySplit();
   sidebar?.setActive(left);
   usage?.watch(right && !$('app').hidden);
   rightbar?.setActive(right && !$('app').hidden);
@@ -258,32 +318,17 @@ $<HTMLFormElement>('login-form').addEventListener('submit', async (e) => {
   }
 });
 
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
-    session?.nudge();
-    usage?.nudge();
-    chat?.nudge();
-  }
-});
-window.addEventListener('online', () => {
-  session?.nudge();
+const nudgeAll = () => {
+  for (const p of panes) p.nudge();
   usage?.nudge();
-  chat?.nudge();
+};
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) nudgeAll();
 });
-for (const b of $('viewtoggle').querySelectorAll('button')) {
-  b.addEventListener('pointerdown', (e) => e.preventDefault()); // don't close the keyboard
-  b.addEventListener('click', () => setView(b.dataset.view === 'chat' ? 'chat' : 'term', true));
-}
+window.addEventListener('online', nudgeAll);
 window.addEventListener('hashchange', () => {
-  if (sessionName() !== current && !$('app').hidden) openSession(sessionName());
+  if (focused && sessionName() !== focused.name && !$('app').hidden) openSession(sessionName());
 });
-// Sidebar buttons: pointerdown + preventDefault so the terminal keeps focus and the keyboard stays up.
-$('menu-btn').append(icon('menu'));
-$('panel-btn').append(icon('panel-right'));
-for (const [id, side] of [['menu-btn', 'left'], ['panel-btn', 'right']] as const) {
-  $(id).addEventListener('pointerdown', (e) => e.preventDefault());
-  $(id).addEventListener('click', () => layout.toggle(side));
-}
 $('usage').addEventListener('pointerdown', (e) => e.preventDefault());
 $('usage').addEventListener('click', () => layout.set('right', true));
 $('scrim').addEventListener('click', () => layout.dismissOverlays());

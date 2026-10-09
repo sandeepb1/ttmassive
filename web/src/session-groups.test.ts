@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dotState, groupSessions, NO_FOLDER_KEY, PINNED_KEY, type Groupable } from './session-groups.ts';
+import { dotState, groupSessions, NO_FOLDER_KEY, PINNED_KEY, railLabel, type Groupable } from './session-groups.ts';
 
 const s = (id: string, o: Partial<Groupable> = {}): Groupable => ({
   id, pinned: false, cwd: null, status: 'running', idle_secs: 60, activity: null, ...o,
@@ -52,4 +52,12 @@ test('without screen information the dot falls back to recent output', () => {
   assert.equal(dotState(s('a', { idle_secs: 2 })), 'working');
   assert.equal(dotState(s('a', { idle_secs: 60 })), 'idle');
   assert.equal(dotState(s('a', { idle_secs: 60, activity: 'unknown' })), 'idle');
+});
+
+test('rail labels are two characters: initials of a hyphenated name, else the first two letters', () => {
+  assert.equal(railLabel('claude-cedarwing'), 'CC');
+  assert.equal(railLabel('api_server'), 'AS');
+  assert.equal(railLabel('docs'), 'Do');
+  assert.equal(railLabel('x'), 'X');
+  assert.equal(railLabel('-odd-'), 'Od');
 });

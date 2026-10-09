@@ -19,7 +19,6 @@ import {
   type Todo,
 } from './chat-model';
 import { renderItem, type RenderCtx } from './chat-render';
-import { setAgentAccent } from './theme';
 import { applySuggestion, attachmentToken, findTrigger, insertToken, isResumeCommand, removeToken, type Trigger } from './composer-text';
 import { prepareImage } from './image';
 import { ModeSheet } from './mode-sheet';
@@ -46,6 +45,8 @@ export interface ChatHooks {
   onEligible: (eligible: boolean) => void;
   /** The model, mode or agent changed: for the session details in the right sidebar. */
   onInfo?: (info: ChatInfo) => void;
+  /** Which agent runs in this session (null: neither Claude nor Codex). Called on every poll. */
+  onAgent?: (agent: 'claude' | 'codex' | null) => void;
   /** Files changed, to-dos and the plan changed: for the details panel. */
   onData?: (data: ChatPanelData) => void;
   /** Where sheets go. They must stay visible while the terminal is showing, so not the chat itself. */
@@ -335,7 +336,6 @@ export class ChatView {
   dispose() {
     if (this.shown) this.remember();
     this.disposed = true;
-    setAgentAccent(null);
     window.clearInterval(this.timer);
     window.clearInterval(this.probeTimer);
     window.clearTimeout(this.suggestTimer);
@@ -379,7 +379,7 @@ export class ChatView {
     }
     this.ready = resp.ready;
     this.agent = resp.agent;
-    setAgentAccent(resp.agent);
+    this.hooks.onAgent?.(resp.agent);
 
     const { reset, touched } = applyChat(this.store, resp);
     if (reset) {

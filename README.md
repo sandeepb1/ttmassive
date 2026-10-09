@@ -406,6 +406,21 @@ four tabs:
 Search covers the messages loaded in the chat (not the whole log). Tap a result to jump to the
 message, which flashes once.
 
+## Split view
+
+On a screen 1100px wide or more (a tablet in landscape, a desktop) you can show two sessions side
+by side. Tap the columns button in a pane's header to open another session next to it, or use
+the columns button in a session's `⋯` menu. Each pane has its own Chat/Terminal toggle, key bar and
+agent colour (orange for Claude, teal for Codex, set by the theme), and its own close button.
+
+The pane you touched last is the focused one: its header is underlined, the details panel
+describes it, and the address bar names it. While two panes are open the session list shrinks to a
+rail of buttons (two letters per session, with the status dot). A button opens that session in the
+focused pane, and the first button widens the rail back to the full list until you pick something.
+
+The split is remembered across reloads. On a narrower screen only the focused pane is shown, and
+the other comes back when there is room again. Phones never split.
+
 ## Modes, toggles and launch options
 
 ### Mode chip

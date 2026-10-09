@@ -3,7 +3,7 @@
 import { el } from './dom';
 import { warn } from './haptics';
 import { icon } from './icons';
-import { DOT_LABEL, dotState, groupSessions } from './session-groups';
+import { DOT_LABEL, dotState, groupSessions, railLabel } from './session-groups';
 
 export interface SessionView {
   id: string;
@@ -94,11 +94,18 @@ export interface SidebarHooks {
   /** The header's hide button. */
   collapse: () => void;
   openSettings: () => void;
+  /** Show a session in the pane beside the one you are in (wide screens). */
+  openInSplit: (id: string) => void;
+  /** Every session open in a pane, to mark in the list. */
+  shown: () => string[];
 }
 
 /** The left sidebar: your sessions, a way to start new ones, and the way into Settings. */
 export class SessionSidebar {
   private list = el('div', 'drawer-list');
+  /** The narrow strip of session buttons shown instead of the list in split view. */
+  private rail = el('div', 'sb-rail');
+  private railList = el('div');
   private presets = el('div', 'drawer-presets');
   private msg = el('div', 'drawer-msg');
   private timer = 0;
@@ -148,7 +155,21 @@ export class SessionSidebar {
     settings.addEventListener('click', () => this.hooks.openSettings());
     foot.append(settings);
 
-    this.root.append(head, this.presets, this.msg, this.list, foot);
+    // Split view shrinks the sidebar to this: one button per session, and the same way to Settings.
+    const railOpen = el('button', 'icon rail-expand');
+    railOpen.type = 'button';
+    railOpen.setAttribute('aria-label', 'Show the session list');
+    railOpen.append(icon('panel-left'));
+    railOpen.addEventListener('click', () => this.hooks.collapse());
+    this.railList.className = 'rail-list';
+    const railSettings = el('button', 'icon rail-settings');
+    railSettings.type = 'button';
+    railSettings.setAttribute('aria-label', 'Settings');
+    railSettings.append(icon('sliders'));
+    railSettings.addEventListener('click', () => this.hooks.openSettings());
+    this.rail.append(railOpen, this.railList, railSettings);
+
+    this.root.append(head, this.presets, this.msg, this.list, foot, this.rail);
   }
 
   /** Poll the session list while the sidebar is on screen. */
@@ -293,6 +314,7 @@ export class SessionSidebar {
 
   private renderList(sessions: SessionView[]) {
     this.lastSessions = sessions;
+    this.renderRail(sessions);
     if (sessions.length === 0) {
       this.list.replaceChildren(el('div', 'drawer-empty', 'No sessions yet'));
       this.presets.hidden = false;
@@ -334,9 +356,25 @@ export class SessionSidebar {
     this.list.replaceChildren(...out);
   }
 
+  private renderRail(sessions: SessionView[]) {
+    const shown = this.hooks.shown();
+    this.railList.replaceChildren(
+      ...sessions.map((s) => {
+        const state = dotState(s, ACTIVE_SECS);
+        const b = el('button', `rail-btn${shown.includes(s.id) ? ' on' : ''}`);
+        b.type = 'button';
+        b.title = `${s.id}: ${DOT_LABEL[state]}`;
+        b.setAttribute('aria-label', `${s.id}, ${DOT_LABEL[state]}`);
+        b.append(el('span', 'rail-letter', railLabel(s.id)), el('span', `dot ${state}`));
+        b.addEventListener('click', () => this.open(s.id));
+        return b;
+      }),
+    );
+  }
+
   private row(s: SessionView): HTMLElement {
     const row = el('div', 'srow');
-    if (s.id === this.current()) row.classList.add('current');
+    if (this.hooks.shown().includes(s.id)) row.classList.add('current');
 
     const state = dotState(s, ACTIVE_SECS);
     if (state === 'waiting') row.classList.add('waiting');
@@ -394,6 +432,17 @@ export class SessionSidebar {
     pin.setAttribute('aria-label', s.pinned ? `Unpin ${s.id}` : `Pin ${s.id}`);
     pin.addEventListener('click', () => void this.patchMeta(s.id, { pinned: !s.pinned }));
     tools.push(pin);
+
+    const split = el('button', 'icon srow-split');
+    split.type = 'button';
+    split.setAttribute('aria-label', `Open ${s.id} in a split`);
+    split.title = 'Open beside the current session';
+    split.append(icon('columns'));
+    split.addEventListener('click', () => {
+      this.hooks.openInSplit(s.id);
+      this.hooks.navigated();
+    });
+    tools.push(split);
 
     const edit = el('button', 'icon', '✎');
     edit.type = 'button';

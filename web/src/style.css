@@ -58,8 +58,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 [hidden] { display: none !important; }
 #app { display: flex; height: var(--vvh, 100dvh); position: relative; overflow: hidden;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
-#term { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
-#status:empty { display: none; }
+.p-term { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
+.p-status:empty { display: none; }
 #login { display: grid; place-items: center; height: 100dvh; }
 #login-form { display: grid; gap: 12px; width: min(320px, 90vw); }
 #login-form h1 { margin: 0; font-weight: 600; }
@@ -67,9 +67,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 #login-form button { background: var(--accent); color: var(--on-accent); border: 0; font-weight: 600; }
 #login-err { color: var(--danger); min-height: 1.2em; margin: 0; }
 
-#keybar { flex: none; height: 56px; align-self: center; width: min(100%, 760px); overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none;
+.p-keybar { flex: none; height: 56px; align-self: center; width: min(100%, 760px); overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none;
   touch-action: pan-y; background: var(--surface-2); border: 1px solid var(--border-subtle); border-bottom: 0; border-radius: 10px 10px 0 0; user-select: none; -webkit-user-select: none; }
-#keybar::-webkit-scrollbar { display: none; }
+.p-keybar::-webkit-scrollbar { display: none; }
 .kb-row { display: flex; gap: 5px; height: 56px; padding: 6px 6px; scroll-snap-align: start; overflow-x: auto; scrollbar-width: none; }
 .kb-key { flex: 1 0 auto; min-width: 40px; padding: 0 10px; font: 600 0.9375rem var(--font-ui); color: var(--fg);
   background: var(--surface-4); border: 1px solid var(--border); border-radius: 8px; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
@@ -112,7 +112,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .pb-default { border-color: var(--accent); }
 .pb-label { font-size: 0.8125rem; color: var(--fg-muted); align-self: center; }
 .pb-err { font-size: 0.75rem; color: var(--danger); }
-#prompt-bar:has(.pb-label) { flex-direction: row; align-items: center; justify-content: space-between; }
+.p-prompt:has(.pb-label) { flex-direction: row; align-items: center; justify-content: space-between; }
 
 .dot.stopped { background: var(--fg-faint); box-shadow: inset 0 0 0 2px var(--surface-1); border: 2px solid var(--fg-faint); }
 .srow-note { font-size: 0.75rem; color: var(--fg-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -122,7 +122,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .chip-go { padding: 8px 12px; background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
 /* The bars sit above the terminal even while xterm is still refitting after they appear. */
-.bar, #keybar { position: relative; z-index: 3; }
+.bar, .p-keybar { position: relative; z-index: 3; }
 
 /* ---- Plan usage: a strip above the terminal and a panel that opens from it ---- */
 #app { --strip-h: 26px; }
@@ -158,12 +158,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .u-sess-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- Chat view: a conversation as messages, over the terminal ---- */
-#viewtoggle { flex: none; display: flex; padding: 2px; background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: 16px; }
-#viewtoggle button { font: 600 0.8125rem var(--font-ui); padding: 5px 12px; color: var(--fg-muted); background: none; border: 0; border-radius: 14px;
+.p-viewtoggle { flex: none; display: flex; padding: 2px; background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: 16px; }
+.p-viewtoggle button { font: 600 0.8125rem var(--font-ui); padding: 5px 12px; color: var(--fg-muted); background: none; border: 0; border-radius: 14px;
   touch-action: manipulation; }
-#viewtoggle button[aria-pressed='true'] { color: var(--fg); background: var(--surface-5); }
+.p-viewtoggle button[aria-pressed='true'] { color: var(--fg); background: var(--surface-5); }
 
-#chat { position: absolute; z-index: 4; top: calc(var(--topbar-h) + var(--strip-h)); left: 0; right: 0; bottom: 0;
+.p-chat { position: absolute; z-index: 4; top: var(--topbar-h); left: 0; right: 0; bottom: 0;
   display: flex; flex-direction: column; background: var(--bg); }
 .chat-main { position: relative; flex: 1; min-height: 0; display: flex; }
 .chat-scroll { flex: 1; min-width: 0; overflow-y: auto; padding: 12px 12px 14px; overscroll-behavior: contain; }
@@ -431,15 +431,15 @@ details.tool.st-error { background: var(--danger-bg); border-color: var(--danger
 #app { --sb-w: 300px; --sb-right-w: 320px; --topbar-h: 48px; --ease: cubic-bezier(.2, .9, .3, 1); }
 #main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 
-#topbar { flex: none; height: var(--topbar-h); display: flex; align-items: center; gap: 6px; padding: 0 6px; background: var(--bg);
+.p-head { flex: none; height: var(--topbar-h); display: flex; align-items: center; gap: 6px; padding: 0 6px; background: var(--bg);
   border-bottom: 1px solid var(--border-subtle); position: relative; z-index: 6; }
 .tb-btn { flex: none; display: grid; place-items: center; width: 44px; height: 44px; color: var(--fg-soft); background: none; border: 0;
   border-radius: 12px; }
 .tb-btn:active { background: var(--surface-4); }
-#app.l-pinned:not(.l-collapsed) #menu-btn, #app.r-pinned:not(.r-collapsed) #panel-btn { display: none; }
-#title { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 4px; }
-#title-name { font-size: var(--fs-md); font-weight: 650; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#status { font-size: var(--fs-xs); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#app.l-pinned:not(.l-collapsed) .p-menu, #app.r-pinned:not(.r-collapsed) .p-panel { display: none; }
+.p-title { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 4px; }
+.p-name { font-size: var(--fs-md); font-weight: 650; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-status { font-size: var(--fs-xs); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .sidebar { flex: none; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--surface-1); }
 #left { width: var(--sb-w); border-right: 1px solid var(--border-subtle); }
@@ -607,3 +607,31 @@ details.rb-plan > summary { min-height: 44px; display: flex; align-items: center
 .rb-hit-kind { font: 600 var(--fs-2xs) var(--font-ui); text-transform: uppercase; letter-spacing: .06em; color: var(--fg-muted); }
 .rb-hit-text { font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
 .rb-hit mark { padding: 0 2px; font-weight: 600; color: var(--accent); background: var(--accent-bg); border-radius: 3px; }
+
+/* ---- Panes: one session, or two side by side ---- */
+#panes { flex: 1; min-height: 0; display: flex; }
+.pane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; position: relative; }
+.pane + .pane { border-left: 1px solid var(--border); }
+.pane:not(.is-first) .p-menu, .pane:not(.is-last) .p-panel { display: none; }
+#app:not(.can-split) .p-split, #app.is-split .p-split, #app:not(.is-split) .p-close { display: none; }
+/* In split view the focused pane underlines its header in its own agent's colour. */
+#app.is-split .p-head { box-shadow: inset 0 -2px 0 transparent; transition: box-shadow .15s ease; }
+#app.is-split .pane.focused .p-head { box-shadow: inset 0 -2px 0 var(--accent); }
+#app.is-split .pane:not(.focused) .p-name { color: var(--fg-muted); }
+
+/* Split view turns the session list into a rail of buttons. */
+.sb-rail { display: none; }
+#app.is-split.l-pinned:not(.rail-open) #left { width: 64px; }
+#app.is-split.l-pinned:not(.rail-open) #left > :not(.sb-rail) { display: none; }
+#app.is-split.l-pinned:not(.rail-open) .sb-rail { display: flex; flex-direction: column; align-items: center; gap: 8px; height: 100%;
+  padding: 6px 0 calc(6px + env(safe-area-inset-bottom)); }
+.rail-list { flex: 1; min-height: 0; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 4px 0;
+  overflow-y: auto; scrollbar-width: none; }
+.rail-list::-webkit-scrollbar { display: none; }
+.rail-btn { position: relative; flex: none; display: grid; place-items: center; width: 44px; height: 44px; font: 700 var(--fs-md) var(--font-ui);
+  color: var(--fg-soft); background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: 14px; }
+.rail-btn:active { background: var(--surface-5); }
+.rail-btn.on { color: var(--fg); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.rail-btn .dot { position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; border: 2px solid var(--surface-1); }
+#app:not(.can-split) .srow-split { display: none; }
+.rail-letter { font: 700 var(--fs-sm) var(--font-ui); letter-spacing: -.01em; }

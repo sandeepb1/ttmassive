@@ -75,3 +75,14 @@ export const DOT_LABEL: Record<DotState, string> = {
   ready: 'ready',
   idle: 'idle',
 };
+
+/**
+ * Two characters to tell a session apart in the narrow rail: the initials of a hyphenated name
+ * (`claude-cedarwing` is CC), otherwise its first two letters (`docs` is Do).
+ */
+export function railLabel(id: string): string {
+  const parts = id.split(/[-_.]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
+  const word = parts[0] ?? id;
+  return word.slice(0, 1).toUpperCase() + word.slice(1, 2).toLowerCase();
+}
