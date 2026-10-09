@@ -16,6 +16,7 @@ import {
   pendingQuestion,
   setOverride,
   type ChatResponse,
+  type Todo,
 } from './chat-model';
 import { renderItem, type RenderCtx } from './chat-render';
 import { setAgentAccent } from './theme';
@@ -28,6 +29,7 @@ import { ResumeSheet } from './resume-sheet';
 import type { QuestionRequest } from './question-form';
 import { el } from './dom';
 import { tap } from './haptics';
+import { filesChanged, searchItems, type ChangedFile, type Hit } from './chat-insights';
 
 const POLL_MS = 1000;
 /** While a session is not yet known to be chat-capable, look again this often. */
@@ -44,8 +46,17 @@ export interface ChatHooks {
   onEligible: (eligible: boolean) => void;
   /** The model, mode or agent changed: for the session details in the right sidebar. */
   onInfo?: (info: ChatInfo) => void;
+  /** Files changed, to-dos and the plan changed: for the details panel. */
+  onData?: (data: ChatPanelData) => void;
   /** Where sheets go. They must stay visible while the terminal is showing, so not the chat itself. */
   sheetHost?: HTMLElement;
+}
+
+/** What the right sidebar's Files and Plan tabs show. */
+export interface ChatPanelData {
+  files: ChangedFile[];
+  todos: Todo[];
+  plan: string | null;
 }
 
 /** What the right sidebar shows about this conversation. */
@@ -135,6 +146,7 @@ export class ChatView {
   private sending = false;
   private sent: Sent[] = [];
   private ro: ResizeObserver;
+  private dataKey = '';
   private get sheetHost(): HTMLElement {
     return this.hooks.sheetHost ?? this.host;
   }
@@ -407,9 +419,37 @@ export class ChatView {
     this.refreshMode();
     this.syncControls();
     this.renderEmpty();
+    this.emitData();
 
     if (wasStuck) this.scrollToBottom();
     else if (added) this.jump.hidden = false;
+  }
+
+  /** Tell the details panel about files, to-dos and the plan, but only when they changed. */
+  private emitData() {
+    const { todos, plan, seq } = this.store;
+    const key = `${seq}|${JSON.stringify(todos)}|${plan?.length ?? -1}|${plan?.slice(0, 40) ?? ''}`;
+    if (key === this.dataKey) return;
+    this.dataKey = key;
+    this.hooks.onData?.({ files: filesChanged(this.store.items), todos, plan });
+  }
+
+  /** Messages containing `query`, newest first. */
+  search(query: string): Hit[] {
+    return searchItems(this.store.items, query);
+  }
+
+  /** Scroll a message into view and flash it. False when it is not on screen (the terminal is showing). */
+  jumpTo(id: string): boolean {
+    const node = this.nodes.get(id);
+    if (!node || !this.shown) return false;
+    this.stuck = false;
+    node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    node.classList.remove('flash');
+    void node.offsetWidth; // restart the animation if it is already running
+    node.classList.add('flash');
+    window.setTimeout(() => node.classList.remove('flash'), 1800);
+    return true;
   }
 
   private emitInfo() {

@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use serde::Serialize;
 
 /// Largest image accepted. The browser shrinks photos well below this before sending.
 pub const MAX_BYTES: usize = 10 * 1024 * 1024;
@@ -82,6 +83,35 @@ pub fn locate(data_dir: &Path, uid: &str, file: &str) -> Option<PathBuf> {
     }
     let path = dir(data_dir).join(uid).join(file);
     path.is_file().then_some(path)
+}
+
+/// An image saved for a session.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct Stored {
+    pub name: String,
+    pub size: u64,
+    /// Unix seconds it was saved.
+    pub ts: u64,
+}
+
+/// The images saved for the session whose hidden id is `uid`, newest first.
+pub fn list(data_dir: &Path, uid: &str) -> Vec<Stored> {
+    if !valid_component(uid) {
+        return Vec::new();
+    }
+    let mut out: Vec<Stored> = std::fs::read_dir(dir(data_dir).join(uid))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok().filter(|n| valid_component(n))?;
+            let meta = e.metadata().ok().filter(|m| m.is_file())?;
+            let ts = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs();
+            Some(Stored { name, size: meta.len(), ts })
+        })
+        .collect();
+    out.sort_by(|a, b| b.ts.cmp(&a.ts).then_with(|| b.name.cmp(&a.name)));
+    out
 }
 
 /// Delete uploads older than `max_age`, and any folder left empty. Run at start-up.
@@ -163,6 +193,21 @@ mod tests {
         assert_eq!(locate(&d, "uid1", name), Some(p.clone()));
         assert_eq!(locate(&d, "uid1", "../../uploads/uid1/x"), None);
         assert_eq!(locate(&d, "nope", name), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_session_lists_only_its_own_images_newest_first() {
+        let d = temp("list");
+        assert!(list(&d, "u1").is_empty(), "no folder yet");
+        let a = save(&d, "u1", PNG).unwrap();
+        std::thread::sleep(Duration::from_millis(1100)); // timestamps are whole seconds
+        let b = save(&d, "u1", PNG).unwrap();
+        save(&d, "u2", PNG).unwrap();
+        let names: Vec<_> = list(&d, "u1").into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec![b.file_name().unwrap().to_str().unwrap(), a.file_name().unwrap().to_str().unwrap()]);
+        assert_eq!(list(&d, "u1")[0].size, PNG.len() as u64);
+        assert!(list(&d, "../u1").is_empty(), "a hostile id lists nothing");
         let _ = std::fs::remove_dir_all(&d);
     }
 

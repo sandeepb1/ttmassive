@@ -33,6 +33,15 @@ export interface DiffData {
   edits: EditPair[];
 }
 
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface Todo {
+  content: string;
+  status: TodoStatus;
+  /** What it is doing right now, while in progress. */
+  active: string | null;
+}
+
 export type ChatBody =
   | { kind: 'user'; text: string; images: number }
   | { kind: 'assistant'; text: string }
@@ -83,6 +92,10 @@ export interface ChatResponse {
   effort_live: string | null;
   /** Claude's greyed-out suggested reply in its empty input box. */
   suggestion: string | null;
+  /** The agent's current to-do list, if it keeps one. */
+  todos: Todo[];
+  /** The latest plan the agent put forward, as Markdown. */
+  plan: string | null;
 }
 
 /** The client's copy of one conversation. */
@@ -99,6 +112,8 @@ export interface ChatStore {
   yolo: boolean;
   effortLive: string | null;
   suggestion: string | null;
+  todos: Todo[];
+  plan: string | null;
   /** The last mode that was not plan: where "Build" goes back to. */
   lastBuild: ModeId | null;
   /**
@@ -124,6 +139,8 @@ export function newStore(): ChatStore {
     yolo: false,
     effortLive: null,
     suggestion: null,
+    todos: [],
+    plan: null,
     lastBuild: null,
     modelOverride: null,
     effortOverride: null,
@@ -170,6 +187,8 @@ export function applyChat(s: ChatStore, r: ChatResponse): { reset: boolean; touc
   s.yolo = r.yolo;
   s.effortLive = r.effort_live;
   s.suggestion = r.suggestion ?? null;
+  s.todos = r.todos ?? [];
+  s.plan = r.plan ?? null;
   if (steady && r.mode !== 'plan') s.lastBuild = r.mode;
   if (s.modelOverride && s.model !== s.modelOverride.from) s.modelOverride = null;
   if (s.effortOverride && s.effort !== s.effortOverride.from) s.effortOverride = null;

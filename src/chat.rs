@@ -33,6 +33,8 @@ const PREVIEW_CHARS: usize = 2000;
 const DIFF_CHARS: usize = 8000;
 /// Longest single message.
 const TEXT_CHARS: usize = 20_000;
+/// Longest one-line preview of a conversation.
+const PREVIEW_LINE: usize = 140;
 /// A log bigger than this is read from near its end on first load.
 const INITIAL_TAIL: u64 = 8 * 1024 * 1024;
 
@@ -84,6 +86,23 @@ pub struct Question {
 pub struct Answer {
     pub question: String,
     pub answer: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// One entry of the agent's to-do list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Todo {
+    pub content: String,
+    pub status: TodoStatus,
+    /// What it is doing right now ("Running the tests"), while in progress.
+    pub active: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -226,6 +245,10 @@ pub struct ChatState {
     pub effort: Option<String>,
     /// A model name from a `/model` confirmation, such as `Haiku 5.5`, until a reply reports the id.
     pub model_label: Option<String>,
+    /// The agent's latest to-do list (Claude's `TodoWrite`).
+    todos: Vec<Todo>,
+    /// The latest plan the agent put forward (Claude's `ExitPlanMode`, Codex's `Plan`), as Markdown.
+    plan: Option<String>,
 }
 
 impl ChatState {
@@ -242,7 +265,20 @@ impl ChatState {
             model: None,
             effort: None,
             model_label: None,
+            todos: Vec::new(),
+            plan: None,
         }
+    }
+
+    /// The last thing said, in one line, for the session list.
+    fn preview(&self) -> Option<String> {
+        self.items.iter().rev().find_map(|i| match &i.body {
+            Body::Assistant { text } | Body::User { text, .. } => {
+                let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                Some(clip(&one, PREVIEW_LINE)).filter(|s| !s.is_empty())
+            }
+            _ => None,
+        })
     }
 
     fn reset(&mut self) {
@@ -383,6 +419,16 @@ impl ChatState {
                 self.add(id, ts, Body::Question { questions, state: QuestionState::Pending, answers: Vec::new() });
                 return;
             }
+        }
+        match name {
+            "TodoWrite" => self.todos = parse_todos(input),
+            "ExitPlanMode" => {
+                let plan = str_of(input, "plan").trim();
+                if !plan.is_empty() {
+                    self.plan = Some(clip(plan, TEXT_CHARS));
+                }
+            }
+            _ => {}
         }
         let (summary, shown_input, diff) = claude_tool_summary(name, input);
         self.add(
@@ -573,6 +619,25 @@ impl ChatState {
                     },
                 );
             }
+            Some("FileChange") => self.codex_file_change(item, &id, ts),
+            Some("Plan") => {
+                let t = str_of(item, "text").trim();
+                if !t.is_empty() {
+                    self.plan = Some(clip(t, TEXT_CHARS));
+                    self.add(
+                        id,
+                        ts,
+                        Body::Tool {
+                            tool: "Plan".into(),
+                            summary: "Proposed a plan".into(),
+                            input: Some(clip(t, PREVIEW_CHARS)),
+                            output: None,
+                            status: ToolStatus::Ok,
+                            diff: None,
+                        },
+                    );
+                }
+            }
             Some(other) => {
                 // Anything else (patches, MCP calls, sub-agents): show that it happened.
                 let detail = item
@@ -600,6 +665,92 @@ impl ChatState {
             None => {}
         }
     }
+}
+
+/// The to-do list in a `TodoWrite` call. Entries without text are dropped.
+fn parse_todos(input: &Value) -> Vec<Todo> {
+    input["todos"]
+        .as_array()
+        .map(|ts| {
+            ts.iter()
+                .filter_map(|t| {
+                    let content = str_of(t, "content").trim();
+                    if content.is_empty() {
+                        return None;
+                    }
+                    let status = match str_of(t, "status") {
+                        "in_progress" => TodoStatus::InProgress,
+                        "completed" => TodoStatus::Completed,
+                        _ => TodoStatus::Pending,
+                    };
+                    let active = Some(str_of(t, "activeForm").trim()).filter(|a| !a.is_empty()).map(|a| clip(a, 200));
+                    Some(Todo { content: clip(content, 300), status, active })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl ChatState {
+    /// Codex reports a patch as one item holding every file it touched. Show each file as the same
+    /// kind of edit Claude's tools produce, so both agents' changes read (and add up) alike.
+    fn codex_file_change(&mut self, item: &Value, id: &str, ts: Option<i64>) {
+        let Some(changes) = item["changes"].as_object() else { return };
+        let failed = matches!(item["status"].as_str(), Some("Failed" | "failed" | "Declined" | "declined"));
+        let output = Some(clip(str_of(item, "stderr").trim(), PREVIEW_CHARS)).filter(|s| failed && !s.is_empty());
+        for (n, (path, c)) in changes.iter().enumerate() {
+            let content = clip(str_of(c, "content"), DIFF_CHARS);
+            let (tool, verb, edits) = match c["type"].as_str() {
+                Some("add") => ("Write", "Created", vec![EditPair { old: String::new(), new: content }]),
+                Some("delete") => ("Delete", "Deleted", vec![EditPair { old: content, new: String::new() }]),
+                _ => ("Edit", "Edited", unified_pairs(str_of(c, "unified_diff"))),
+            };
+            self.add(
+                format!("{id}:{n}"),
+                ts,
+                Body::Tool {
+                    tool: tool.into(),
+                    summary: format!("{verb} {}", short_path(path)),
+                    input: None,
+                    output: output.clone(),
+                    status: if failed { ToolStatus::Error } else { ToolStatus::Ok },
+                    diff: Some(Diff { path: path.clone(), edits }),
+                },
+            );
+        }
+    }
+}
+
+/// A unified diff as one before/after pair per hunk (context lines are in both sides).
+fn unified_pairs(diff: &str) -> Vec<EditPair> {
+    let mut out = Vec::new();
+    let (mut old, mut new): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+    let mut flush = |old: &mut Vec<&str>, new: &mut Vec<&str>| {
+        if !old.is_empty() || !new.is_empty() {
+            out.push(EditPair { old: clip(&old.join("\n"), DIFF_CHARS), new: clip(&new.join("\n"), DIFF_CHARS) });
+        }
+        old.clear();
+        new.clear();
+    };
+    let mut in_hunk = false;
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            flush(&mut old, &mut new);
+            in_hunk = true;
+        } else if !in_hunk || line.starts_with('\\') {
+            continue; // file headers before the first hunk, and "\ No newline at end of file"
+        } else if let Some(l) = line.strip_prefix('+') {
+            new.push(l);
+        } else if let Some(l) = line.strip_prefix('-') {
+            old.push(l);
+        } else {
+            let l = line.strip_prefix(' ').unwrap_or(line);
+            old.push(l);
+            new.push(l);
+        }
+    }
+    flush(&mut old, &mut new);
+    out
 }
 
 fn parse_questions(input: &Value) -> Vec<Question> {
@@ -709,6 +860,10 @@ pub struct ChatResponse {
     pub effort_live: Option<String>,
     /// The greyed-out reply Claude suggests in its empty input box.
     pub suggestion: Option<String>,
+    /// The agent's current to-do list, if it keeps one.
+    pub todos: Vec<Todo>,
+    /// The latest plan the agent put forward, as Markdown.
+    pub plan: Option<String>,
 }
 
 impl ChatCache {
@@ -724,14 +879,34 @@ impl ChatCache {
         })
     }
 
-    /// Blocking: reads the log. Call from `spawn_blocking`.
-    fn read(&self, session: &str, agent: Agent, conv_id: &str, epoch: Option<u64>, after: u64) -> (ChatResponse, bool) {
-        let mut states = lock(&self.states);
+    /// The parsed log for `session`, started afresh when it now belongs to another conversation.
+    fn state_for<'a>(
+        states: &'a mut HashMap<String, ChatState>,
+        session: &str,
+        agent: Agent,
+        conv_id: &str,
+    ) -> &'a mut ChatState {
         let stale = states.get(session).is_none_or(|s| s.agent != agent || s.conv_id != conv_id);
         if stale {
             states.insert(session.to_owned(), ChatState::new(agent, conv_id));
         }
         let Some(state) = states.get_mut(session) else { unreachable!("inserted above") };
+        state
+    }
+
+    /// One line of the latest message, after reading any new log lines.
+    /// Blocking: reads the log. Call from `spawn_blocking`.
+    fn preview(&self, session: &str, agent: Agent, conv_id: &str) -> Option<String> {
+        let mut states = lock(&self.states);
+        let state = Self::state_for(&mut states, session, agent, conv_id);
+        state.update().ok()?;
+        state.preview()
+    }
+
+    /// Blocking: reads the log. Call from `spawn_blocking`.
+    fn read(&self, session: &str, agent: Agent, conv_id: &str, epoch: Option<u64>, after: u64) -> (ChatResponse, bool) {
+        let mut states = lock(&self.states);
+        let state = Self::state_for(&mut states, session, agent, conv_id);
         let ready = state.update().unwrap_or_else(|e| {
             tracing::warn!("reading the {} log for {session}: {e}", conv_id);
             false
@@ -755,19 +930,32 @@ impl ChatCache {
             yolo: false,
             effort_live: None,
             suggestion: None,
+            todos: state.todos.clone(),
+            plan: state.plan.clone(),
         };
         (response, ready)
     }
 }
 
-/// What changed in `session`'s conversation since `(epoch, after)`.
-pub async fn snapshot(st: &Arc<AppState>, session: &str, epoch: Option<u64>, after: u64) -> Result<ChatResponse> {
-    let (agent, conv_id) = st
-        .sessions
+/// The agent and conversation id of a Claude or Codex session whose conversation is known.
+fn agent_of(st: &AppState, session: &str) -> Option<(Agent, String)> {
+    st.sessions
         .get(session)
         .and_then(|m| Some((m.agent()?, m.agent_session_id.clone()?)))
         .filter(|(a, id)| *a != Agent::Other && sessions::valid_agent_id(id))
-        .map_or((None, None), |(a, id)| (Some(a), Some(id)));
+}
+
+/// A one-line preview of the latest message in `session`, for the session list.
+pub async fn preview(st: &Arc<AppState>, session: &str) -> Option<String> {
+    let (agent, conv_id) = agent_of(st, session)?;
+    let cache = st.chat.clone();
+    let name = session.to_owned();
+    tokio::task::spawn_blocking(move || cache.preview(&name, agent, &conv_id)).await.ok()?
+}
+
+/// What changed in `session`'s conversation since `(epoch, after)`.
+pub async fn snapshot(st: &Arc<AppState>, session: &str, epoch: Option<u64>, after: u64) -> Result<ChatResponse> {
+    let (agent, conv_id) = agent_of(st, session).map_or((None, None), |(a, id)| (Some(a), Some(id)));
     // One capture of the pane feeds both the question reader and the mode footer.
     let text = crate::tmux::capture(session, 80).await.ok();
     let mut screen = text.as_deref().map(screen::analyze);
@@ -797,6 +985,8 @@ pub async fn snapshot(st: &Arc<AppState>, session: &str, epoch: Option<u64>, aft
             yolo: false,
             effort_live: None,
             suggestion: None,
+            todos: Vec::new(),
+            plan: None,
         });
     };
     let cache = st.chat.clone();
@@ -1213,5 +1403,147 @@ mod tests {
         assert_eq!(short_path("c.rs"), "c.rs");
         assert_eq!(clip("héllo wörld", 5), "héllo…");
         assert_eq!(clip("short", 50), "short");
+    }
+
+    // ---------------------------------------------------- todos, plan, preview
+
+    fn tool_use(uuid: &str, name: &str, input: Value) -> Value {
+        assistant(uuid, json!({ "type": "tool_use", "id": format!("t-{uuid}"), "name": name, "input": input }))
+    }
+
+    #[test]
+    fn todo_write_becomes_a_structured_list_and_the_latest_call_wins() {
+        let mut s = claude();
+        feed(
+            &mut s,
+            &[
+                tool_use("a1", "TodoWrite", json!({ "todos": [
+                    { "content": "Write tests", "status": "in_progress", "activeForm": "Writing tests" },
+                    { "content": "Ship it", "status": "pending", "activeForm": "Shipping" },
+                    { "content": "  ", "status": "pending" },
+                ] })),
+            ],
+        );
+        assert_eq!(
+            s.todos,
+            vec![
+                Todo { content: "Write tests".into(), status: TodoStatus::InProgress, active: Some("Writing tests".into()) },
+                Todo { content: "Ship it".into(), status: TodoStatus::Pending, active: Some("Shipping".into()) },
+            ],
+            "an entry without text is dropped"
+        );
+        feed(&mut s, &[tool_use("a2", "TodoWrite", json!({ "todos": [{ "content": "Ship it", "status": "completed" }] }))]);
+        assert_eq!(s.todos, vec![Todo { content: "Ship it".into(), status: TodoStatus::Completed, active: None }]);
+        // The call still shows in the conversation as its one-line summary.
+        assert!(s.items.iter().any(|i| matches!(&i.body, Body::Tool { tool, .. } if tool == "TodoWrite")));
+    }
+
+    #[test]
+    fn an_unknown_todo_status_counts_as_pending() {
+        let todos = parse_todos(&json!({ "todos": [{ "content": "x", "status": "someday" }] }));
+        assert_eq!(todos[0].status, TodoStatus::Pending);
+        assert!(parse_todos(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn exit_plan_mode_keeps_the_plan_and_a_later_plan_replaces_it() {
+        let mut s = claude();
+        feed(&mut s, &[tool_use("a1", "ExitPlanMode", json!({ "plan": "# Plan\n\n1. Do it\n" }))]);
+        assert_eq!(s.plan.as_deref(), Some("# Plan\n\n1. Do it"));
+        feed(&mut s, &[tool_use("a2", "ExitPlanMode", json!({ "plan": "# Better plan" }))]);
+        assert_eq!(s.plan.as_deref(), Some("# Better plan"));
+        feed(&mut s, &[tool_use("a3", "ExitPlanMode", json!({ "plan": "   " }))]);
+        assert_eq!(s.plan.as_deref(), Some("# Better plan"), "an empty plan does not wipe the last one");
+    }
+
+    #[test]
+    fn a_codex_plan_item_is_kept_and_shown() {
+        let mut s = ChatState::new(Agent::Codex, "conv");
+        feed(
+            &mut s,
+            &[json!({ "type": "event_msg", "payload": { "type": "item_completed",
+                "item": { "type": "Plan", "id": "p1", "text": "# Spec\n\nBuild the thing." } } })],
+        );
+        assert_eq!(s.plan.as_deref(), Some("# Spec\n\nBuild the thing."));
+        assert!(matches!(&s.items[0].body, Body::Tool { tool, summary, .. } if tool == "Plan" && summary == "Proposed a plan"));
+    }
+
+    #[test]
+    fn the_preview_is_the_last_message_in_one_line() {
+        let mut s = claude();
+        assert_eq!(s.preview(), None);
+        feed(
+            &mut s,
+            &[
+                user_text("u1", "first question"),
+                assistant("a1", json!({ "type": "text", "text": "Sure.\n\nHere   is the\nanswer." })),
+                assistant("a2", json!({ "type": "thinking", "thinking": "private musings" })),
+                tool_use("a3", "Bash", json!({ "command": "ls" })),
+            ],
+        );
+        assert_eq!(s.preview().as_deref(), Some("Sure. Here is the answer."), "thinking and tools are skipped");
+        feed(&mut s, &[assistant("a4", json!({ "type": "text", "text": "x".repeat(500) }))]);
+        let p = s.preview().unwrap();
+        assert_eq!(p.chars().count(), PREVIEW_LINE + 1, "clipped with an ellipsis");
+        assert!(p.ends_with('…'));
+    }
+
+    #[test]
+    fn a_log_that_starts_over_forgets_the_old_todos_and_plan() {
+        let mut s = claude();
+        feed(&mut s, &[tool_use("a1", "ExitPlanMode", json!({ "plan": "old" })), tool_use("a2", "TodoWrite", json!({ "todos": [{ "content": "x", "status": "pending" }] }))]);
+        s.reset();
+        assert!(s.todos.is_empty() && s.plan.is_none());
+    }
+
+    #[test]
+    fn a_codex_patch_becomes_one_edit_per_file() {
+        let mut s = ChatState::new(Agent::Codex, "conv");
+        feed(
+            &mut s,
+            &[json!({ "type": "event_msg", "payload": { "type": "item_completed", "item": {
+                "type": "FileChange", "id": "fc1", "status": "completed", "stdout": "", "stderr": "",
+                "changes": {
+                    "/p/new.md": { "type": "add", "content": "# hi\n" },
+                    "/p/old.md": { "type": "delete", "content": "bye\n" },
+                    "/p/src/lib.rs": { "type": "update", "move_path": null,
+                        "unified_diff": "--- a/lib.rs\n+++ b/lib.rs\n@@ -1,3 +1,3 @@\n fn a() {}\n-fn b() {}\n+fn b2() {}\n fn c() {}\n@@ -9,2 +9,3 @@\n x\n+y\n\\ No newline at end of file\n" },
+                } } } })],
+        );
+        let tools: Vec<_> = s
+            .items
+            .iter()
+            .filter_map(|i| match &i.body {
+                Body::Tool { tool, summary, diff, status, .. } => Some((tool.as_str(), summary.as_str(), diff.clone().unwrap(), *status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tools.len(), 3);
+        let by = |name: &str| tools.iter().find(|t| t.2.path.ends_with(name)).unwrap();
+        let (t, sum, d, st) = by("new.md");
+        assert_eq!((*t, sum.starts_with("Created"), *st), ("Write", true, ToolStatus::Ok));
+        assert_eq!(d.edits, vec![EditPair { old: "".into(), new: "# hi\n".into() }]);
+        assert_eq!((by("old.md").0, by("old.md").2.edits[0].new.as_str()), ("Delete", ""));
+        let lib = by("lib.rs");
+        assert_eq!((lib.0, lib.1), ("Edit", "Edited src/lib.rs"));
+        assert_eq!(
+            lib.2.edits,
+            vec![
+                EditPair { old: "fn a() {}\nfn b() {}\nfn c() {}".into(), new: "fn a() {}\nfn b2() {}\nfn c() {}".into() },
+                EditPair { old: "x".into(), new: "x\ny".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_declined_codex_patch_is_an_error_with_its_message() {
+        let mut s = ChatState::new(Agent::Codex, "conv");
+        feed(
+            &mut s,
+            &[json!({ "type": "event_msg", "payload": { "type": "item_completed", "item": {
+                "type": "FileChange", "id": "fc2", "status": "declined", "stderr": "patch rejected",
+                "changes": { "/p/a.rs": { "type": "add", "content": "x" } } } } })],
+        );
+        assert!(matches!(&s.items[0].body, Body::Tool { status: ToolStatus::Error, output: Some(o), .. } if o == "patch rejected"));
     }
 }

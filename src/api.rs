@@ -54,6 +54,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/sessions/{id}/upload",
             post(session_upload).layer(DefaultBodyLimit::max(uploads::MAX_BYTES + 4096)),
         )
+        .route("/api/sessions/{id}/attachments", get(session_attachments))
         .route("/api/uploads/{uid}/{file}", get(get_upload))
         .route("/api/sessions/{id}/answer", post(session_answer))
         .route("/api/sessions/{id}/meta", post(session_meta))
@@ -194,7 +195,10 @@ fn server_error(e: &anyhow::Error) -> Response {
 
 async fn list_sessions(State(st): State<Arc<AppState>>) -> Response {
     match sessions::snapshot(&st).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(mut v) => {
+            sessions::enrich(&st, &mut v).await;
+            Json(v).into_response()
+        }
         Err(e) => server_error(&e),
     }
 }
@@ -800,6 +804,28 @@ async fn session_upload(State(st): State<Arc<AppState>>, Path(id): Path<String>,
         Ok(Err(e)) => server_error(&e),
         Err(e) => server_error(&anyhow::anyhow!("{e}")),
     }
+}
+
+/// The images attached in this session's chat, newest first, for the details panel.
+async fn session_attachments(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(uid) = st.sessions.get(&id).map(|m| m.uid.clone()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let data_dir = st.data_dir.clone();
+    let found = tokio::task::spawn_blocking({
+        let uid = uid.clone();
+        move || uploads::list(&data_dir, &uid)
+    })
+    .await
+    .unwrap_or_default();
+    let items: Vec<_> = found
+        .into_iter()
+        .map(|f| serde_json::json!({ "name": f.name, "size": f.size, "ts": f.ts, "url": format!("/api/uploads/{uid}/{}", f.name) }))
+        .collect();
+    ([(header::CACHE_CONTROL, "no-store")], Json(items)).into_response()
 }
 
 /// An uploaded image, for the thumbnail in the chat.

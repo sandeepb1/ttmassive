@@ -380,6 +380,32 @@ they do in the terminal view.
   log file, so the helper's id is ignored.
 - The chat keeps the last 2,000 items of a conversation.
 
+## Session list and details panel
+
+The left sidebar groups sessions under **Pinned**, then one heading per working folder (tap a
+heading to fold it; folds are remembered). Each row shows a dot for what the agent is doing
+(pulsing blue: working, pulsing amber and a **Needs you** tag: waiting on a question, green:
+ready for the next instruction, grey: idle or stopped), the first lines of its latest message,
+the git branch of its folder, and the usual agent and idle time. The row's `⋯` holds pin, edit and
+remove. Rows for sessions that were not started from a preset only show the folder and branch:
+what an agent is doing and its latest message come from the agent's own log, which ttm only knows
+about for sessions it started.
+
+The right sidebar (the panel button in the top bar, or a swipe from the right edge) has search and
+four tabs:
+
+- **Overview**: the model, mode and conversation actions, and plan usage.
+- **Files**: every file the agent edited, wrote or deleted in the conversation, newest first, with
+  `+`/`−` line counts and the combined diff. Claude's `Edit`, `MultiEdit` and `Write` and Codex's
+  patches are both covered.
+- **Plan**: Claude's to-do list (`TodoWrite`) and the plan from plan mode (`ExitPlanMode`), or a
+  plan Codex proposed, as formatted text. Codex's own to-do updates are not shown: it records them
+  as code inside a tool call, which is not a stable format to read.
+- **Images**: pictures you attached in the chat, kept for a week.
+
+Search covers the messages loaded in the chat (not the whole log). Tap a result to jump to the
+message, which flashes once.
+
 ## Modes, toggles and launch options
 
 ### Mode chip
@@ -572,7 +598,8 @@ settings are `bind`, `password_hash`, `trust_proxy`, `session_ttl_hours`, `data_
   - `POST .../message` types a message (multi-line text goes in as a bracketed paste).
   - `POST .../question` answers or dismisses the agent's question form.
   - `GET .../suggest?kind=slash|file&q=` feeds the composer.
-  - `POST .../upload` saves an attached image.
+  - `POST .../upload` saves an attached image, and `GET .../attachments` lists the session's
+    images, newest first.
   - `POST .../model/open`, `.../model/choose`, `.../model/level`, `.../model/close` and
     `POST .../effort` drive the agent's model menu.
   - `POST .../resume/open`, `.../resume/search`, `.../resume/scope`, `.../resume/page` and
@@ -580,6 +607,10 @@ settings are `bind`, `password_hash`, `trust_proxy`, `session_ttl_hours`, `data_
     `.../model/close`.
   - `POST .../mode`, `.../reasoning`, `.../command`, `.../permissions/open` and
     `.../permissions/choose` drive modes, reasoning, quick commands and Codex permissions.
+
+  `GET /api/sessions` also returns each session's `cwd` and `branch` (read from `.git/HEAD`, no
+  `git` process), and for Claude and Codex sessions `activity` and a one-line `preview`. The chat
+  response carries the agent's `todos` and `plan`.
 
   The log parsing is in `src/chat.rs`. The key sequences for the question form, the model menu
   and the mode switches are in `src/question.rs`, `src/modelmenu.rs` and `src/modes.rs`, each

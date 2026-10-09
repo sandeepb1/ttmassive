@@ -3,6 +3,7 @@
 import { el } from './dom';
 import { warn } from './haptics';
 import { icon } from './icons';
+import { DOT_LABEL, dotState, groupSessions } from './session-groups';
 
 export interface SessionView {
   id: string;
@@ -24,6 +25,14 @@ export interface SessionView {
   pinned: boolean;
   /** Started with permission checks skipped. */
   yolo: boolean;
+  /** The working folder. */
+  cwd: string | null;
+  /** The git branch checked out there. */
+  branch: string | null;
+  /** What a running Claude or Codex session is doing right now. */
+  activity: 'working' | 'waiting' | 'idle' | 'unknown' | null;
+  /** One line of the latest message. */
+  preview: string | null;
 }
 
 interface Group {
@@ -45,6 +54,16 @@ const canSkip = (p: Preset) => p.agent === 'claude' || p.agent === 'codex';
 
 const POLL_MS = 3000;
 const ACTIVE_SECS = 5;
+const COLLAPSED_KEY = 'ttm.groups.collapsed';
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]') as unknown;
+    return new Set(Array.isArray(raw) ? raw.filter((k): k is string => typeof k === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
 
 function ago(secs: number): string {
   if (secs < 60) return `${secs}s`;
@@ -92,6 +111,9 @@ export class SessionSidebar {
   private groupList: Group[] = [];
   /** Rows whose pin / edit / remove buttons are showing. Kept across the list's refreshes. */
   private expanded = new Set<string>();
+  /** Folder sections the user folded away. Remembered. */
+  private collapsed = loadCollapsed();
+  private lastSessions: SessionView[] = [];
 
   constructor(
     private root: HTMLElement,
@@ -270,31 +292,75 @@ export class SessionSidebar {
   }
 
   private renderList(sessions: SessionView[]) {
+    this.lastSessions = sessions;
     if (sessions.length === 0) {
       this.list.replaceChildren(el('div', 'drawer-empty', 'No sessions yet'));
       this.presets.hidden = false;
       return;
     }
-    this.list.replaceChildren(...sessions.map((s) => this.row(s)));
+    const sections = groupSessions(sessions);
+    // One folder (or none) needs no headings: they would only repeat what every row says.
+    if (sections.length < 2) {
+      this.list.replaceChildren(...sessions.map((s) => this.row(s)));
+      return;
+    }
+    const out: HTMLElement[] = [];
+    for (const sec of sections) {
+      const folded = this.collapsed.has(sec.key);
+      const head = el('button', 'sg-head');
+      head.type = 'button';
+      head.setAttribute('aria-expanded', String(!folded));
+      const waiting = sec.items.some((s) => dotState(s) === 'waiting');
+      head.append(icon('chevron', `icon-svg chev${folded ? '' : ' open'}`), icon(sec.key === '__pinned' ? 'panel-left' : 'folder'));
+      head.append(el('span', 'sg-title', sec.title));
+      if (sec.sub) head.append(el('span', 'sg-sub', sec.sub));
+      head.append(el('span', 'sg-spacer'));
+      // A fold hides the rows, so say if something behind it needs you.
+      if (folded && waiting) head.append(el('span', 'dot waiting'));
+      head.append(el('span', 'sg-count', String(sec.items.length)));
+      head.addEventListener('click', () => {
+        if (folded) this.collapsed.delete(sec.key);
+        else this.collapsed.add(sec.key);
+        try {
+          localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...this.collapsed]));
+        } catch {
+          /* not remembered */
+        }
+        this.renderList(this.lastSessions);
+      });
+      out.push(head);
+      if (!folded) out.push(...sec.items.map((s) => this.row(s)));
+    }
+    this.list.replaceChildren(...out);
   }
 
   private row(s: SessionView): HTMLElement {
     const row = el('div', 'srow');
     if (s.id === this.current()) row.classList.add('current');
 
-    const state = s.status === 'stopped' ? 'stopped' : s.status === 'exited' ? 'exited' : s.idle_secs < ACTIVE_SECS ? 'active' : 'idle';
+    const state = dotState(s, ACTIVE_SECS);
+    if (state === 'waiting') row.classList.add('waiting');
     const dot = el('span', `dot ${state}`);
-    dot.setAttribute('aria-label', state);
+    dot.setAttribute('aria-label', DOT_LABEL[state]);
 
     const main = el('button', 'srow-main');
     main.type = 'button';
-    main.append(el('span', 'srow-name', `${s.pinned ? '★ ' : ''}${s.id}`));
+    const name = el('span', 'srow-name');
+    name.append(document.createTextNode(`${s.pinned ? '★ ' : ''}${s.id}`));
+    if (state === 'waiting') name.append(el('span', 'srow-flag', 'Needs you'));
+    main.append(name);
+    if (s.preview) main.append(el('span', 'srow-preview', s.preview));
+    if (s.branch) {
+      const where = el('span', 'srow-where');
+      where.append(icon('branch'), el('span', undefined, s.branch));
+      main.append(where);
+    }
     const bits: string[] = [];
     if (s.agent) bits.push(s.agent);
     else if (s.preset) bits.push(s.preset);
     if (s.status === 'stopped') bits.push(s.resumable ? 'stopped · can resume' : 'stopped');
     else if (s.status === 'exited') bits.push(`exited${s.exit_code !== null ? ` (${s.exit_code})` : ''}`);
-    else bits.push(`idle ${ago(s.idle_secs)}`);
+    else bits.push(state === 'working' ? 'working' : `idle ${ago(s.idle_secs)}`);
     if (s.yolo) bits.push('⚡ permissions skipped');
     if (s.attached > 0) bits.push(`${s.attached} attached`);
     if (s.restarts > 0) bits.push(`${s.restarts}× restarted`);

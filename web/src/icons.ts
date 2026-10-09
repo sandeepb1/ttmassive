@@ -2,7 +2,7 @@
 
 const NS = 'http://www.w3.org/2000/svg';
 
-export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu';
+export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder';
 
 /** Each icon is a list of SVG path `d` strings, plus circles as [cx, cy, r]. */
 const SHAPES: Record<IconName, { d: string[]; circles?: [number, number, number][] }> = {
@@ -21,6 +21,12 @@ const SHAPES: Record<IconName, { d: string[]; circles?: [number, number, number]
   'panel-right': { d: ['M2.5 3.5h11v9h-11z', 'M10 3.5v9'] },
   sliders: { d: ['M2.5 5h11M2.5 11h11'], circles: [[6, 5, 1.7], [10, 11, 1.7]] },
   menu: { d: ['M3 4.5h10M3 8h10M3 11.5h10'] },
+  info: { d: ['M8 7.4v3.8'], circles: [[8, 8, 6], [8, 5.1, 0.4]] },
+  files: { d: ['M4 2.5h5l3 3v8H4z', 'M9 2.5v3h3', 'M6.2 9l1.3 1.3L9.8 8'] },
+  image: { d: ['M2.5 3.5h11v9h-11z', 'M2.5 11.2l3.4-3.4 3 3 2-2 2.6 2.6'], circles: [[10.5, 6.2, 1]] },
+  close: { d: ['M4 4l8 8M12 4l-8 8'] },
+  branch: { d: ['M5 3v7.2', 'M11 5.8c0 3-6 1.6-6 4.4'], circles: [[5, 2.6, 1.4], [11, 4.6, 1.4], [5, 12.4, 1.4]] },
+  folder: { d: ['M2.5 4.5h3.8l1.4 1.5h5.8v6.5h-11z'] },
 };
 
 /** The category a tool belongs to, for its icon and tint. */

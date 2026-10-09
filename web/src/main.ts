@@ -113,6 +113,9 @@ function openSession(name: string) {
   const thisChat: ChatView = new ChatView($('chat'), name, {
     onUnauthorized: showLogin,
     sheetHost: $('main'),
+    onData: (data) => {
+      if (chat === thisChat) rightbar?.setData(data);
+    },
     onInfo: (info) => {
       if (chat !== thisChat) return;
       rightbar?.setInfo(info, {
@@ -196,10 +199,21 @@ function showApp() {
   rightbar ??= new RightBar($('right'), usage.body, {
     collapse: () => layout.toggle('right'),
     refreshUsage: () => usage?.refreshNow(),
+    search: (q) => chat?.search(q) ?? [],
+    jump: showMessage,
   });
   usage.start(); // before syncPanels: start() resets what the sidebar asked the usage view to watch
   syncPanels();
   openSession(sessionName());
+}
+
+/** Bring a message found by search into view in the chat, switching to the chat if needed. */
+function showMessage(id: string) {
+  const go = () => chat?.jumpTo(id);
+  layout.dismissOverlays(); // on a phone the sidebar would cover it
+  if (view === 'chat') return void go();
+  setView('chat', true);
+  window.setTimeout(go, 700); // the chat scrolls to the end once it has loaded: land after that
 }
 
 function openSettings() {
@@ -220,6 +234,7 @@ function syncPanels() {
   const right = layout.isVisible('right');
   sidebar?.setActive(left);
   usage?.watch(right && !$('app').hidden);
+  rightbar?.setActive(right && !$('app').hidden);
   $('left').inert = !left;
   $('right').inert = !right;
 }

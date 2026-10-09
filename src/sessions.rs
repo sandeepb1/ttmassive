@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState,
     config::{Agent, Preset, RestartPolicy},
-    limits,
+    gitinfo, limits,
     notify::{self, Alert, Kind},
+    ops,
+    screen::Activity,
     scrollback, tmux,
 };
 
@@ -252,6 +254,14 @@ pub struct SessionView {
     pub pinned: bool,
     /// Started with permission checks skipped (Claude: `--dangerously-skip-permissions`; Codex: `--yolo`).
     pub yolo: bool,
+    /// The working folder: where the pane is now while it runs, where it was started otherwise.
+    pub cwd: Option<String>,
+    /// The git branch checked out in `cwd`.
+    pub branch: Option<String>,
+    /// What a running Claude or Codex session is doing. Filled in by `enrich`, for the web list.
+    pub activity: Option<Activity>,
+    /// One line of the latest message of an agent session. Filled in by `enrich`.
+    pub preview: Option<String>,
 }
 
 pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
@@ -283,6 +293,10 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             tags: m.map(|m| m.tags.clone()).unwrap_or_default(),
             pinned: m.is_some_and(|m| m.pinned),
             yolo: m.is_some_and(|m| m.spec.yolo),
+            cwd: Some(s.cwd.clone()).filter(|c| !c.is_empty()),
+            branch: None,
+            activity: None,
+            preview: None,
             id: s.id.clone(),
         });
     }
@@ -293,6 +307,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
         .filter(|e| !live.iter().any(|s| &s.id == e.key()))
         .map(|e| (e.key().clone(), e.value().clone()))
         .collect();
+    let home = crate::agentlog::home();
     for (id, m) in stopped {
         let saved = scrollback::modified(st, &m.uid).await;
         out.push(SessionView {
@@ -315,13 +330,46 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             tags: m.tags,
             pinned: m.pinned,
             yolo: m.spec.yolo,
+            cwd: m.spec.dir.as_deref().map(|d| expand_home(d, home.as_deref()).display().to_string()),
+            branch: None,
+            activity: None,
+            preview: None,
             id,
         });
+    }
+    for v in &mut out {
+        v.branch = v.cwd.as_deref().and_then(|c| gitinfo::branch(Path::new(c)));
     }
     out.sort_by(|a, b| {
         b.pinned.cmp(&a.pinned).then(b.created.cmp(&a.created)).then_with(|| a.id.cmp(&b.id))
     });
     Ok(out)
+}
+
+/// Add what the web list shows but the CLI has no use for: what each running agent is doing, and
+/// the latest message of every agent session. One pane capture and one incremental log read each.
+pub async fn enrich(st: &Arc<AppState>, views: &mut [SessionView]) {
+    let mut tasks = tokio::task::JoinSet::new();
+    for (i, v) in views.iter().enumerate() {
+        if !matches!(v.agent, Some(Agent::Claude | Agent::Codex)) {
+            continue;
+        }
+        let (st, id, running) = (st.clone(), v.id.clone(), v.status == "running");
+        tasks.spawn(async move {
+            let activity = if running {
+                ops::screen(&id).await.ok().map(|a| if a.prompt.is_some() { Activity::Waiting } else { a.activity })
+            } else {
+                None
+            };
+            (i, activity, crate::chat::preview(&st, &id).await)
+        });
+    }
+    while let Some(done) = tasks.join_next().await {
+        if let Ok((i, activity, preview)) = done {
+            views[i].activity = activity;
+            views[i].preview = preview;
+        }
+    }
 }
 
 // -------------------------------------------------------------- lifecycle
