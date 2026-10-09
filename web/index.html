@@ -33,22 +33,29 @@
       </form>
     </div>
     <div id="app" hidden>
-      <button type="button" id="usage" aria-label="Plan usage: tap for details">usage…</button>
-      <div id="status" aria-live="polite"></div>
-      <button type="button" id="menu-btn" aria-label="Sessions">☰</button>
-      <div id="fontctl">
-        <button type="button" id="font-dec" aria-label="Smaller text">A−</button>
-        <button type="button" id="font-inc" aria-label="Larger text">A+</button>
+      <aside id="left"></aside>
+      <div id="main">
+        <header id="topbar">
+          <button type="button" id="menu-btn" class="tb-btn" aria-label="Sessions"></button>
+          <div id="title">
+            <span id="title-name"></span>
+            <span id="status" aria-live="polite"></span>
+          </div>
+          <div id="viewtoggle" role="group" aria-label="View" hidden>
+            <button type="button" data-view="chat">Chat</button>
+            <button type="button" data-view="term">Terminal</button>
+          </div>
+          <button type="button" id="panel-btn" class="tb-btn" aria-label="Session details"></button>
+        </header>
+        <button type="button" id="usage" aria-label="Plan usage: tap for details">usage…</button>
+        <div id="term"></div>
+        <div id="chat" hidden></div>
+        <div id="stopped-bar" class="bar" hidden></div>
+        <div id="prompt-bar" class="bar" hidden></div>
+        <div id="keybar" role="toolbar" aria-label="Terminal keys"></div>
       </div>
-      <div id="viewtoggle" role="group" aria-label="View" hidden>
-        <button type="button" data-view="chat">Chat</button>
-        <button type="button" data-view="term">Terminal</button>
-      </div>
-      <div id="term"></div>
-      <div id="chat" hidden></div>
-      <div id="stopped-bar" class="bar" hidden></div>
-      <div id="prompt-bar" class="bar" hidden></div>
-      <div id="keybar" role="toolbar" aria-label="Terminal keys"></div>
+      <aside id="right"></aside>
+      <div id="scrim"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

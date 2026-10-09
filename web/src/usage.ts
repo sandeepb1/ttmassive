@@ -1,5 +1,5 @@
-// Plan-limit usage: a one-line strip that is always on screen, and a panel that opens when
-// you tap it. The numbers come from `/api/usage`; the server decides how fresh they are.
+// Plan-limit usage: a one-line strip that is always on screen, and the full numbers, which the
+// right sidebar shows. The numbers come from `/api/usage`; the server decides how fresh they are.
 
 import { el } from './dom';
 import {
@@ -16,7 +16,7 @@ import {
 } from './usage-format';
 
 const POLL_MS = 60_000;
-/** While the panel is open, redraw this often so the countdowns keep moving. */
+/** While the numbers are on screen, redraw this often so the countdowns keep moving. */
 const TICK_MS = 15_000;
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -36,36 +36,19 @@ function meter(label: string, w: LimitWindow): HTMLElement {
 }
 
 export class UsageView {
-  private panel = el('aside', 'drawer usage-panel');
-  private body = el('div', 'usage-body');
+  /** The numbers in full; the right sidebar puts this on screen. */
+  readonly body = el('div', 'usage-body');
   private snap: UsageSnapshot | null = null;
   private unreachable = false;
   private pollTimer = 0;
   private tickTimer = 0;
   private inflight = false;
+  private watching = false;
 
   constructor(
     private strip: HTMLElement,
-    host: HTMLElement,
     private onUnauthorized: () => void,
   ) {
-    this.panel.hidden = true;
-    this.panel.setAttribute('aria-label', 'Plan usage');
-
-    const head = el('div', 'drawer-head');
-    head.append(el('strong', undefined, 'Plan usage'));
-    const close = el('button', 'drawer-x', '×');
-    close.type = 'button';
-    close.setAttribute('aria-label', 'Close');
-    close.addEventListener('click', () => this.hide());
-    head.append(close);
-
-    const refresh = el('button', 'drawer-logout', 'Refresh now');
-    refresh.type = 'button';
-    refresh.addEventListener('click', () => void this.load(true));
-
-    this.panel.append(head, this.body, refresh);
-    host.append(this.panel);
     this.render();
   }
 
@@ -79,7 +62,7 @@ export class UsageView {
   stop() {
     window.clearInterval(this.pollTimer);
     this.pollTimer = 0;
-    this.hide();
+    this.watch(false);
   }
 
   /** Back on screen after the tab slept: timers were throttled, so catch up now. */
@@ -87,22 +70,21 @@ export class UsageView {
     if (this.pollTimer) void this.load(false);
   }
 
-  toggle() {
-    if (this.panel.hidden) this.show();
-    else this.hide();
+  /** The full numbers are on screen: refresh them now and keep the countdowns moving. */
+  watch(on: boolean) {
+    if (on === this.watching) return;
+    this.watching = on;
+    window.clearInterval(this.tickTimer);
+    if (on) {
+      this.render();
+      void this.load(true);
+      this.tickTimer = window.setInterval(() => this.render(), TICK_MS);
+    }
   }
 
-  show() {
-    this.panel.hidden = false;
-    this.render();
+  /** Fetch fresh numbers now. */
+  refreshNow() {
     void this.load(true);
-    window.clearInterval(this.tickTimer);
-    this.tickTimer = window.setInterval(() => this.render(), TICK_MS);
-  }
-
-  hide() {
-    this.panel.hidden = true;
-    window.clearInterval(this.tickTimer);
   }
 
   /** What a session has used so far, for the session list. */
@@ -131,7 +113,7 @@ export class UsageView {
 
   private render() {
     this.renderStrip();
-    if (!this.panel.hidden) this.renderPanel();
+    if (this.watching) this.renderPanel();
   }
 
   private renderStrip() {

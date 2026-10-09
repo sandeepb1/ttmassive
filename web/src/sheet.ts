@@ -2,6 +2,7 @@
 // show a message in it, and call the session's API.
 
 import { el } from './dom';
+import { dragToDismiss } from './gestures';
 
 export type CallResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -32,6 +33,10 @@ export abstract class Sheet {
     x.addEventListener('click', () => this.close());
     head.append(x);
     this.sheet.append(head, this.body);
+    dragToDismiss(this.sheet, head, () => {
+      this.sheet.style.transform = '';
+      this.close();
+    });
   }
 
   /** Put the sheet on screen. */

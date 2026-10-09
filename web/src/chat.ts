@@ -27,6 +27,7 @@ import { MoreSheet } from './more-sheet';
 import { ResumeSheet } from './resume-sheet';
 import type { QuestionRequest } from './question-form';
 import { el } from './dom';
+import { tap } from './haptics';
 
 const POLL_MS = 1000;
 /** While a session is not yet known to be chat-capable, look again this often. */
@@ -41,7 +42,26 @@ export interface ChatHooks {
   onUnauthorized: () => void;
   /** Whether this session can show a chat at all (a Claude or Codex session). */
   onEligible: (eligible: boolean) => void;
+  /** The model, mode or agent changed: for the session details in the right sidebar. */
+  onInfo?: (info: ChatInfo) => void;
+  /** Where sheets go. They must stay visible while the terminal is showing, so not the chat itself. */
+  sheetHost?: HTMLElement;
 }
+
+/** What the right sidebar shows about this conversation. */
+export interface ChatInfo {
+  agent: 'claude' | 'codex' | null;
+  eligible: boolean;
+  /** Model and reasoning level as the chip shows them, or ''. */
+  model: string;
+  /** Plan / accept-edits / etc. as the chip shows it, or ''. */
+  mode: string;
+  /** Started with permission checks skipped. */
+  yolo: boolean;
+}
+
+/** Where each session's chat was scrolled to when you left it, so coming back doesn't lose your place. */
+const scrollMemory = new Map<string, number>();
 
 interface Suggestion {
   label: string;
@@ -115,6 +135,9 @@ export class ChatView {
   private sending = false;
   private sent: Sent[] = [];
   private ro: ResizeObserver;
+  private get sheetHost(): HTMLElement {
+    return this.hooks.sheetHost ?? this.host;
+  }
 
   constructor(
     private host: HTMLElement,
@@ -129,6 +152,15 @@ export class ChatView {
     this.jump.hidden = true;
     this.jump.setAttribute('aria-label', 'Jump to the latest message');
     this.scroller.append(this.list, this.sentBox, this.typing, this.empty);
+    // Until the first response arrives, show the shape of a conversation instead of a blank page.
+    this.empty.classList.add('skeleton');
+    this.empty.replaceChildren(
+      ...[86, 58, 72].map((w) => {
+        const line = el('div', 'sk-line');
+        line.style.width = `${w}%`;
+        return line;
+      }),
+    );
     this.scroller.addEventListener('scroll', () => {
       this.stuck = this.scroller.scrollHeight - this.scroller.scrollTop - this.scroller.clientHeight < STICK_PX;
       if (this.stuck) this.jump.hidden = true;
@@ -208,7 +240,10 @@ export class ChatView {
     this.stopBtn.type = 'button';
     this.stopBtn.hidden = true;
     this.stopBtn.setAttribute('aria-label', 'Stop');
-    this.stopBtn.addEventListener('click', () => void this.answer('interrupt', null));
+    this.stopBtn.addEventListener('click', () => {
+      tap();
+      void this.answer('interrupt', null);
+    });
     this.sendBtn.type = 'submit';
     this.sendBtn.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the keyboard open
     this.sendBtn.setAttribute('aria-label', 'Send');
@@ -264,8 +299,9 @@ export class ChatView {
     this.shown = true;
     this.host.hidden = false;
     this.grow(); // a draft written while hidden needs its height now that it can be measured
-    this.stuck = true;
-    void this.poll().then(() => this.scrollToBottom());
+    const saved = scrollMemory.get(this.session);
+    this.stuck = saved === undefined;
+    void this.poll().then(() => (saved === undefined ? this.scrollToBottom() : this.restoreScroll(saved)));
     window.clearInterval(this.timer);
     this.timer = window.setInterval(() => {
       if (!document.hidden) void this.poll();
@@ -273,6 +309,7 @@ export class ChatView {
   }
 
   hide() {
+    this.remember();
     this.shown = false;
     this.host.hidden = true;
     window.clearInterval(this.timer);
@@ -284,6 +321,7 @@ export class ChatView {
   }
 
   dispose() {
+    if (this.shown) this.remember();
     this.disposed = true;
     setAgentAccent(null);
     window.clearInterval(this.timer);
@@ -374,11 +412,22 @@ export class ChatView {
     else if (added) this.jump.hidden = false;
   }
 
+  private emitInfo() {
+    this.hooks.onInfo?.({
+      agent: this.agent,
+      eligible: this.eligible,
+      model: chipFor(this.store),
+      mode: modeChipText(this.store),
+      yolo: this.store.yolo,
+    });
+  }
+
   private refreshChip() {
     const label = chipFor(this.store);
     this.chip.textContent = label;
     this.chip.hidden = label === '';
     this.chip.title = this.agent ? 'Change model or effort' : "Switching the model isn't available here";
+    this.emitInfo();
   }
 
   private refreshMode() {
@@ -388,10 +437,24 @@ export class ChatView {
     this.modeChip.className = `c-mode m-${this.store.mode ?? 'none'}${this.store.yolo ? ' yolo' : ''}`;
     this.modeChip.title = this.store.yolo ? 'Started with permission checks skipped. Tap to change mode.' : 'Change mode';
     this.moreBtn.hidden = this.agent === null;
+    this.emitInfo();
+  }
+
+  openModelPicker() {
+    this.openPicker();
+  }
+  openModeSheet() {
+    this.openModes();
+  }
+  openMoreSheet() {
+    this.openMore();
+  }
+  openResumeSheet() {
+    this.openResume();
   }
 
   private openModes() {
-    this.modeSheet ??= new ModeSheet(this.host, this.session, {
+    this.modeSheet ??= new ModeSheet(this.sheetHost, this.session, {
       onUnauthorized: this.hooks.onUnauthorized,
       onChanged: (mode) => {
         const label = this.store.modes.find((m) => m.id === mode)?.label ?? mode;
@@ -406,7 +469,7 @@ export class ChatView {
   private openMore() {
     const agent = this.agent;
     if (agent !== 'claude' && agent !== 'codex') return;
-    this.moreSheet ??= new MoreSheet(this.host, this.session, {
+    this.moreSheet ??= new MoreSheet(this.sheetHost, this.session, {
       onUnauthorized: this.hooks.onUnauthorized,
       onEffort: (level) => {
         setOverride(this.store, { effort: level });
@@ -423,7 +486,7 @@ export class ChatView {
   }
 
   private openResume() {
-    this.resumeSheet ??= new ResumeSheet(this.host, this.session, {
+    this.resumeSheet ??= new ResumeSheet(this.sheetHost, this.session, {
       onUnauthorized: this.hooks.onUnauthorized,
       onResumed: (text) => {
         this.say(text);
@@ -457,7 +520,7 @@ export class ChatView {
   private openPicker() {
     const agent = this.agent;
     if (agent !== 'claude' && agent !== 'codex') return this.say("Switching the model isn't available here.");
-    this.picker ??= new ModelPicker(this.host, this.session, agent, {
+    this.picker ??= new ModelPicker(this.sheetHost, this.session, agent, {
       onUnauthorized: this.hooks.onUnauthorized,
       onChanged: (change, message) => {
         setOverride(this.store, change);
@@ -471,11 +534,27 @@ export class ChatView {
   private renderEmpty() {
     const none = this.store.items.length === 0 && this.sent.length === 0;
     this.empty.hidden = !none;
+    this.empty.classList.remove('skeleton');
     this.empty.textContent = !this.eligible
       ? 'Chat is only available for Claude and Codex sessions.'
       : !this.ready
         ? 'Waiting for the first message. The conversation appears here once the agent has started it.'
         : 'No messages yet.';
+  }
+
+  /** Note where the conversation is scrolled to (or that it is at the end) while it can be measured. */
+  private remember() {
+    if (!this.shown) return;
+    if (this.stuck) scrollMemory.delete(this.session);
+    else scrollMemory.set(this.session, this.scroller.scrollTop);
+  }
+
+  private restoreScroll(top: number) {
+    requestAnimationFrame(() => {
+      this.scroller.scrollTop = top;
+      this.stuck = this.scroller.scrollHeight - this.scroller.scrollTop - this.scroller.clientHeight < STICK_PX;
+      this.jump.hidden = this.stuck;
+    });
   }
 
   private scrollToBottom() {
@@ -651,6 +730,7 @@ export class ChatView {
   }
 
   private async send() {
+    tap();
     const text = this.input.value.trim();
     if (!text || this.blocked || this.sending) return;
     // `/resume` opens a list in the agent: show that list here instead of sending a message.

@@ -4,6 +4,7 @@
 
 import { stepEffort } from './chat-model';
 import { el } from './dom';
+import { warn } from './haptics';
 import { Sheet, row } from './sheet';
 
 interface PermRow {
@@ -130,7 +131,10 @@ export class MoreSheet extends Sheet {
     const no = el('button', 'confirm-no', 'Cancel');
     yes.type = 'button';
     no.type = 'button';
-    yes.addEventListener('click', () => void go());
+    yes.addEventListener('click', () => {
+      if (danger) warn();
+      void go();
+    });
     no.addEventListener('click', cancel);
     const actions = el('div', 'confirm-actions');
     actions.append(no, yes);

@@ -2,19 +2,29 @@ import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/jetbrains-mono/wght.css';
 import './style.css';
 import { initTheme } from './theme';
+import { initUiScale } from './scale';
 import { TerminalSession } from './term';
-import { SessionDrawer } from './sessions';
+import { SessionSidebar } from './sessions';
 import { PromptBar, StoppedBar } from './bars';
 import { UsageView } from './usage';
 import { ChatView } from './chat';
+import { Layout } from './layout';
+import { edgeSwipe } from './gestures';
+import { RightBar } from './rightbar';
+import { SettingsSheet } from './settings';
+import { icon } from './icons';
 import { chooseView } from './chat-model';
 import type { Analysis } from './protocol';
 
 initTheme();
+initUiScale();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const layout = new Layout($('app'));
 let session: TerminalSession | null = null;
-let drawer: SessionDrawer | null = null;
+let sidebar: SessionSidebar | null = null;
+let rightbar: RightBar | null = null;
+let settings: SettingsSheet | null = null;
 let usage: UsageView | null = null;
 let chat: ChatView | null = null;
 let view: 'chat' | 'term' = 'term';
@@ -65,6 +75,8 @@ function showLogin() {
   chat?.dispose();
   chat = null;
   usage?.stop();
+  sidebar?.setActive(false);
+  layout.dismissOverlays();
   $('app').hidden = true;
   $('login').hidden = false;
   $<HTMLInputElement>('pw').focus();
@@ -73,7 +85,9 @@ function showLogin() {
 let connMsg = '';
 let activityMsg = '';
 function renderStatus() {
-  $('status').textContent = connMsg || activityMsg;
+  const text = connMsg || activityMsg;
+  $('status').textContent = text;
+  rightbar?.setStatus(text);
 }
 
 const ACTIVITY: Record<Analysis['activity'], string> = {
@@ -93,8 +107,21 @@ function openSession(name: string) {
   viewChosen = false;
   $('viewtoggle').hidden = true;
   setView('term', false);
-  const thisChat = new ChatView($('chat'), name, {
+  $('title-name').textContent = name;
+  rightbar?.setSession(name);
+  sidebar?.reload();
+  const thisChat: ChatView = new ChatView($('chat'), name, {
     onUnauthorized: showLogin,
+    sheetHost: $('main'),
+    onInfo: (info) => {
+      if (chat !== thisChat) return;
+      rightbar?.setInfo(info, {
+        model: () => thisChat.openModelPicker(),
+        mode: () => thisChat.openModeSheet(),
+        more: () => thisChat.openMoreSheet(),
+        resume: () => thisChat.openResumeSheet(),
+      });
+    },
     onEligible: (eligible) => {
       if (chat !== thisChat) return; // a session we have already left
       $('viewtoggle').hidden = !eligible;
@@ -157,13 +184,46 @@ async function logout() {
 function showApp() {
   $('login').hidden = true;
   $('app').hidden = false;
-  usage ??= new UsageView($('usage'), $('app'), showLogin);
-  drawer ??= new SessionDrawer($('app'), () => current, openSession, showLogin, () => void logout(), (id) =>
-    usage?.tokensLabel(id),
+  usage ??= new UsageView($('usage'), showLogin);
+  sidebar ??= new SessionSidebar(
+    $('left'),
+    () => current,
+    openSession,
+    showLogin,
+    { navigated: () => layout.dismissOverlays(), collapse: () => layout.toggle('left'), openSettings },
+    (id) => usage?.tokensLabel(id),
   );
-  usage.start();
+  rightbar ??= new RightBar($('right'), usage.body, {
+    collapse: () => layout.toggle('right'),
+    refreshUsage: () => usage?.refreshNow(),
+  });
+  usage.start(); // before syncPanels: start() resets what the sidebar asked the usage view to watch
+  syncPanels();
   openSession(sessionName());
 }
+
+function openSettings() {
+  layout.dismissOverlays(); // a sheet would sit under an open sidebar
+  settings ??= new SettingsSheet($('app'), {
+    onUnauthorized: showLogin,
+    logout: () => void logout(),
+    currentSession: () => current,
+    terminalFont: () => session?.font ?? null,
+    setTerminalFont: (px) => session?.setFont(px),
+  });
+  settings.open();
+}
+
+/** Poll and refresh only what is on screen, and keep hidden sidebars out of the tab order. */
+function syncPanels() {
+  const left = layout.isVisible('left');
+  const right = layout.isVisible('right');
+  sidebar?.setActive(left);
+  usage?.watch(right && !$('app').hidden);
+  $('left').inert = !left;
+  $('right').inert = !right;
+}
+layout.onChange(syncPanels);
 
 $<HTMLFormElement>('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -182,14 +242,6 @@ $<HTMLFormElement>('login-form').addEventListener('submit', async (e) => {
       r?.status === 429 ? 'Too many attempts, wait a minute' : r ? 'Wrong password' : 'Server unreachable';
   }
 });
-
-for (const [id, delta] of [['font-dec', -1], ['font-inc', 1]] as const) {
-  $(id).addEventListener('pointerdown', (e) => {
-    e.preventDefault(); // keep the soft keyboard up
-    session?.bumpFont(delta);
-    session?.focus();
-  });
-}
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
@@ -210,15 +262,25 @@ for (const b of $('viewtoggle').querySelectorAll('button')) {
 window.addEventListener('hashchange', () => {
   if (sessionName() !== current && !$('app').hidden) openSession(sessionName());
 });
-$('menu-btn').addEventListener('pointerdown', (e) => {
-  e.preventDefault(); // don't steal focus from the terminal
-  usage?.hide();
-  drawer?.toggle();
+// Sidebar buttons: pointerdown + preventDefault so the terminal keeps focus and the keyboard stays up.
+$('menu-btn').append(icon('menu'));
+$('panel-btn').append(icon('panel-right'));
+for (const [id, side] of [['menu-btn', 'left'], ['panel-btn', 'right']] as const) {
+  $(id).addEventListener('pointerdown', (e) => e.preventDefault());
+  $(id).addEventListener('click', () => layout.toggle(side));
+}
+$('usage').addEventListener('pointerdown', (e) => e.preventDefault());
+$('usage').addEventListener('click', () => layout.set('right', true));
+$('scrim').addEventListener('click', () => layout.dismissOverlays());
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.querySelector('.sheet')) layout.dismissOverlays();
 });
-$('usage').addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  drawer?.hide();
-  usage?.toggle();
+edgeSwipe({
+  app: $('app'),
+  layout,
+  panels: { left: $('left'), right: $('right') },
+  scrim: $('scrim'),
+  blocked: () => !!$('app').hidden || document.querySelector('.sheet') !== null,
 });
 
 // iOS Safari ignores interactive-widget: size the app to the *visual* viewport so the
@@ -240,10 +302,7 @@ if ('serviceWorker' in navigator) {
     const d = e.data as { type?: string; session?: string } | null;
     if (d?.type === 'open' && d.session && !$('app').hidden) openSession(d.session);
     // A usage-limit warning was tapped: show the numbers instead of a session.
-    if (d?.type === 'usage' && !$('app').hidden) {
-      drawer?.hide();
-      usage?.show();
-    }
+    if (d?.type === 'usage' && !$('app').hidden) layout.set('right', true);
   });
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }

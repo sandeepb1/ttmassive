@@ -1,8 +1,8 @@
-// Session drawer: list, create from presets, rename, kill, switch.
+// The left sidebar: list sessions, create from presets, rename, kill, switch.
 
 import { el } from './dom';
-import { ThemePicker } from './theme-picker';
-import { disablePush, enablePush, pushState, sendTest, type PushState } from './push';
+import { warn } from './haptics';
+import { icon } from './icons';
 
 export interface SessionView {
   id: string;
@@ -69,108 +69,80 @@ interface RecentDir {
   short: string;
 }
 
-export class SessionDrawer {
-  private root = el('aside', 'drawer');
+export interface SidebarHooks {
+  /** A session was chosen or started: let an overlay sidebar get out of the way. */
+  navigated: () => void;
+  /** The header's hide button. */
+  collapse: () => void;
+  openSettings: () => void;
+}
+
+/** The left sidebar: your sessions, a way to start new ones, and the way into Settings. */
+export class SessionSidebar {
   private list = el('div', 'drawer-list');
   private presets = el('div', 'drawer-presets');
   private msg = el('div', 'drawer-msg');
-  private notif = el('div', 'drawer-notif');
   private timer = 0;
+  private active = false;
   private presetsLoaded = false;
   /** The "skip permissions" switch. Off to start with, and off again after every launch. */
   private skip = false;
   private presetList: Preset[] = [];
   private dirs: RecentDir[] = [];
   private groupList: Group[] = [];
+  /** Rows whose pin / edit / remove buttons are showing. Kept across the list's refreshes. */
+  private expanded = new Set<string>();
 
   constructor(
-    host: HTMLElement,
+    private root: HTMLElement,
     private current: () => string,
     private open: (id: string) => void,
     private onUnauthorized: () => void,
-    private onLogout: () => void,
+    private hooks: SidebarHooks,
     /** What a session has used so far, e.g. "12k in · 4.1k out", when known. */
     private tokens: (id: string) => string | undefined = () => undefined,
   ) {
-    this.root.hidden = true;
+    this.root.classList.add('sidebar', 'sidebar-left');
     this.root.setAttribute('aria-label', 'Sessions');
+    this.presets.hidden = true;
 
-    const head = el('div', 'drawer-head');
-    head.append(el('strong', undefined, 'Sessions'));
-    const close = el('button', 'drawer-x', '×');
-    close.type = 'button';
-    close.setAttribute('aria-label', 'Close');
-    close.addEventListener('click', () => this.hide());
-    head.append(close);
+    const head = el('div', 'sb-head');
+    const add = el('button', 'icon sb-new');
+    add.type = 'button';
+    add.setAttribute('aria-label', 'New session');
+    add.append(icon('plus'));
+    add.addEventListener('click', () => (this.presets.hidden = !this.presets.hidden));
+    const collapse = el('button', 'icon sb-collapse');
+    collapse.type = 'button';
+    collapse.setAttribute('aria-label', 'Hide sessions');
+    collapse.append(icon('panel-left'));
+    collapse.addEventListener('click', () => this.hooks.collapse());
+    head.append(el('strong', 'sb-brand', 'ttm'), el('span', 'sb-spacer'), add, collapse);
 
-    const logout = el('button', 'drawer-logout', 'Sign out');
-    logout.type = 'button';
-    logout.addEventListener('click', () => {
-      this.hide();
-      this.onLogout();
-    });
+    const foot = el('div', 'sb-foot');
+    const settings = el('button', 'sb-settings');
+    settings.type = 'button';
+    settings.append(icon('sliders'), el('span', undefined, 'Settings'));
+    settings.addEventListener('click', () => this.hooks.openSettings());
+    foot.append(settings);
 
-    this.root.append(head, this.presets, this.notif, new ThemePicker().root, this.msg, this.list, logout);
-    host.append(this.root);
+    this.root.append(head, this.presets, this.msg, this.list, foot);
   }
 
-  toggle() {
-    if (this.root.hidden) this.show();
-    else this.hide();
-  }
-
-  private show() {
-    this.root.hidden = false;
-    void this.renderNotif();
-    void this.refresh();
-    this.timer = window.setInterval(() => void this.refresh(), POLL_MS);
-  }
-
-  hide() {
-    this.root.hidden = true;
+  /** Poll the session list while the sidebar is on screen. */
+  setActive(on: boolean) {
+    if (on === this.active) return;
+    this.active = on;
     window.clearInterval(this.timer);
+    if (on) {
+      void this.refresh();
+      this.timer = window.setInterval(() => void this.refresh(), POLL_MS);
+    }
   }
 
-  private async renderNotif() {
-    const state: PushState = await pushState().catch(() => 'unsupported');
-    const label = el('div', 'drawer-label', 'Notifications');
-    const row = el('div', 'drawer-chips');
-    const text: Record<PushState, string> = {
-      unsupported: 'Not supported here (needs HTTPS or localhost)',
-      denied: 'Blocked in browser settings',
-      off: 'Off',
-      on: 'On: you will be alerted when an agent needs you',
-    };
-    row.append(el('span', 'notif-state', text[state]));
-    if (state === 'off' || state === 'on') {
-      const toggle = el('button', 'chip', state === 'on' ? 'Turn off' : 'Turn on');
-      toggle.type = 'button';
-      toggle.addEventListener('click', async () => {
-        try {
-          if (state === 'on') await disablePush();
-          else await enablePush();
-          this.say('');
-        } catch (e) {
-          this.say(e instanceof Error ? e.message : 'Failed');
-        }
-        await this.renderNotif();
-      });
-      row.append(toggle);
-    }
-    if (state === 'on') {
-      const test = el('button', 'chip', 'Send test');
-      test.type = 'button';
-      test.addEventListener('click', async () => {
-        try {
-          const n = await sendTest(this.current());
-          this.say(n === 0 ? 'No devices subscribed' : `Test sent to ${n} device${n === 1 ? '' : 's'}`);
-        } catch (e) {
-          this.say(e instanceof Error ? e.message : 'Failed');
-        }
-      });
-      row.append(test);
-    }
-    this.notif.replaceChildren(label, row);
+  /** Refresh now, e.g. after switching session so the highlight moves. */
+  reload() {
+    void this.refresh();
   }
 
   private say(text: string) {
@@ -278,7 +250,7 @@ export class SessionDrawer {
       const r = await api(`/api/groups/${encodeURIComponent(name)}/start`, { method: 'POST' });
       if (!r.ok) return this.say(await r.text());
       const { ids } = (await r.json()) as { ids: string[] };
-      this.hide();
+      this.hooks.navigated();
       if (ids[0]) this.open(ids[0]);
     });
   }
@@ -286,12 +258,13 @@ export class SessionDrawer {
   private async create(preset?: string, yolo = false, dir?: string) {
     // One launch at a time: the switch goes back off whatever happens.
     this.skip = false;
+    this.presets.hidden = true;
     this.renderPresets(this.presetList, this.groupList);
     await this.guard(async () => {
       const r = await api('/api/sessions', { method: 'POST', body: JSON.stringify({ preset, yolo, dir }) });
       if (!r.ok) return this.say(await r.text());
       const { id } = (await r.json()) as { id: string };
-      this.hide();
+      this.hooks.navigated();
       this.open(id);
     });
   }
@@ -299,6 +272,7 @@ export class SessionDrawer {
   private renderList(sessions: SessionView[]) {
     if (sessions.length === 0) {
       this.list.replaceChildren(el('div', 'drawer-empty', 'No sessions yet'));
+      this.presets.hidden = false;
       return;
     }
     this.list.replaceChildren(...sessions.map((s) => this.row(s)));
@@ -336,37 +310,53 @@ export class SessionDrawer {
       main.append(tags);
     }
     main.addEventListener('click', () => {
-      this.hide();
+      this.hooks.navigated();
       this.open(s.id);
     });
 
-    const actions: HTMLElement[] = [];
+    const inline: HTMLElement[] = [];
+    const tools: HTMLElement[] = [];
     if (s.status !== 'running') {
       const label = s.resumable ? 'Resume' : 'Restore';
       const b = el('button', 'chip chip-go', label);
       b.type = 'button';
       b.addEventListener('click', () => void this.restore(s.id, false));
-      actions.push(b);
+      inline.push(b);
     }
     const pin = el('button', 'icon', s.pinned ? '★' : '☆');
     pin.type = 'button';
     pin.setAttribute('aria-label', s.pinned ? `Unpin ${s.id}` : `Pin ${s.id}`);
     pin.addEventListener('click', () => void this.patchMeta(s.id, { pinned: !s.pinned }));
-    actions.push(pin);
+    tools.push(pin);
 
     const edit = el('button', 'icon', '✎');
     edit.type = 'button';
     edit.setAttribute('aria-label', `Edit ${s.id}`);
     edit.addEventListener('click', () => void this.edit(s));
-    actions.push(edit);
+    tools.push(edit);
 
     const kill = el('button', 'icon danger', '✕');
     kill.type = 'button';
     kill.setAttribute('aria-label', `Remove ${s.id}`);
     kill.addEventListener('click', () => void this.kill(s));
-    actions.push(kill);
+    tools.push(kill);
 
-    row.append(dot, main, ...actions);
+    const more = el('button', 'icon srow-more', '⋯');
+    more.type = 'button';
+    more.setAttribute('aria-label', `Actions for ${s.id}`);
+    more.setAttribute('aria-expanded', String(this.expanded.has(s.id)));
+    more.addEventListener('click', () => {
+      const open = !this.expanded.has(s.id);
+      if (open) this.expanded.add(s.id);
+      else this.expanded.delete(s.id);
+      row.classList.toggle('expanded', open);
+      more.setAttribute('aria-expanded', String(open));
+    });
+    const toolRow = el('div', 'srow-tools');
+    toolRow.append(...tools);
+    if (this.expanded.has(s.id)) row.classList.add('expanded');
+
+    row.append(dot, main, ...inline, more, toolRow);
     return row;
   }
 
@@ -377,7 +367,7 @@ export class SessionDrawer {
         body: JSON.stringify({ fresh }),
       });
       if (!r.ok) return this.say(await r.text());
-      this.hide();
+      this.hooks.navigated();
       this.open(id);
     });
   }
@@ -420,6 +410,7 @@ export class SessionDrawer {
         ? `Remove "${s.id}" and its saved output? It can't be restored afterwards.`
         : `Kill session "${s.id}"? The process inside will be terminated and it can't be restored.`;
     if (!window.confirm(msg)) return;
+    warn();
     await this.guard(async () => {
       const r = await api(`/api/sessions/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
       if (!r.ok) return this.say(await r.text());

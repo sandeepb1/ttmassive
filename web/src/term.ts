@@ -107,7 +107,15 @@ export class TerminalSession {
   }
 
   bumpFont(delta: number) {
-    const next = Math.min(FONT_MAX, Math.max(FONT_MIN, (this.term.options.fontSize ?? 14) + delta));
+    this.setFont((this.term.options.fontSize ?? 14) + delta);
+  }
+
+  get font() {
+    return { size: this.term.options.fontSize ?? 14, min: FONT_MIN, max: FONT_MAX };
+  }
+
+  setFont(px: number) {
+    const next = Math.min(FONT_MAX, Math.max(FONT_MIN, px));
     this.term.options.fontSize = next;
     this.fit.fit();
     try {
