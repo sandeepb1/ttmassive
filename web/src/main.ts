@@ -10,6 +10,8 @@ import { edgeSwipe } from './gestures';
 import { RightBar } from './rightbar';
 import { SettingsSheet } from './settings';
 import { Pane, type PaneEvents } from './pane';
+import { AgentSheet } from './agent-sheet';
+import type { SubAgent } from './agents';
 
 initTheme();
 initUiScale();
@@ -50,7 +52,7 @@ const paneEvents: PaneEvents = {
     switch (what) {
       case 'name':
         updateHash();
-        rightbar?.setSession(p.name);
+        rightbar?.setSession(p.title);
         rightbar?.setStatus(p.statusText);
         break;
       case 'status':
@@ -71,6 +73,7 @@ const paneEvents: PaneEvents = {
   onClose: (p) => closePane(p),
   onMenu: () => toggleList(),
   onPanel: () => layout.toggle('right'),
+  onOpenAgent: (session, a) => openAgent(session, a),
 };
 
 function createPane(): Pane {
@@ -88,7 +91,7 @@ function focus(p: Pane) {
   focused = p;
   p.setFocused(true);
   setAgentAccent(p.agent);
-  rightbar?.setSession(p.name);
+  rightbar?.setSession(p.title);
   rightbar?.setStatus(p.statusText);
   rightbar?.setInfo(p.info, p.actions);
   rightbar?.setData(p.data);
@@ -99,6 +102,20 @@ function focus(p: Pane) {
 
 function updateHash() {
   if (focused && location.hash.slice(1) !== focused.name) history.replaceState(null, '', `#${encodeURIComponent(focused.name)}`);
+}
+
+/**
+ * Show a helper agent's transcript: beside the conversation when there is room (replacing the other
+ * pane if two are open), or in a sheet over it. From inside a helper's own pane, in place.
+ */
+function openAgent(session: string, a: SubAgent) {
+  if (!canSplit || !focused) {
+    new AgentSheet($('app'), session, a, { onUnauthorized: showLogin, open: (c) => openAgent(session, c) }).open();
+    return;
+  }
+  const target = focused.isAgent ? focused : (panes.find((p) => p !== focused) ?? createPane());
+  target.openAgent(session, a); // the conversation you were reading keeps focus
+  applySplit();
 }
 
 /** Open a session in the focused pane. */
@@ -176,7 +193,8 @@ function toggleList() {
 
 function saveSplit() {
   // On a screen too narrow for two panes the app shows one: don't let that wipe the split you had.
-  if (!canSplit) return;
+  // A helper's transcript is a passing view, not part of the layout to come back to.
+  if (!canSplit || panes.some((p) => p.isAgent)) return;
   try {
     if (panes.length === 2) {
       localStorage.setItem(SPLIT_KEY, JSON.stringify({ names: panes.map((p) => p.name), focus: panes.indexOf(focused!) }));
@@ -241,6 +259,7 @@ function showApp() {
       collapse: () => toggleList(),
       openSettings,
       openInSplit,
+      openAgent,
       shown: () => panes.map((p) => p.name),
     },
     (id) => usage?.tokensLabel(id),
@@ -249,6 +268,9 @@ function showApp() {
     collapse: () => layout.toggle('right'),
     refreshUsage: () => usage?.refreshNow(),
     search: (q) => focused?.search(q) ?? [],
+    openAgent: (a) => {
+      if (focused) openAgent(focused.name, a);
+    },
     jump: (id) => {
       layout.dismissOverlays(); // on a phone the sidebar would cover the message
       focused?.showMessage(id);

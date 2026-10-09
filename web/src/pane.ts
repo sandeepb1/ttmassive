@@ -2,6 +2,8 @@
 // bar. The page shows one pane, or two side by side on a wide screen. Each pane has its own
 // Chat/Terminal choice and its own agent accent; the sidebars describe whichever pane is focused.
 
+import { AgentView } from './agent-view';
+import type { SubAgent } from './agents';
 import { PromptBar, StoppedBar } from './bars';
 import { ChatView, type ChatInfo, type ChatPanelData } from './chat';
 import { chooseView } from './chat-model';
@@ -22,6 +24,8 @@ export interface PaneEvents {
   onClose: (pane: Pane) => void;
   onMenu: () => void;
   onPanel: () => void;
+  /** A helper agent's card was opened in `session`. */
+  onOpenAgent: (session: string, agent: SubAgent) => void;
 }
 
 const ACTIVITY: Record<Analysis['activity'], string> = {
@@ -55,8 +59,12 @@ function headButton(cls: string, label: string, glyph: Parameters<typeof icon>[0
 
 export class Pane {
   readonly el = el('section', 'pane');
-  /** The session this pane shows, or '' before one is opened. */
+  /** The session this pane shows (or, in agent mode, the session the helper belongs to). */
   name = '';
+  /** What to call it: the session's name, or the helper's description. */
+  title = '';
+  /** The pane shows a helper agent's transcript instead of a session. */
+  isAgent = false;
   view: 'chat' | 'term' = 'term';
   agent: 'claude' | 'codex' | null = null;
   info: ChatInfo | null = null;
@@ -73,6 +81,8 @@ export class Pane {
   private stoppedEl = el('div', 'bar p-stopped');
   private promptEl = el('div', 'bar p-prompt');
   private keybarEl = el('div', 'p-keybar');
+  private agentEl = el('div', 'p-agent');
+  private agentView: AgentView | null = null;
   private term: TerminalSession | null = null;
   private chat: ChatView | null = null;
   private promptBar: PromptBar | null = null;
@@ -88,6 +98,7 @@ export class Pane {
   constructor(private events: PaneEvents) {
     this.el.hidden = false;
     this.chatEl.hidden = true;
+    this.agentEl.hidden = true;
     this.stoppedEl.hidden = true;
     this.promptEl.hidden = true;
     this.keybarEl.setAttribute('role', 'toolbar');
@@ -119,7 +130,7 @@ export class Pane {
       headButton('p-panel', 'Session details', 'panel-right', () => events.onPanel()),
     );
 
-    this.el.append(head, this.termEl, this.chatEl, this.stoppedEl, this.promptEl, this.keybarEl);
+    this.el.append(head, this.termEl, this.chatEl, this.agentEl, this.stoppedEl, this.promptEl, this.keybarEl);
     // Capture, so a tap on a button inside still focuses the pane first.
     this.el.addEventListener('pointerdown', () => events.onActivate(this), { capture: true });
   }
@@ -128,9 +139,11 @@ export class Pane {
 
   /** Show `name` in this pane, replacing whatever it showed. */
   open(name: string) {
+    this.leaveAgent();
     this.term?.dispose();
     this.chat?.dispose();
     this.name = name;
+    this.title = name;
     this.viewChosen = false;
     this.agent = null;
     this.info = null;
@@ -148,6 +161,7 @@ export class Pane {
     const chat: ChatView = new ChatView(this.chatEl, name, {
       onUnauthorized: this.events.onUnauthorized,
       sheetHost: this.el,
+      onOpenAgent: (a) => this.events.onOpenAgent(name, a),
       onAgent: (agent) => {
         if (this.chat !== chat || agent === this.agent) return;
         this.agent = agent;
@@ -221,7 +235,49 @@ export class Pane {
     if (this.focused) term.focus();
   }
 
+  /** Show a helper agent's transcript here, in place of a session. */
+  openAgent(session: string, agent: SubAgent) {
+    this.leaveAgent();
+    this.term?.dispose();
+    this.chat?.dispose();
+    this.term = null;
+    this.chat = null;
+    this.promptBar = null;
+    this.stoppedBar = null;
+    this.isAgent = true;
+    this.name = session;
+    this.title = agent.description || agent.kind;
+    this.agent = null;
+    this.info = null;
+    this.actions = null;
+    this.data = null;
+    this.el.removeAttribute('data-agent');
+    this.el.classList.remove('chat-mode');
+    this.el.classList.add('agent-mode');
+    this.toggle.hidden = true;
+    this.agentEl.hidden = false;
+    this.nameEl.textContent = `${agent.kind === 'codex' ? 'Codex' : agent.kind}: ${this.title}`;
+    this.connMsg = `helper in ${session}`;
+    this.activityMsg = '';
+    this.renderStatus();
+    this.agentView = new AgentView(session, agent, {
+      onUnauthorized: this.events.onUnauthorized,
+      open: (child) => this.events.onOpenAgent(session, child),
+    });
+    this.agentEl.replaceChildren(this.agentView.el);
+    this.events.onChange(this, 'name');
+  }
+
+  private leaveAgent() {
+    this.agentView?.dispose();
+    this.agentView = null;
+    this.isAgent = false;
+    this.agentEl.hidden = true;
+    this.el.classList.remove('agent-mode');
+  }
+
   dispose() {
+    this.agentView?.dispose();
     window.clearTimeout(this.noticeTimer);
     this.term?.dispose();
     this.chat?.dispose();
@@ -303,5 +359,6 @@ export class Pane {
   nudge() {
     this.term?.nudge();
     this.chat?.nudge();
+    this.agentView?.nudge();
   }
 }

@@ -55,6 +55,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(session_upload).layer(DefaultBodyLimit::max(uploads::MAX_BYTES + 4096)),
         )
         .route("/api/sessions/{id}/attachments", get(session_attachments))
+        .route("/api/sessions/{id}/agents", get(session_agents))
+        .route("/api/sessions/{id}/agents/{aid}/chat", get(session_agent_chat))
         .route("/api/uploads/{uid}/{file}", get(get_upload))
         .route("/api/sessions/{id}/answer", post(session_answer))
         .route("/api/sessions/{id}/meta", post(session_meta))
@@ -436,6 +438,29 @@ async fn session_chat(State(st): State<Arc<AppState>>, Path(id): Path<String>, Q
     match crate::chat::snapshot(&st, &id, q.epoch, q.after.unwrap_or(0)).await {
         Ok(r) => ([(header::CACHE_CONTROL, "no-store")], Json(r)).into_response(),
         Err(e) => server_error(&e),
+    }
+}
+
+/// The helper agents (Claude's subagents, Codex's spawned threads) this conversation has started.
+async fn session_agents(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    ([(header::CACHE_CONTROL, "no-store")], Json(crate::chat::agents(&st, &id).await)).into_response()
+}
+
+/// One helper agent's whole transcript, polled like a conversation (`epoch`, `after`).
+async fn session_agent_chat(
+    State(st): State<Arc<AppState>>,
+    Path((id, aid)): Path<(String, String)>,
+    Query(q): Query<ChatQuery>,
+) -> Response {
+    if !valid_id(&id) || !crate::uploads::valid_component(&aid) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match crate::chat::agent_chat(&st, &id, &aid, q.epoch, q.after.unwrap_or(0)).await {
+        Some(r) => ([(header::CACHE_CONTROL, "no-store")], Json(r)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

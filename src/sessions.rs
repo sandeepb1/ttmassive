@@ -262,6 +262,8 @@ pub struct SessionView {
     pub activity: Option<Activity>,
     /// One line of the latest message of an agent session. Filled in by `enrich`.
     pub preview: Option<String>,
+    /// How many helper agents the session has running. Filled in by `enrich`.
+    pub running_subagents: u32,
 }
 
 pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
@@ -297,6 +299,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             branch: None,
             activity: None,
             preview: None,
+            running_subagents: 0,
             id: s.id.clone(),
         });
     }
@@ -334,6 +337,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             branch: None,
             activity: None,
             preview: None,
+            running_subagents: 0,
             id,
         });
     }
@@ -361,13 +365,15 @@ pub async fn enrich(st: &Arc<AppState>, views: &mut [SessionView]) {
             } else {
                 None
             };
-            (i, activity, crate::chat::preview(&st, &id).await)
+            let (preview, running) = crate::chat::overview(&st, &id).await;
+            (i, activity, preview, running)
         });
     }
     while let Some(done) = tasks.join_next().await {
-        if let Ok((i, activity, preview)) = done {
+        if let Ok((i, activity, preview, running)) = done {
             views[i].activity = activity;
             views[i].preview = preview;
+            views[i].running_subagents = running;
         }
     }
 }

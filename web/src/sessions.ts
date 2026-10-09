@@ -1,6 +1,7 @@
 // The left sidebar: list sessions, create from presets, rename, kill, switch.
 
 import { el } from './dom';
+import { asTree, elapsedSecs, fmtElapsed, stateOf, type SubAgent } from './agents';
 import { warn } from './haptics';
 import { icon } from './icons';
 import { DOT_LABEL, dotState, groupSessions, railLabel } from './session-groups';
@@ -33,6 +34,8 @@ export interface SessionView {
   activity: 'working' | 'waiting' | 'idle' | 'unknown' | null;
   /** One line of the latest message. */
   preview: string | null;
+  /** How many helper agents the session has running. */
+  running_subagents?: number;
 }
 
 interface Group {
@@ -96,6 +99,8 @@ export interface SidebarHooks {
   openSettings: () => void;
   /** Show a session in the pane beside the one you are in (wide screens). */
   openInSplit: (id: string) => void;
+  /** Open a helper agent's transcript. */
+  openAgent: (session: string, agent: SubAgent) => void;
   /** Every session open in a pane, to mark in the list. */
   shown: () => string[];
 }
@@ -121,6 +126,9 @@ export class SessionSidebar {
   /** Folder sections the user folded away. Remembered. */
   private collapsed = loadCollapsed();
   private lastSessions: SessionView[] = [];
+  /** Sessions whose helper agents are listed under their row, and the latest lists fetched. */
+  private agentsOpen = new Set<string>();
+  private agentCache = new Map<string, SubAgent[]>();
 
   constructor(
     private root: HTMLElement,
@@ -223,6 +231,7 @@ export class SessionSidebar {
       if (!r.ok) return this.say(await r.text());
       this.say('');
       this.renderList((await r.json()) as SessionView[]);
+      for (const id of this.agentsOpen) void this.loadAgents(id);
     });
   }
 
@@ -356,6 +365,50 @@ export class SessionSidebar {
     this.list.replaceChildren(...out);
   }
 
+  /** Fetch a session's helper agents, and redraw the list if they changed. */
+  private async loadAgents(id: string) {
+    await this.guard(async () => {
+      const r = await api(`/api/sessions/${encodeURIComponent(id)}/agents`);
+      if (!r.ok) return;
+      const list = (await r.json()) as SubAgent[];
+      if (JSON.stringify(list) === JSON.stringify(this.agentCache.get(id))) return;
+      this.agentCache.set(id, list);
+      this.renderList(this.lastSessions);
+    });
+  }
+
+  /** The helper agents of one session as a tree, under its row. */
+  private agentList(s: SessionView): HTMLElement {
+    const box = el('div', 'srow-agentlist');
+    const list = this.agentCache.get(s.id);
+    if (!list) {
+      box.append(el('div', 'sa-empty', 'Loading…'));
+      return box;
+    }
+    if (list.length === 0) box.append(el('div', 'sa-empty', 'No helper agents yet'));
+    const now = Math.floor(Date.now() / 1000);
+    for (const { agent: a, level } of asTree(list)) {
+      const state = stateOf(a);
+      const b = el('button', 'sa-row');
+      b.type = 'button';
+      b.style.setProperty('--lvl', String(level));
+      const secs = elapsedSecs(a, now);
+      b.append(
+        el('span', `dot ${state === 'done' ? 'ready' : state === 'running' ? 'working' : 'idle'}`),
+        el('span', 'sa-kind', a.kind === 'codex' ? 'Codex' : a.kind),
+        el('span', 'sa-desc', a.description || 'helper'),
+        el('span', 'sa-time', secs === null ? '' : fmtElapsed(secs)),
+      );
+      b.disabled = !a.has_log;
+      b.addEventListener('click', () => {
+        this.hooks.openAgent(s.id, a);
+        this.hooks.navigated();
+      });
+      box.append(b);
+    }
+    return box;
+  }
+
   private renderRail(sessions: SessionView[]) {
     const shown = this.hooks.shown();
     this.railList.replaceChildren(
@@ -471,7 +524,28 @@ export class SessionSidebar {
     toolRow.append(...tools);
     if (this.expanded.has(s.id)) row.classList.add('expanded');
 
+    // Helper agents: a count while any run, and a tap to list them under the row.
+    const running = s.running_subagents ?? 0;
+    const open = this.agentsOpen.has(s.id);
+    if (running > 0 || open) {
+      const chip = el('button', 'srow-agents');
+      chip.type = 'button';
+      chip.setAttribute('aria-expanded', String(open));
+      chip.setAttribute('aria-label', running > 0 ? `${running} helper agent${running === 1 ? '' : 's'} running` : 'Helper agents');
+      chip.append(icon('agent'), el('span', undefined, running > 0 ? String(running) : ''));
+      chip.addEventListener('click', () => {
+        if (this.agentsOpen.has(s.id)) this.agentsOpen.delete(s.id);
+        else {
+          this.agentsOpen.add(s.id);
+          void this.loadAgents(s.id);
+        }
+        this.renderList(this.lastSessions);
+      });
+      inline.push(chip);
+    }
+
     row.append(dot, main, ...inline, more, toolRow);
+    if (open) row.append(this.agentList(s));
     return row;
   }
 

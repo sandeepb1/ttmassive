@@ -1,6 +1,7 @@
 // What `/api/sessions/{id}/chat` returns, and the pure logic for keeping a local copy of it in
 // step. No DOM here, so node can test it.
 
+import type { SubAgent } from './agents';
 import type { Analysis } from './protocol';
 
 export type ToolStatus = 'running' | 'ok' | 'error';
@@ -96,6 +97,8 @@ export interface ChatResponse {
   todos: Todo[];
   /** The latest plan the agent put forward, as Markdown. */
   plan: string | null;
+  /** Helper agents this conversation started, oldest first. */
+  agents: SubAgent[];
 }
 
 /** The client's copy of one conversation. */
@@ -114,6 +117,7 @@ export interface ChatStore {
   suggestion: string | null;
   todos: Todo[];
   plan: string | null;
+  agents: SubAgent[];
   /** The last mode that was not plan: where "Build" goes back to. */
   lastBuild: ModeId | null;
   /**
@@ -141,6 +145,7 @@ export function newStore(): ChatStore {
     suggestion: null,
     todos: [],
     plan: null,
+    agents: [],
     lastBuild: null,
     modelOverride: null,
     effortOverride: null,
@@ -189,6 +194,7 @@ export function applyChat(s: ChatStore, r: ChatResponse): { reset: boolean; touc
   s.suggestion = r.suggestion ?? null;
   s.todos = r.todos ?? [];
   s.plan = r.plan ?? null;
+  s.agents = r.agents ?? [];
   if (steady && r.mode !== 'plan') s.lastBuild = r.mode;
   if (s.modelOverride && s.model !== s.modelOverride.from) s.modelOverride = null;
   if (s.effortOverride && s.effort !== s.effortOverride.from) s.effortOverride = null;

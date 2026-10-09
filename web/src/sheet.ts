@@ -39,6 +39,11 @@ export abstract class Sheet {
     });
   }
 
+  /** Make the sheet nearly full height, for content that scrolls on its own. */
+  protected tall() {
+    this.sheet.classList.add('tall');
+  }
+
   /** Put the sheet on screen. */
   protected show() {
     this.gone = false;

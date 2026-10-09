@@ -18,7 +18,8 @@ import {
   type ChatResponse,
   type Todo,
 } from './chat-model';
-import { renderItem, type RenderCtx } from './chat-render';
+import { isAgentTool, type SubAgent } from './agents';
+import { renderItem, tickAgentTimes, type AgentCtx, type RenderCtx } from './chat-render';
 import { applySuggestion, attachmentToken, findTrigger, insertToken, isResumeCommand, removeToken, type Trigger } from './composer-text';
 import { prepareImage } from './image';
 import { ModeSheet } from './mode-sheet';
@@ -45,6 +46,8 @@ export interface ChatHooks {
   onEligible: (eligible: boolean) => void;
   /** The model, mode or agent changed: for the session details in the right sidebar. */
   onInfo?: (info: ChatInfo) => void;
+  /** A helper agent's card asked to open its transcript. */
+  onOpenAgent?: (agent: SubAgent) => void;
   /** Which agent runs in this session (null: neither Claude nor Codex). Called on every poll. */
   onAgent?: (agent: 'claude' | 'codex' | null) => void;
   /** Files changed, to-dos and the plan changed: for the details panel. */
@@ -58,6 +61,8 @@ export interface ChatPanelData {
   files: ChangedFile[];
   todos: Todo[];
   plan: string | null;
+  /** Every helper agent, including those whose card has scrolled out of the conversation. */
+  agents: SubAgent[];
 }
 
 /** What the right sidebar shows about this conversation. */
@@ -148,6 +153,8 @@ export class ChatView {
   private sent: Sent[] = [];
   private ro: ResizeObserver;
   private dataKey = '';
+  private agentsKey = '';
+  private agentCtx: AgentCtx = { list: () => this.store.agents, open: (a) => this.hooks.onOpenAgent?.(a) };
   private get sheetHost(): HTMLElement {
     return this.hooks.sheetHost ?? this.host;
   }
@@ -391,7 +398,7 @@ export class ChatView {
     for (const id of touched) {
       const pos = this.store.index.get(id);
       if (pos === undefined) continue;
-      const node = renderItem(this.store.items[pos], this.ctx);
+      const node = renderItem(this.store.items[pos], this.ctx, this.agentCtx);
       const old = this.nodes.get(id);
       if (old) {
         // Keep a tool call or thought open if you opened it.
@@ -403,6 +410,8 @@ export class ChatView {
       }
       this.nodes.set(id, node);
     }
+    this.refreshAgentCards();
+    tickAgentTimes(this.list);
     this.settleSent();
 
     const scr = resp.screen;
@@ -425,13 +434,32 @@ export class ChatView {
     else if (added) this.jump.hidden = false;
   }
 
+  /** Redraw the helper agents' cards when what they show changed. A running helper's log changes
+   *  every second, which the cards do not show, so that alone does not count. */
+  private refreshAgentCards() {
+    const key = JSON.stringify(this.store.agents.map((a) => ({ ...a, last: a.running ? null : a.last })));
+    if (key === this.agentsKey) return;
+    this.agentsKey = key;
+    for (const it of this.store.items) {
+      if (it.kind !== 'tool' || !isAgentTool(it.tool)) continue;
+      const old = this.nodes.get(it.id);
+      if (!old) continue;
+      const node = renderItem(it, this.ctx, this.agentCtx);
+      if (old instanceof HTMLDetailsElement && node instanceof HTMLDetailsElement) node.open = old.open;
+      old.replaceWith(node);
+      this.nodes.set(it.id, node);
+    }
+  }
+
   /** Tell the details panel about files, to-dos and the plan, but only when they changed. */
   private emitData() {
-    const { todos, plan, seq } = this.store;
-    const key = `${seq}|${JSON.stringify(todos)}|${plan?.length ?? -1}|${plan?.slice(0, 40) ?? ''}`;
+    const { todos, plan, seq, agents } = this.store;
+    // A running helper's log time changes every second and is not shown here: leave it out.
+    const agentKey = JSON.stringify(agents.map((a) => ({ ...a, last: a.running ? null : a.last })));
+    const key = `${seq}|${JSON.stringify(todos)}|${plan?.length ?? -1}|${plan?.slice(0, 40) ?? ''}|${agentKey}`;
     if (key === this.dataKey) return;
     this.dataKey = key;
-    this.hooks.onData?.({ files: filesChanged(this.store.items), todos, plan });
+    this.hooks.onData?.({ files: filesChanged(this.store.items), todos, plan, agents });
   }
 
   /** Messages containing `query`, newest first. */

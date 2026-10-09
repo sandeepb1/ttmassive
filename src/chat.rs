@@ -14,7 +14,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{Read, Seek, SeekFrom},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -23,7 +23,13 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{AppState, agentlog, config::Agent, modes, screen, sessions, usage};
+use crate::{
+    AppState, agentlog,
+    config::Agent,
+    modes, screen, sessions,
+    subagents::{self, SubAgent},
+    usage,
+};
 
 /// Items kept per session; older ones are dropped (the client keeps what it already has).
 const MAX_ITEMS: usize = 2000;
@@ -35,6 +41,8 @@ const DIFF_CHARS: usize = 8000;
 const TEXT_CHARS: usize = 20_000;
 /// Longest one-line preview of a conversation.
 const PREVIEW_LINE: usize = 140;
+/// Longest result shown on a helper agent's card.
+const SUMMARY_TEXT: usize = 600;
 /// A log bigger than this is read from near its end on first load.
 const INITIAL_TAIL: u64 = 8 * 1024 * 1024;
 
@@ -231,6 +239,28 @@ fn now_micros() -> u64 {
 
 // -------------------------------------------------------------------- state
 
+/// A helper agent Codex started, as the parent conversation's log records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Spawn {
+    pub thread_id: String,
+    /// Its name, the last part of its path (`/root/search_facts`).
+    pub name: String,
+    pub depth: u32,
+    /// The id of the log item that announced it.
+    pub started_id: String,
+    pub done: bool,
+}
+
+/// What a conversation has done so far, in a few fields.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Summary {
+    pub tools: u32,
+    pub last_action: Option<String>,
+    /// The last thing the agent said.
+    pub result: Option<String>,
+    pub first_ts: Option<i64>,
+}
+
 /// One conversation's parsed log.
 pub struct ChatState {
     epoch: u64,
@@ -249,6 +279,10 @@ pub struct ChatState {
     todos: Vec<Todo>,
     /// The latest plan the agent put forward (Claude's `ExitPlanMode`, Codex's `Plan`), as Markdown.
     plan: Option<String>,
+    /// This is a helper agent's own log: Claude marks every line of those as a side chain.
+    sidechain: bool,
+    /// Helpers Codex started (Codex only).
+    spawns: Vec<Spawn>,
 }
 
 impl ChatState {
@@ -267,6 +301,45 @@ impl ChatState {
             model_label: None,
             todos: Vec::new(),
             plan: None,
+            sidechain: false,
+            spawns: Vec::new(),
+        }
+    }
+
+    /// The state for a helper agent's own log file.
+    pub fn new_sub(agent: Agent, path: PathBuf) -> Self {
+        let mut s = Self::new(agent, "");
+        s.path = Some(path);
+        s.sidechain = true;
+        s
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    #[cfg(test)]
+    pub fn spawns(&self) -> &[Spawn] {
+        &self.spawns
+    }
+
+    pub fn has_item(&self, id: &str) -> bool {
+        self.index.contains_key(id)
+    }
+
+    pub fn summary(&self) -> Summary {
+        let tool = |i: &Item| match &i.body {
+            Body::Tool { summary, .. } => Some(summary.clone()),
+            _ => None,
+        };
+        Summary {
+            tools: self.items.iter().filter(|i| matches!(i.body, Body::Tool { .. })).count() as u32,
+            last_action: self.items.iter().rev().find_map(tool),
+            result: self.items.iter().rev().find_map(|i| match &i.body {
+                Body::Assistant { text } => Some(clip(text.trim(), SUMMARY_TEXT)).filter(|t| !t.is_empty()),
+                _ => None,
+            }),
+            first_ts: self.items.iter().find_map(|i| i.ts),
         }
     }
 
@@ -282,8 +355,9 @@ impl ChatState {
     }
 
     fn reset(&mut self) {
-        let (agent, id, old_epoch) = (self.agent, std::mem::take(&mut self.conv_id), self.epoch);
+        let (agent, id, old_epoch, sidechain) = (self.agent, std::mem::take(&mut self.conv_id), self.epoch, self.sidechain);
         *self = Self::new(agent, &id);
+        self.sidechain = sidechain;
         self.epoch = self.epoch.max(old_epoch + 1); // always different from the one clients hold
     }
 
@@ -365,8 +439,8 @@ impl ChatState {
     // ------------------------------------------------------------- Claude
 
     fn ingest_claude(&mut self, v: &Value) {
-        if v["isSidechain"].as_bool() == Some(true) {
-            return; // a sub-agent's own conversation
+        if v["isSidechain"].as_bool() == Some(true) && !self.sidechain {
+            return; // a sub-agent's own conversation, which has its own log
         }
         let ts = v.get("timestamp").and_then(usage::parse_time);
         let uuid = str_of(v, "uuid").to_owned();
@@ -620,6 +694,8 @@ impl ChatState {
                 );
             }
             Some("FileChange") => self.codex_file_change(item, &id, ts),
+            // Only the shapes understood here; anything else of that type is shown like any other item.
+            Some("SubAgentActivity") if self.codex_sub_agent(item, &id, ts) => {}
             Some("Plan") => {
                 let t = str_of(item, "text").trim();
                 if !t.is_empty() {
@@ -692,6 +768,59 @@ fn parse_todos(input: &Value) -> Vec<Todo> {
 }
 
 impl ChatState {
+    /// Codex tells the parent conversation when a helper starts and finishes. A start becomes a
+    /// card like Claude's Agent tool; messages sent to a helper are noise and are not shown.
+    /// Returns whether the item was one it understands.
+    fn codex_sub_agent(&mut self, item: &Value, id: &str, ts: Option<i64>) -> bool {
+        let thread = str_of(item, "agent_thread_id");
+        let path = str_of(item, "agent_path");
+        let name = path.rsplit('/').next().unwrap_or("");
+        let kind = str_of(item, "kind");
+        if thread.is_empty() || name.is_empty() || !matches!(kind, "started" | "completed" | "interacted") {
+            return false;
+        }
+        if name == "root" {
+            return true; // activity of the main thread itself
+        }
+        match kind {
+            "started" => {
+                self.spawns.retain(|s| s.thread_id != thread);
+                self.spawns.push(Spawn {
+                    thread_id: thread.to_owned(),
+                    name: name.to_owned(),
+                    depth: path.matches('/').count().saturating_sub(1) as u32,
+                    started_id: id.to_owned(),
+                    done: false,
+                });
+                self.add(
+                    id.to_owned(),
+                    ts,
+                    Body::Tool {
+                        tool: "Agent".into(),
+                        summary: name.replace('_', " "),
+                        input: None,
+                        output: None,
+                        status: ToolStatus::Running,
+                        diff: None,
+                    },
+                );
+            }
+            "completed" => {
+                if let Some(sp) = self.spawns.iter_mut().find(|s| s.thread_id == thread) {
+                    sp.done = true;
+                    let started = sp.started_id.clone();
+                    self.modify(&started, |b| {
+                        if let Body::Tool { status, .. } = b {
+                            *status = ToolStatus::Ok;
+                        }
+                    });
+                }
+            }
+            _ => {} // a message sent to a helper: noise
+        }
+        true
+    }
+
     /// Codex reports a patch as one item holding every file it touched. Show each file as the same
     /// kind of edit Claude's tools produce, so both agents' changes read (and add up) alike.
     fn codex_file_change(&mut self, item: &Value, id: &str, ts: Option<i64>) {
@@ -864,6 +993,37 @@ pub struct ChatResponse {
     pub todos: Vec<Todo>,
     /// The latest plan the agent put forward, as Markdown.
     pub plan: Option<String>,
+    /// Helper agents this conversation started, oldest first.
+    pub agents: Vec<SubAgent>,
+}
+
+impl ChatResponse {
+    /// What `state` holds beyond `after` (everything, if the client's `epoch` is not this parse's).
+    /// The screen-derived fields are left empty for the caller to fill.
+    fn of(state: &ChatState, agent: Agent, ready: bool, epoch: Option<u64>, after: u64) -> Self {
+        let reset = epoch != Some(state.epoch);
+        Self {
+            epoch: state.epoch,
+            seq: state.seq,
+            reset,
+            items: if reset { state.since(0) } else { state.since(after) },
+            model: state.model.clone(),
+            effort: state.effort.clone(),
+            model_label: state.model_label.clone(),
+            eligible: true,
+            agent: Some(agent),
+            ready,
+            screen: None,
+            mode: None,
+            modes: Vec::new(),
+            yolo: false,
+            effort_live: None,
+            suggestion: None,
+            todos: state.todos.clone(),
+            plan: state.plan.clone(),
+            agents: Vec::new(),
+        }
+    }
 }
 
 impl ChatCache {
@@ -894,13 +1054,43 @@ impl ChatCache {
         state
     }
 
-    /// One line of the latest message, after reading any new log lines.
-    /// Blocking: reads the log. Call from `spawn_blocking`.
-    fn preview(&self, session: &str, agent: Agent, conv_id: &str) -> Option<String> {
+    /// One line of the latest message and how many helper agents are running, after reading any
+    /// new log lines. Blocking: reads the logs. Call from `spawn_blocking`.
+    fn overview(&self, session: &str, agent: Agent, conv_id: &str) -> (Option<String>, u32) {
         let mut states = lock(&self.states);
         let state = Self::state_for(&mut states, session, agent, conv_id);
-        state.update().ok()?;
-        state.preview()
+        if state.update().is_err() {
+            return (None, 0);
+        }
+        let preview = state.preview();
+        let (path, spawns) = (state.path.clone(), state.spawns.clone());
+        let agents = subagents::collect(&mut states, session, agent, path.as_deref(), &spawns, codex_sessions().as_deref(), subagents::now_secs());
+        (preview, agents.iter().filter(|a| a.running).count() as u32)
+    }
+
+    /// Every helper agent of the conversation. Blocking.
+    fn agents(&self, session: &str, agent: Agent, conv_id: &str) -> Vec<SubAgent> {
+        let mut states = lock(&self.states);
+        let state = Self::state_for(&mut states, session, agent, conv_id);
+        let _ = state.update();
+        let (path, spawns) = (state.path.clone(), state.spawns.clone());
+        subagents::collect(&mut states, session, agent, path.as_deref(), &spawns, codex_sessions().as_deref(), subagents::now_secs())
+    }
+
+    /// One helper's transcript, in the same shape as a conversation. None if there is no such helper.
+    /// Blocking.
+    fn agent_chat(&self, session: &str, agent: Agent, conv_id: &str, aid: &str, epoch: Option<u64>, after: u64) -> Option<ChatResponse> {
+        let mut states = lock(&self.states);
+        let state = Self::state_for(&mut states, session, agent, conv_id);
+        let _ = state.update();
+        let (path, spawns) = (state.path.clone(), state.spawns.clone());
+        // This also makes sure the helper's own log has been read up to now.
+        let list = subagents::collect(&mut states, session, agent, path.as_deref(), &spawns, codex_sessions().as_deref(), subagents::now_secs());
+        let info = list.iter().find(|a| a.id == aid)?;
+        let sub = states.get(&subagents::key(session, aid))?;
+        let mut response = ChatResponse::of(sub, agent, info.has_log, epoch, after);
+        response.agents = list.into_iter().filter(|a| a.parent.as_deref() == Some(aid)).collect();
+        Some(response)
     }
 
     /// Blocking: reads the log. Call from `spawn_blocking`.
@@ -911,28 +1101,9 @@ impl ChatCache {
             tracing::warn!("reading the {} log for {session}: {e}", conv_id);
             false
         });
-        let reset = epoch != Some(state.epoch);
-        let items = if reset { state.since(0) } else { state.since(after) };
-        let response = ChatResponse {
-            epoch: state.epoch,
-            seq: state.seq,
-            reset,
-            items,
-            model: state.model.clone(),
-            effort: state.effort.clone(),
-            model_label: state.model_label.clone(),
-            eligible: true,
-            agent: Some(agent),
-            ready,
-            screen: None,
-            mode: None,
-            modes: Vec::new(),
-            yolo: false,
-            effort_live: None,
-            suggestion: None,
-            todos: state.todos.clone(),
-            plan: state.plan.clone(),
-        };
+        let mut response = ChatResponse::of(state, agent, ready, epoch, after);
+        let (path, spawns) = (state.path.clone(), state.spawns.clone());
+        response.agents = subagents::collect(&mut states, session, agent, path.as_deref(), &spawns, codex_sessions().as_deref(), subagents::now_secs());
         (response, ready)
     }
 }
@@ -945,12 +1116,33 @@ fn agent_of(st: &AppState, session: &str) -> Option<(Agent, String)> {
         .filter(|(a, id)| *a != Agent::Other && sessions::valid_agent_id(id))
 }
 
-/// A one-line preview of the latest message in `session`, for the session list.
-pub async fn preview(st: &Arc<AppState>, session: &str) -> Option<String> {
-    let (agent, conv_id) = agent_of(st, session)?;
+/// A one-line preview of the latest message in `session`, and how many of its helper agents are
+/// running, for the session list.
+pub async fn overview(st: &Arc<AppState>, session: &str) -> (Option<String>, u32) {
+    let Some((agent, conv_id)) = agent_of(st, session) else { return (None, 0) };
     let cache = st.chat.clone();
     let name = session.to_owned();
-    tokio::task::spawn_blocking(move || cache.preview(&name, agent, &conv_id)).await.ok()?
+    tokio::task::spawn_blocking(move || cache.overview(&name, agent, &conv_id)).await.unwrap_or((None, 0))
+}
+
+/// The helper agents `session` has started.
+pub async fn agents(st: &Arc<AppState>, session: &str) -> Vec<SubAgent> {
+    let Some((agent, conv_id)) = agent_of(st, session) else { return Vec::new() };
+    let cache = st.chat.clone();
+    let name = session.to_owned();
+    tokio::task::spawn_blocking(move || cache.agents(&name, agent, &conv_id)).await.unwrap_or_default()
+}
+
+/// What changed in one helper's transcript since `(epoch, after)`.
+pub async fn agent_chat(st: &Arc<AppState>, session: &str, aid: &str, epoch: Option<u64>, after: u64) -> Option<ChatResponse> {
+    let (agent, conv_id) = agent_of(st, session)?;
+    let cache = st.chat.clone();
+    let (name, aid) = (session.to_owned(), aid.to_owned());
+    tokio::task::spawn_blocking(move || cache.agent_chat(&name, agent, &conv_id, &aid, epoch, after)).await.ok()?
+}
+
+fn codex_sessions() -> Option<PathBuf> {
+    agentlog::codex_dir().map(|d| d.join("sessions"))
 }
 
 /// What changed in `session`'s conversation since `(epoch, after)`.
@@ -987,6 +1179,7 @@ pub async fn snapshot(st: &Arc<AppState>, session: &str, epoch: Option<u64>, aft
             suggestion: None,
             todos: Vec::new(),
             plan: None,
+            agents: Vec::new(),
         });
     };
     let cache = st.chat.clone();
@@ -1545,5 +1738,72 @@ mod tests {
                 "changes": { "/p/a.rs": { "type": "add", "content": "x" } } } } })],
         );
         assert!(matches!(&s.items[0].body, Body::Tool { status: ToolStatus::Error, output: Some(o), .. } if o == "patch rejected"));
+    }
+
+    // ------------------------------------------------------------- helper agents
+
+    fn side_say(uuid: &str, text: &str) -> Value {
+        json!({ "type": "assistant", "uuid": uuid, "isSidechain": true, "message": { "model": "m", "content": [{ "type": "text", "text": text }] } })
+    }
+
+    #[test]
+    fn a_helpers_side_chain_lines_are_ignored_by_the_conversation_but_read_from_its_own_log() {
+        let mut main = claude();
+        feed(&mut main, &[side_say("s1", "from a helper")]);
+        assert!(main.items.is_empty(), "the main conversation does not show a helper's lines");
+        let mut sub = ChatState::new_sub(Agent::Claude, PathBuf::from("/x/agent-a.jsonl"));
+        feed(&mut sub, &[side_say("s1", "from a helper")]);
+        assert_eq!(bodies(&sub), vec![&Body::Assistant { text: "from a helper".into() }]);
+        sub.reset();
+        feed(&mut sub, &[side_say("s2", "after a restart")]);
+        assert_eq!(sub.items.len(), 1, "a log that starts over is still a helper's");
+    }
+
+    #[test]
+    fn the_summary_counts_tools_and_keeps_the_last_action_and_report() {
+        let mut s = claude();
+        assert_eq!(s.summary(), Summary::default());
+        feed(
+            &mut s,
+            &[
+                assistant("a1", json!({ "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "ls", "description": "List files" } })),
+                assistant("a2", json!({ "type": "text", "text": "  all done  " })),
+                assistant("a3", json!({ "type": "tool_use", "id": "t2", "name": "Read", "input": { "file_path": "/p/src/x.rs" } })),
+            ],
+        );
+        let sum = s.summary();
+        assert_eq!((sum.tools, sum.last_action.as_deref(), sum.result.as_deref()), (2, Some("Read src/x.rs"), Some("all done")));
+        assert!(sum.first_ts.is_some());
+    }
+
+    #[test]
+    fn a_codex_helper_start_is_a_running_agent_card_that_finishes_when_the_log_says_so() {
+        let mut s = ChatState::new(Agent::Codex, "conv");
+        let ev = |kind: &str, id: &str, thread: &str, path: &str| {
+            json!({ "type": "event_msg", "payload": { "type": "item_completed", "item": {
+                "type": "SubAgentActivity", "id": id, "kind": kind, "agent_thread_id": thread, "agent_path": path } } })
+        };
+        feed(&mut s, &[ev("started", "call_9", "t1", "/root/diagnostic_escalation")]);
+        assert!(matches!(&s.items[0].body, Body::Tool { tool, summary, status: ToolStatus::Running, .. } if tool == "Agent" && summary == "diagnostic escalation"));
+        // Messages sent to a helper, and anything about the main thread, add nothing.
+        feed(&mut s, &[ev("interacted", "call_10", "t1", "/root/diagnostic_escalation"), ev("started", "call_11", "t0", "/root")]);
+        assert_eq!(s.items.len(), 1);
+        feed(&mut s, &[ev("completed", "done", "t1", "/root/diagnostic_escalation")]);
+        assert!(matches!(&s.items[0].body, Body::Tool { status: ToolStatus::Ok, .. }), "the same card, now finished");
+        assert_eq!((s.spawns()[0].depth, s.spawns()[0].done), (1, true));
+    }
+
+    #[test]
+    fn a_response_carries_the_helper_list_in_json() {
+        let s = claude();
+        let mut r = ChatResponse::of(&s, Agent::Claude, true, None, 0);
+        r.agents.push(SubAgent {
+            id: "a1".into(), kind: "Explore".into(), description: "Find it".into(), tool_use_id: Some("toolu_1".into()), depth: 1, parent: None,
+            running: true, started: Some(5), last: Some(9), tools: 3, last_action: Some("Read x".into()), result: None, has_log: true,
+        });
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["agents"][0]["id"], "a1");
+        assert_eq!(v["agents"][0]["tool_use_id"], "toolu_1");
+        assert_eq!(v["agents"][0]["running"], true);
     }
 }

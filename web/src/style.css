@@ -635,3 +635,54 @@ details.rb-plan > summary { min-height: 44px; display: flex; align-items: center
 .rail-btn .dot { position: absolute; right: -3px; bottom: -3px; width: 12px; height: 12px; border: 2px solid var(--surface-1); }
 #app:not(.can-split) .srow-split { display: none; }
 .rail-letter { font: 700 var(--fs-sm) var(--font-ui); letter-spacing: -.01em; }
+
+/* ---- Helper agents: cards in the chat, their transcript, and the list under a session ---- */
+details.acard { --cat: var(--accent); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; }
+details.acard.st-running { background: var(--accent-bg); border-color: var(--accent-border); }
+details.acard > summary { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 10px; list-style: none; cursor: pointer; }
+details.acard > summary::-webkit-details-marker { display: none; }
+details.acard > summary:active { background: var(--surface-3); }
+.acard-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.acard-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.acard-kind { flex: none; font: 600 var(--fs-2xs) var(--font-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--accent); }
+.acard-desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: var(--fs-md); }
+.acard-work { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-xs) var(--font-mono); color: var(--fg-muted); }
+.acard-status { flex: none; display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--fg-muted); }
+.acard-time { font-variant-numeric: tabular-nums; }
+.acard-body { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px; border-top: 1px solid var(--border-subtle); }
+.acard-body .md { font-size: var(--fs-md); line-height: 1.5; }
+.acard-open { align-self: flex-start; min-height: 40px; padding: 0 16px; font: 600 var(--fs-md) var(--font-ui); color: var(--on-accent); background: var(--accent); border: 0; border-radius: 12px; }
+.acard-open:disabled { color: var(--fg-muted); background: var(--surface-5); }
+
+/* A helper's transcript fills a pane or a tall sheet. */
+.p-agent { display: none; position: absolute; z-index: 4; top: var(--topbar-h); left: 0; right: 0; bottom: 0; flex-direction: column; background: var(--bg); }
+.pane.agent-mode .p-agent { display: flex; }
+.pane.agent-mode .p-term, .pane.agent-mode .p-chat, .pane.agent-mode .p-keybar, .pane.agent-mode .bar { display: none; }
+.agentview { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.av-info { flex: none; padding: 10px 14px; background: var(--surface-1); border-bottom: 1px solid var(--border-subtle); }
+.av-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); }
+.av-state { font-weight: 600; }
+.av-time { margin-left: auto; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.av-desc { margin-top: 4px; font-weight: 650; font-size: var(--fs-md); }
+.av-work { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-xs) var(--font-mono); color: var(--fg-muted); }
+.av-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px; }
+.av-scroll .chat-list { width: min(100%, 820px); margin: 0 auto; }
+.av-scroll .chat-typing, .av-scroll .chat-empty { width: min(100%, 820px); }
+.sheet.tall { height: 92%; max-height: 92%; }
+.sheet.tall .sheet-body { flex: 1; min-height: 0; gap: 0; overflow: hidden; }
+.sheet.tall .agentview { margin: 0 -14px; }
+
+.srow-agents { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 9px; font: 600 var(--fs-xs) var(--font-ui);
+  color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-border); border-radius: 16px; }
+.srow-agents[aria-expanded='true'] { color: var(--on-accent); background: var(--accent); }
+.srow-agents svg { width: 14px; height: 14px; }
+.srow-agentlist { flex: 1 0 100%; display: flex; flex-direction: column; gap: 2px; padding: 4px 0 6px; border-top: 1px solid var(--border-subtle); }
+.sa-empty { padding: 6px 8px; font-size: var(--fs-sm); color: var(--fg-muted); }
+.sa-row { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 8px 4px calc(8px + var(--lvl, 0) * 14px); text-align: left; font: inherit;
+  color: var(--fg-soft); background: none; border: 0; border-radius: 8px; }
+.sa-row:active { background: var(--surface-4); }
+.sa-row:disabled { opacity: .5; }
+.sa-kind { flex: none; font: 600 var(--fs-2xs) var(--font-mono); text-transform: uppercase; letter-spacing: .05em; color: var(--accent); }
+.sa-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); }
+.sa-time { flex: none; font-size: var(--fs-xs); color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.rb-agent { background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: 10px; }

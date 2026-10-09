@@ -406,6 +406,28 @@ four tabs:
 Search covers the messages loaded in the chat (not the whole log). Tap a result to jump to the
 message, which flashes once.
 
+## Helper agents
+
+When Claude starts subagents (its `Agent` tool) or Codex starts helper threads, you can watch them.
+
+- In the chat, the call becomes a **card**: the agent type, what it was asked, a clock while it
+  runs, how many tool calls it has made, and the last thing it did. Tap the card for the task and
+  the helper's report, and **Open transcript** for everything it did.
+- A transcript opens beside the conversation when the screen is wide enough (replacing the other
+  pane if two are open; the conversation you were reading keeps focus), or in a tall sheet that
+  drags down to close. It is read-only and live while the helper runs, and a helper that started
+  helpers of its own shows them as cards in turn.
+- The details panel's **Overview** lists every helper of the conversation as a tree, newest state
+  first, including ones whose card has scrolled out of the chat. A session in the left list shows
+  a count chip while helpers run; tap it to list them under the row.
+
+Claude's helpers are read from `<conversation>/subagents/`, and a helper counts as running while its
+log is still being written (about 90 seconds of quiet means it finished). Codex's are found from
+the start and end events in the parent log, and each helper's own rollout file. Neither agent
+tells ttm when a helper is *interrupted*, so one that stopped early shows as finished. The chat only
+reads the last 8 MB of a long log, so a card may be missing for an old helper: the Overview list still
+has it.
+
 ## Split view
 
 On a screen 1100px wide or more (a tablet in landscape, a desktop) you can show two sessions side
@@ -622,6 +644,10 @@ settings are `bind`, `password_hash`, `trust_proxy`, `session_ttl_hours`, `data_
     `.../model/close`.
   - `POST .../mode`, `.../reasoning`, `.../command`, `.../permissions/open` and
     `.../permissions/choose` drive modes, reasoning, quick commands and Codex permissions.
+
+  `GET .../agents` lists a conversation's helper agents (also in the chat response as `agents`),
+  and `GET .../agents/{agent}/chat?epoch=&after=` returns one helper's transcript in the same
+  shape as the chat. `GET /api/sessions` adds `running_subagents`.
 
   `GET /api/sessions` also returns each session's `cwd` and `branch` (read from `.git/HEAD`, no
   `git` process), and for Claude and Codex sessions `activity` and a one-line `preview`. The chat

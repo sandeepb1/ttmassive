@@ -6,6 +6,7 @@ import { initialForm, isComplete, isInstant, pickOption, toRequest, typeAnswer, 
 import { splitUploads } from './composer-text';
 import { lineDiff, trimContext } from './diff';
 import { el } from './dom';
+import { agentForItem, elapsedSecs, fmtElapsed, isAgentTool, stateOf, workLine, type SubAgent } from './agents';
 import { icon, toolCategory, toolIconName } from './icons';
 import { parseMarkdown, type Block, type Inline } from './markdown';
 
@@ -169,7 +170,64 @@ function pre(label: string, text: string): HTMLElement {
   return box;
 }
 
-function renderTool(it: ChatItem & { kind: 'tool' }): HTMLElement {
+/** What a tool card needs to know about helper agents, and how to open one. */
+export interface AgentCtx {
+  list: () => SubAgent[];
+  open: (a: SubAgent) => void;
+}
+
+const now = () => Math.floor(Date.now() / 1000);
+
+/** Keep the clocks on running helper cards moving between polls. */
+export function tickAgentTimes(root: ParentNode) {
+  for (const t of root.querySelectorAll<HTMLElement>('.acard-time[data-start]')) {
+    t.textContent = fmtElapsed(Math.max(0, now() - Number(t.dataset.start)));
+  }
+}
+
+/** A helper agent's card: what it is, its state and clock, how much it has done, and a way in. */
+function renderAgentCard(it: ChatItem & { kind: 'tool' }, a: SubAgent, ctx: AgentCtx): HTMLElement {
+  const state = stateOf(a);
+  const d = el('details', `acard st-${state}`);
+  const sum = el('summary');
+  const badge = el('span', 't-icon');
+  badge.append(icon('agent'));
+
+  const top = el('span', 'acard-top');
+  top.append(el('span', 'acard-kind', a.kind === 'codex' ? 'Codex' : a.kind), el('span', 'acard-desc', a.description || it.summary));
+  const main = el('span', 'acard-main');
+  main.append(top, el('span', 'acard-work', state === 'starting' ? 'Starting…' : workLine(a)));
+
+  const status = el('span', 'acard-status');
+  const secs = elapsedSecs(a, now());
+  const time = el('span', 'acard-time', secs === null ? '' : fmtElapsed(secs));
+  if (a.running && a.started !== null) time.dataset.start = String(a.started); // ticks while running
+  status.append(el('span', `dot ${state === 'done' ? 'ready' : state === 'running' ? 'working' : 'idle'}`), time);
+
+  sum.append(badge, main, status, icon('chevron', 'icon-svg chev'));
+  d.append(sum);
+
+  const body = el('div', 'acard-body');
+  if (it.input) body.append(pre('Task', it.input));
+  if (a.result) {
+    const report = el('div', 't-block');
+    report.append(el('div', 't-label', a.running ? 'Latest' : 'Report'), renderMarkdown(a.result));
+    body.append(report);
+  }
+  const open = el('button', 'acard-open', a.has_log ? 'Open transcript' : 'Waiting for its log…');
+  open.type = 'button';
+  open.disabled = !a.has_log;
+  open.addEventListener('click', () => ctx.open(a));
+  body.append(open);
+  d.append(body);
+  return d;
+}
+
+function renderTool(it: ChatItem & { kind: 'tool' }, agents?: AgentCtx): HTMLElement {
+  if (agents && isAgentTool(it.tool)) {
+    const a = agentForItem(agents.list(), it.id);
+    if (a) return renderAgentCard(it, a, agents);
+  }
   const cat = toolCategory(it.tool);
   const d = el('details', `tool st-${it.status} cat-${cat}`);
   const sum = el('summary');
@@ -343,7 +401,7 @@ function preview(text: string): string {
 }
 
 /** One chat item as DOM. Items are re-rendered whole whenever they change. */
-export function renderItem(it: ChatItem, ctx?: RenderCtx): HTMLElement {
+export function renderItem(it: ChatItem, ctx?: RenderCtx, agents?: AgentCtx): HTMLElement {
   switch (it.kind) {
     case 'user': {
       const m = el('div', 'msg user');
@@ -382,7 +440,7 @@ export function renderItem(it: ChatItem, ctx?: RenderCtx): HTMLElement {
     case 'notice':
       return el('div', 'msg notice', it.text);
     case 'tool':
-      return renderTool(it);
+      return renderTool(it, agents);
     case 'question':
       return renderQuestions(it, ctx);
   }

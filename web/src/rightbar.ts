@@ -4,6 +4,7 @@
 // conversation; picking a result jumps to the message.
 
 import type { ChatInfo, ChatPanelData } from './chat';
+import { asTree, elapsedSecs, fmtElapsed, stateOf, type SubAgent } from './agents';
 import type { Hit } from './chat-insights';
 import { renderDiff, renderMarkdown } from './chat-render';
 import type { Todo } from './chat-model';
@@ -24,6 +25,8 @@ export interface RightHooks {
   search: (query: string) => Hit[];
   /** Show a message from the results in the chat. */
   jump: (id: string) => void;
+  /** Open a helper agent's transcript. */
+  openAgent: (agent: SubAgent) => void;
 }
 
 type Tab = 'overview' | 'files' | 'plan' | 'images';
@@ -69,6 +72,7 @@ export class RightBar {
   private badge = el('span', 'rb-badge');
   private status = el('div', 'rb-status');
   private rows = el('div', 'rb-rows');
+  private helpers = el('section', 'rb-section');
   private search = el('input', 'rb-search-input');
   private clear = el('button', 'rb-search-clear');
   private tabBtns = new Map<Tab, HTMLButtonElement>();
@@ -159,7 +163,8 @@ export class RightBar {
     uhead.append(el('div', 'drawer-label', 'Plan usage'), refresh);
     usage.append(uhead, usageBody);
     const overview = el('div', 'rb-panel');
-    overview.append(card, convo, usage);
+    this.helpers.hidden = true;
+    overview.append(card, convo, this.helpers, usage);
 
     const body = el('div', 'rb-body');
     for (const t of TABS) {
@@ -206,6 +211,7 @@ export class RightBar {
     this.data = data;
     this.renderFiles();
     this.renderPlan();
+    this.renderHelpers();
     this.renderBadges();
     if (this.query) this.runSearch(); // new messages may match
   }
@@ -287,6 +293,36 @@ export class RightBar {
       );
     }
     this.rows.replaceChildren(...rows);
+  }
+
+  /** Every helper agent as a tree: the way to a finished one whose card has scrolled away. */
+  private renderHelpers() {
+    const agents = this.data?.agents ?? [];
+    this.helpers.hidden = agents.length === 0;
+    if (agents.length === 0) return;
+    const running = agents.filter((a) => a.running).length;
+    const list = el('div', 'rb-rows');
+    const now = Math.floor(Date.now() / 1000);
+    for (const { agent: a, level } of asTree(agents)) {
+      const state = stateOf(a);
+      const b = el('button', 'sa-row rb-agent');
+      b.type = 'button';
+      b.style.setProperty('--lvl', String(level));
+      b.disabled = !a.has_log;
+      const secs = elapsedSecs(a, now);
+      b.append(
+        el('span', `dot ${state === 'done' ? 'ready' : state === 'running' ? 'working' : 'idle'}`),
+        el('span', 'sa-kind', a.kind === 'codex' ? 'Codex' : a.kind),
+        el('span', 'sa-desc', a.description || 'helper'),
+        el('span', 'sa-time', secs === null ? '' : fmtElapsed(secs)),
+      );
+      b.addEventListener('click', () => this.hooks.openAgent(a));
+      list.append(b);
+    }
+    this.helpers.replaceChildren(
+      el('div', 'drawer-label', running > 0 ? `Helper agents · ${running} running` : `Helper agents · ${agents.length}`),
+      list,
+    );
   }
 
   private row(label: string, value: string, onClick: () => void, warn?: string): HTMLElement {

@@ -20,6 +20,7 @@ mod resume;
 mod screen;
 mod scrollback;
 mod server;
+mod subagents;
 mod sessions;
 mod suggest;
 mod tmux;
