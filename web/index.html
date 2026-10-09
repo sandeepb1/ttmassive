@@ -11,6 +11,16 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <script>
+      // Paint the saved theme's background before the app script runs, so a light theme doesn't flash dark.
+      try {
+        var bg = localStorage.getItem('ttm.theme.bg');
+        if (bg) {
+          document.documentElement.style.background = bg;
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', bg);
+        }
+      } catch (e) {}
+    </script>
     <title>ttm</title>
   </head>
   <body>

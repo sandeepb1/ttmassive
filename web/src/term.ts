@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { KeyBar } from './keybar';
 import type { Analysis, ClientMsg, ServerMsg } from './protocol';
+import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
@@ -36,7 +37,8 @@ export class TerminalSession {
     fontSize: initialFontSize(),
     scrollback: 0, // tmux owns scrollback
     allowProposedApi: true,
-    theme: { background: '#0b0d10' },
+    fontFamily: MONO_FALLBACK, // swapped to MONO_FONT once the web font has loaded
+    theme: xtermTheme(),
   });
   private fit = new FitAddon();
   private ws: WebSocket | null = null;
@@ -77,7 +79,17 @@ export class TerminalSession {
     ro.observe(el);
     window.addEventListener('orientationchange', refit);
     window.visualViewport?.addEventListener('resize', refit);
+    // Restyle live when the theme changes, and re-measure once the web font has actually loaded.
+    const offTheme = onThemeChange(() => {
+      this.term.options.theme = xtermTheme();
+    });
+    void document.fonts?.load("14px 'JetBrains Mono Variable'").then(() => {
+      if (this.closed) return;
+      this.term.options.fontFamily = MONO_FONT;
+      this.fit.fit();
+    });
     this.cleanup = () => {
+      offTheme();
       ro.disconnect();
       window.removeEventListener('orientationchange', refit);
       window.visualViewport?.removeEventListener('resize', refit);

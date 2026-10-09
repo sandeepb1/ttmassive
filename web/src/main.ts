@@ -1,4 +1,7 @@
+import '@fontsource-variable/inter/wght.css';
+import '@fontsource-variable/jetbrains-mono/wght.css';
 import './style.css';
+import { initTheme } from './theme';
 import { TerminalSession } from './term';
 import { SessionDrawer } from './sessions';
 import { PromptBar, StoppedBar } from './bars';
@@ -6,6 +9,8 @@ import { UsageView } from './usage';
 import { ChatView } from './chat';
 import { chooseView } from './chat-model';
 import type { Analysis } from './protocol';
+
+initTheme();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 let session: TerminalSession | null = null;

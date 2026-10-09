@@ -1,5 +1,5 @@
 // App-shell cache. Terminal traffic (/api, /ws) is never cached.
-const CACHE = 'ttm-shell-v3';
+const CACHE = 'ttm-shell-v4';
 const SHELL = ['/', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (e) => {

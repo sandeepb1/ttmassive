@@ -1,6 +1,7 @@
 // Session drawer: list, create from presets, rename, kill, switch.
 
 import { el } from './dom';
+import { ThemePicker } from './theme-picker';
 import { disablePush, enablePush, pushState, sendTest, type PushState } from './push';
 
 export interface SessionView {
@@ -109,7 +110,7 @@ export class SessionDrawer {
       this.onLogout();
     });
 
-    this.root.append(head, this.presets, this.notif, this.msg, this.list, logout);
+    this.root.append(head, this.presets, this.notif, new ThemePicker().root, this.msg, this.list, logout);
     host.append(this.root);
   }
 
