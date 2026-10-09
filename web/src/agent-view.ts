@@ -36,6 +36,8 @@ export class AgentView {
   private inflight = false;
   private disposed = false;
   private missing = false;
+  private infoKey = '';
+  private timeEl: HTMLElement | null = null;
   private ctx: AgentCtx = { list: () => this.agents, open: (a) => this.hooks.open(a) };
 
   constructor(
@@ -157,18 +159,26 @@ export class AgentView {
     if (wasStuck) requestAnimationFrame(() => (this.scroller.scrollTop = this.scroller.scrollHeight));
   }
 
+  /** Rebuild the bar only when something it shows changed; every second just move the clock. */
   private renderInfo() {
     const a = this.me;
     const state = stateOf(a);
+    const key = `${state}|${a.kind}|${a.description}|${workLine(a)}`;
+    if (key !== this.infoKey) {
+      this.infoKey = key;
+      const head = el('div', 'av-head');
+      this.timeEl = el('span', 'av-time');
+      head.append(
+        el('span', 'acard-kind', a.kind === 'codex' ? 'Codex' : a.kind),
+        el('span', `dot ${state === 'done' ? 'ready' : state === 'running' ? 'working' : 'idle'}`),
+        el('span', 'av-state', state === 'done' ? 'Finished' : state === 'starting' ? 'Starting' : 'Running'),
+        this.timeEl,
+      );
+      this.info.replaceChildren(head, el('div', 'av-desc', a.description), el('div', 'av-work', `${workLine(a)} · in ${this.session}`));
+    }
     const secs = elapsedSecs(a, Math.floor(Date.now() / 1000));
-    const head = el('div', 'av-head');
-    head.append(
-      el('span', 'acard-kind', a.kind === 'codex' ? 'Codex' : a.kind),
-      el('span', `dot ${state === 'done' ? 'ready' : state === 'running' ? 'working' : 'idle'}`),
-      el('span', 'av-state', state === 'done' ? 'Finished' : state === 'starting' ? 'Starting' : 'Running'),
-      el('span', 'av-time', secs === null ? '' : fmtElapsed(secs)),
-    );
-    this.info.replaceChildren(head, el('div', 'av-desc', a.description), el('div', 'av-work', `${workLine(a)} · in ${this.session}`));
+    const text = secs === null ? '' : fmtElapsed(secs);
+    if (this.timeEl && this.timeEl.textContent !== text) this.timeEl.textContent = text;
     this.typing.hidden = this.missing || !a.running;
   }
 }

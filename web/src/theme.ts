@@ -141,10 +141,24 @@ export function mix(base: string, over: string, pct: number): string {
   return '#' + out.map((v) => v.toString(16).padStart(2, '0')).join('');
 }
 
-/** How much of fg shows through in muted text; light backgrounds need more to keep contrast. */
+/**
+ * How much of the foreground shows through in each tier of quieter text. Light themes need more,
+ * because their raised surfaces are darker than the page and eat contrast. Chosen from a sweep of
+ * every theme against every surface the text sits on (see theme.test.ts).
+ */
 export function mutedPct(t: Theme): number {
-  return t.scheme === 'light' ? 85 : 65;
+  return t.scheme === 'light' ? 90 : 80;
 }
+export function softPct(t: Theme): number {
+  return t.scheme === 'light' ? 95 : 90;
+}
+/** For decorative text such as timestamps and previews: at least 3:1. */
+export function faintPct(t: Theme): number {
+  return t.scheme === 'light' ? 75 : 60;
+}
+/** Small coloured text keeps this much of its colour and takes the rest from the foreground. */
+export const ACCENT_KEEP = 50;
+export const STATUS_KEEP = 35;
 
 /** Text colour for filled buttons: whichever of near-black / white reads best on all three accents. */
 export function onAccent(t: Theme): string {
@@ -186,7 +200,8 @@ function apply(t: Theme) {
   const root = document.documentElement;
   const vars: Record<string, string> = {
     '--bg': t.bg, '--fg': t.fg, '--accent-base': t.accent, '--ok': t.ok, '--warn': t.warn, '--danger': t.danger,
-    '--claude': t.claude, '--codex': t.codex, '--on-accent': onAccent(t), '--muted-pct': mutedPct(t) + '%',
+    '--claude': t.claude, '--codex': t.codex, '--on-accent': onAccent(t), '--muted-pct': mutedPct(t) + '%', '--soft-pct': softPct(t) + '%', '--faint-pct': faintPct(t) + '%',
+    '--accent-keep': ACCENT_KEEP + '%', '--status-keep': STATUS_KEEP + '%',
   };
   for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
   root.style.colorScheme = t.scheme;

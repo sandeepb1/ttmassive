@@ -52,7 +52,7 @@ const paneEvents: PaneEvents = {
     switch (what) {
       case 'name':
         updateHash();
-        rightbar?.setSession(p.title);
+        rightbar?.setSession(p.name, p.title);
         rightbar?.setStatus(p.statusText);
         break;
       case 'status':
@@ -91,7 +91,7 @@ function focus(p: Pane) {
   focused = p;
   p.setFocused(true);
   setAgentAccent(p.agent);
-  rightbar?.setSession(p.title);
+  rightbar?.setSession(p.name, p.title);
   rightbar?.setStatus(p.statusText);
   rightbar?.setInfo(p.info, p.actions);
   rightbar?.setData(p.data);
@@ -220,16 +220,22 @@ function loadSplit(): { names: string[]; focus: number } | null {
 // ---------------------------------------------------------------------- app
 
 function showLogin() {
-  for (const p of panes) p.dispose();
-  panes.length = 0;
-  focused = null;
-  setAgentAccent(null);
-  $('app').classList.remove('is-split');
-  usage?.stop();
-  sidebar?.setActive(false);
-  layout.dismissOverlays();
+  // Hide the app first: everything below (and the layout's own listeners) checks it, and each of
+  // many requests failing at once with a 401 calls this again.
+  const wasShowing = !$('app').hidden;
   $('app').hidden = true;
   $('login').hidden = false;
+  if (wasShowing) {
+    for (const p of panes) p.dispose();
+    panes.length = 0;
+    focused = null;
+    setAgentAccent(null);
+    $('app').classList.remove('is-split');
+    usage?.stop();
+    sidebar?.setActive(false);
+    rightbar?.setActive(false);
+    layout.dismissOverlays();
+  }
   $<HTMLInputElement>('pw').focus();
 }
 
@@ -311,12 +317,13 @@ function openSettings() {
 function syncPanels() {
   const left = layout.isVisible('left');
   const right = layout.isVisible('right');
+  const on = !$('app').hidden; // signed out: nothing polls
   canSplit = layout.placement('right') === 'pinned';
   if (!canSplit) railOpen = false;
   applySplit();
-  sidebar?.setActive(left);
-  usage?.watch(right && !$('app').hidden);
-  rightbar?.setActive(right && !$('app').hidden);
+  sidebar?.setActive(left && on);
+  usage?.watch(right && on);
+  rightbar?.setActive(right && on);
   $('left').inert = !left;
   $('right').inert = !right;
 }

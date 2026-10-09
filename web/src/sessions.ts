@@ -191,9 +191,9 @@ export class SessionSidebar {
     }
   }
 
-  /** Refresh now, e.g. after switching session so the highlight moves. */
+  /** Refresh now, e.g. after switching session so the highlight moves. Not while the list is off screen. */
   reload() {
-    void this.refresh();
+    if (this.active) void this.refresh();
   }
 
   private say(text: string) {

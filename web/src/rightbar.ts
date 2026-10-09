@@ -182,9 +182,10 @@ export class RightBar {
 
   // ------------------------------------------------------------------ feeding it
 
-  setSession(name: string) {
+  /** `name` is the session id (for API calls); `title` is what to call it (a helper's description). */
+  setSession(name: string, title = name) {
     this.session = name;
-    this.title.textContent = name;
+    this.title.textContent = title;
     this.info = null;
     this.actions = null;
     this.data = null;
