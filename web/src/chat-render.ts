@@ -6,6 +6,7 @@ import { initialForm, isComplete, isInstant, pickOption, toRequest, typeAnswer, 
 import { splitUploads } from './composer-text';
 import { lineDiff, trimContext } from './diff';
 import { el } from './dom';
+import { icon, toolCategory, toolIconName } from './icons';
 import { parseMarkdown, type Block, type Inline } from './markdown';
 
 // ----------------------------------------------------------------- markdown
@@ -160,23 +161,6 @@ export function renderDiff(d: DiffData): HTMLElement {
 
 // -------------------------------------------------------------------- items
 
-const TOOL_ICON: Record<string, string> = {
-  Bash: '$',
-  Read: '▤',
-  Edit: '✎',
-  MultiEdit: '✎',
-  Write: '✎',
-  NotebookEdit: '✎',
-  Glob: '⌕',
-  Grep: '⌕',
-  WebFetch: '⇣',
-  WebSearch: '⌕',
-  Task: '◈',
-  Agent: '◈',
-  Skill: '✦',
-  TodoWrite: '☑',
-};
-
 const STATUS_MARK = { running: '…', ok: '✓', error: '✕' } as const;
 
 function pre(label: string, text: string): HTMLElement {
@@ -186,10 +170,14 @@ function pre(label: string, text: string): HTMLElement {
 }
 
 function renderTool(it: ChatItem & { kind: 'tool' }): HTMLElement {
-  const d = el('details', `tool st-${it.status}`);
+  const cat = toolCategory(it.tool);
+  const d = el('details', `tool st-${it.status} cat-${cat}`);
   const sum = el('summary');
+  const badge = el('span', 't-icon');
+  badge.append(icon(toolIconName(cat)));
   sum.append(
-    el('span', 't-icon', TOOL_ICON[it.tool] ?? '•'),
+    badge,
+    el('span', 't-name', it.tool),
     el('span', 't-sum', it.summary),
     el('span', 't-mark', STATUS_MARK[it.status]),
   );
@@ -343,6 +331,17 @@ function renderOneQuestion(q: Question, answer: string | undefined): HTMLElement
   return box;
 }
 
+/** Local time of day for a Unix-seconds timestamp. */
+export function clock(ts: number): string {
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/** The first line of a thought, short enough to hint at it while it is collapsed. */
+function preview(text: string): string {
+  const line = text.split('\n').find((l) => l.trim()) ?? '';
+  return line.length > 80 ? line.slice(0, 79) + '…' : line;
+}
+
 /** One chat item as DOM. Items are re-rendered whole whenever they change. */
 export function renderItem(it: ChatItem, ctx?: RenderCtx): HTMLElement {
   switch (it.kind) {
@@ -359,6 +358,11 @@ export function renderItem(it: ChatItem, ctx?: RenderCtx): HTMLElement {
       }
       if (text) m.append(el('div', 'bubble', text));
       if (it.images > 0) m.append(el('div', 'chip-img', `🖼 ${it.images} image${it.images === 1 ? '' : 's'}`));
+      if (it.ts !== null) {
+        const t = el('time', 'msg-time', clock(it.ts));
+        t.dateTime = new Date(it.ts * 1000).toISOString();
+        m.append(t);
+      }
       return m;
     }
     case 'assistant': {
@@ -368,7 +372,9 @@ export function renderItem(it: ChatItem, ctx?: RenderCtx): HTMLElement {
     }
     case 'thinking': {
       const d = el('details', 'thought');
-      d.append(el('summary', undefined, 'Thinking'), el('div', 't-text', it.text));
+      const sum = el('summary');
+      sum.append(icon('chevron', 'icon-svg chev'), el('span', 'th-label', 'Thinking'), el('span', 'th-preview', preview(it.text)));
+      d.append(sum, el('div', 't-text', it.text));
       return d;
     }
     case 'command':

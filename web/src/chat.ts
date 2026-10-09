@@ -18,6 +18,7 @@ import {
   type ChatResponse,
 } from './chat-model';
 import { renderItem, type RenderCtx } from './chat-render';
+import { setAgentAccent } from './theme';
 import { applySuggestion, attachmentToken, findTrigger, insertToken, isResumeCommand, removeToken, type Trigger } from './composer-text';
 import { prepareImage } from './image';
 import { ModeSheet } from './mode-sheet';
@@ -284,6 +285,7 @@ export class ChatView {
 
   dispose() {
     this.disposed = true;
+    setAgentAccent(null);
     window.clearInterval(this.timer);
     window.clearInterval(this.probeTimer);
     window.clearTimeout(this.suggestTimer);
@@ -327,6 +329,7 @@ export class ChatView {
     }
     this.ready = resp.ready;
     this.agent = resp.agent;
+    setAgentAccent(resp.agent);
 
     const { reset, touched } = applyChat(this.store, resp);
     if (reset) {

@@ -45,8 +45,13 @@
   color-scheme: dark;
 }
 /* The open session's agent decides the accent. */
-:root[data-agent='claude'] { --accent: var(--claude); }
-:root[data-agent='codex'] { --accent: var(--codex); }
+[data-agent='claude'] { --accent: var(--claude); }
+[data-agent='codex'] { --accent: var(--codex); }
+[data-agent] {
+  --accent-bg: color-mix(in srgb, var(--bg) 88%, var(--accent));
+  --accent-border: color-mix(in srgb, var(--bg) 60%, var(--accent));
+  --user-bubble: color-mix(in srgb, var(--bg) 80%, var(--accent));
+}
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   font: 16px var(--font-ui); overscroll-behavior: none; }
@@ -190,15 +195,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .chat-jump { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); width: 40px; height: 40px; border-radius: 50%;
   font-size: 20px; color: var(--fg); background: var(--surface-5); border: 1px solid var(--border-strong); box-shadow: 0 2px 10px var(--shadow); }
 
-.msg.user { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-.bubble { max-width: 88%; padding: 10px 14px; font-size: 16px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
-  background: var(--user-bubble); border-radius: 18px 18px 4px 18px; }
 .msg.user.pending .bubble { opacity: .55; }
 .chip-img { font-size: 12px; color: var(--fg-muted); }
-.msg.assistant { max-width: 100%; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
-.msg.command { align-self: flex-end; font: 600 13px var(--font-mono); color: var(--ok); background: var(--surface-3);
-  border: 1px solid var(--border-subtle); padding: 4px 10px; border-radius: 12px; }
-.msg.notice { align-self: center; max-width: 92%; font-size: 12px; color: var(--fg-muted); text-align: center; white-space: pre-wrap; }
 
 .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
 .md p { margin: .5em 0; }
@@ -208,27 +206,11 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .md a { color: var(--accent); }
 .md blockquote { margin: .5em 0; padding-left: 10px; border-left: 3px solid var(--border); color: var(--fg-soft); }
 .md hr { border: 0; border-top: 1px solid var(--border-subtle); margin: .8em 0; }
-.md-code { font: .88em var(--font-mono); padding: 1px 5px; background: var(--surface-4); border-radius: 4px; }
-.codeblock { margin: .6em 0; background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: 10px; overflow: hidden; }
-.code-head { display: flex; justify-content: space-between; align-items: center; padding: 3px 6px 3px 12px; font-size: 12px; color: var(--fg-muted); background: var(--surface-3); }
-.code-copy { padding: 4px 8px; font: inherit; color: var(--fg-muted); background: none; border: 0; }
-.codeblock pre { margin: 0; padding: 10px 12px; overflow-x: auto; font: 13px/1.45 var(--font-mono); }
 .md-table { overflow-x: auto; margin: .6em 0; }
 .md-table table { border-collapse: collapse; font-size: 14px; }
 .md-table th, .md-table td { padding: 5px 10px; border: 1px solid var(--border-subtle); text-align: left; }
 .md-table th { background: var(--surface-3); }
 
-details.thought { color: var(--fg-muted); font-size: 14px; }
-details.thought summary { cursor: pointer; font-style: italic; padding: 2px 0; }
-.t-text { white-space: pre-wrap; overflow-wrap: anywhere; padding: 4px 0 4px 10px; border-left: 2px solid var(--border-subtle); }
-details.tool { font-size: 14px; background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: 10px; }
-details.tool summary { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; list-style: none; }
-details.tool summary::-webkit-details-marker { display: none; }
-details.tool.t-empty summary { cursor: default; }
-.t-icon { flex: none; width: 18px; text-align: center; font-family: var(--font-mono); color: var(--fg-muted); }
-.t-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-soft); }
-.t-mark { flex: none; font-size: 13px; }
-.st-ok .t-mark { color: var(--ok); } .st-error .t-mark { color: var(--danger); } .st-running .t-mark { color: var(--warn); animation: ttm-pulse 1s ease-in-out infinite; }
 .t-body { display: flex; flex-direction: column; gap: 8px; padding: 0 10px 10px; }
 .t-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-muted); }
 .t-block pre { margin: 3px 0 0; padding: 8px; max-height: 260px; overflow: auto; font: 12px/1.4 var(--font-mono);
@@ -239,9 +221,7 @@ details.tool.t-empty summary { cursor: default; }
 .diff-line.add { color: var(--ok); background: var(--ok-bg); } .diff-line.del { color: var(--danger); background: var(--danger-bg); }
 .diff-gap { padding: 2px 8px; font-size: 11px; color: var(--fg-faint); }
 
-.qcard { display: flex; flex-direction: column; gap: 14px; padding: 12px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 12px; }
 .qcard.q-cancelled { opacity: .6; }
-.q-chip { display: inline-block; padding: 1px 8px; font-size: 11px; color: var(--fg-muted); background: var(--surface-4); border: 1px solid var(--border); border-radius: 9px; }
 .q-text { margin: 5px 0 2px; font-weight: 600; line-height: 1.35; }
 .q-opt { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: 10px; }
 .q-opt.picked { border-color: var(--accent); background: var(--accent-bg); }
@@ -392,3 +372,77 @@ details.tool.t-empty summary { cursor: default; }
 .theme-card[aria-pressed='true'] { border-color: var(--accent); }
 .theme-dots { display: flex; gap: 5px; }
 .theme-dots i { width: 12px; height: 12px; border-radius: 50%; }
+
+/* ---- Typography and chat items ----
+   Each kind of item has its own shape, so the conversation can be scanned at a glance:
+   you = tinted bubble, agent = open prose, thinking = quiet italic, tools = icon rows,
+   questions = framed in the accent, system lines = ruled, small caps. */
+html { -webkit-tap-highlight-color: transparent; }
+body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; font-optical-sizing: auto; }
+pre, code, .diff, .codeblock { font-variant-ligatures: none; }
+.u-item, .u-pct, .msg-time, .u-age, .step-value { font-variant-numeric: tabular-nums; }
+
+.msg.user { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; margin-top: 6px; }
+.bubble { max-width: 88%; padding: 10px 14px; font-size: var(--fs-base); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--user-bubble); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); border-radius: 18px 18px 4px 18px; }
+.msg-time { padding-right: 4px; font-size: var(--fs-2xs); color: var(--fg-faint); }
+
+.msg.assistant { max-width: 100%; font-size: var(--fs-base); line-height: 1.6; letter-spacing: -.003em; overflow-wrap: anywhere; }
+.md h1, .md h2, .md h3 { font-weight: 650; letter-spacing: -.015em; }
+.md h4, .md h5, .md h6 { font-weight: 600; color: var(--fg-soft); }
+.md strong { font-weight: 650; }
+.md-code { font: .86em var(--font-mono); padding: .1em .4em; background: var(--surface-4); border: 1px solid var(--border-subtle); border-radius: 6px; }
+.codeblock { margin: .7em 0; background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; }
+.code-head { display: flex; justify-content: space-between; align-items: center; padding: 0 4px 0 12px; min-height: 34px;
+  font: 600 var(--fs-2xs) var(--font-mono); text-transform: uppercase; letter-spacing: .08em; color: var(--fg-muted);
+  background: var(--surface-3); border-bottom: 1px solid var(--border-subtle); }
+.code-copy { min-height: 34px; padding: 0 10px; font: 600 var(--fs-xs) var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--fg-muted); background: none; border: 0; touch-action: manipulation; }
+.code-copy:active { color: var(--fg); }
+.codeblock pre { margin: 0; padding: 10px 12px; overflow-x: auto; font: var(--fs-sm)/1.55 var(--font-mono); tab-size: 2; }
+
+.msg.command { align-self: flex-end; font: 600 var(--fs-sm) var(--font-mono); color: var(--ok); background: var(--ok-bg);
+  border: 1px solid var(--ok-border); padding: 4px 10px; border-radius: 12px; }
+.msg.notice { align-self: center; width: 100%; max-width: 92%; display: flex; align-items: center; gap: 12px; font-size: var(--fs-xs);
+  letter-spacing: .03em; color: var(--fg-muted); text-align: center; white-space: pre-wrap; }
+.msg.notice::before, .msg.notice::after { content: ''; flex: 1; height: 1px; background: var(--border-subtle); }
+
+details.thought { color: var(--fg-muted); font-size: var(--fs-md); }
+details.thought summary { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 0; cursor: pointer; list-style: none; }
+details.thought summary::-webkit-details-marker { display: none; }
+.chev { flex: none; transition: transform .15s ease; }
+details[open] > summary .chev { transform: rotate(90deg); }
+.th-label { flex: none; font-size: var(--fs-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+.th-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; color: var(--fg-faint); }
+details[open] > summary .th-preview { display: none; }
+.t-text { margin-left: 7px; padding: 4px 0 6px 12px; border-left: 2px solid var(--border); font-style: italic; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+details.tool { --cat: var(--fg-muted); font-size: var(--fs-md); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; }
+details.cat-shell { --cat: var(--warn); }
+details.cat-edit { --cat: var(--ok); }
+details.cat-read, details.cat-search, details.cat-web, details.cat-agent, details.cat-skill { --cat: var(--accent); }
+details.tool summary { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 10px; cursor: pointer; list-style: none; }
+details.tool summary::-webkit-details-marker { display: none; }
+details.tool summary:active { background: var(--surface-3); }
+details.tool[open] > summary { border-bottom: 1px solid var(--border-subtle); }
+details.tool.t-empty summary { cursor: default; }
+details.tool.st-error { background: var(--danger-bg); border-color: var(--danger-border); }
+.t-icon { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: var(--cat);
+  background: color-mix(in srgb, var(--surface-2) 80%, var(--cat)); }
+.t-name { flex: none; font: 600 var(--fs-2xs) var(--font-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--cat); }
+.t-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-sm) var(--font-mono); color: var(--fg-soft); }
+.t-mark { flex: none; font-size: var(--fs-sm); }
+.st-ok .t-mark { color: var(--ok); }
+.st-error .t-mark { color: var(--danger); }
+.st-running .t-mark { color: var(--warn); animation: ttm-pulse 1s ease-in-out infinite; }
+
+.qcard { display: flex; flex-direction: column; gap: 14px; padding: 14px 14px 14px 17px; background: var(--accent-bg);
+  border: 1px solid var(--accent-border); border-radius: 14px; box-shadow: inset 3px 0 0 var(--accent); }
+.qcard.q-answered { background: var(--surface-2); border-color: var(--border); box-shadow: inset 3px 0 0 var(--ok); }
+.qcard.q-cancelled { background: var(--surface-2); border-color: var(--border); box-shadow: inset 3px 0 0 var(--fg-faint); }
+.q-chip { display: inline-block; padding: 2px 9px; font: 600 var(--fs-2xs) var(--font-ui); text-transform: uppercase; letter-spacing: .06em;
+  color: var(--accent); background: var(--surface-2); border: 1px solid var(--accent-border); border-radius: 9px; }
+.q-opt.picked { background: var(--surface-4); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

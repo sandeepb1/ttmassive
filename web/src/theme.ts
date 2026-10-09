@@ -251,3 +251,9 @@ export function xtermTheme(t: Theme = active) {
     brightBlue: bBlue, brightMagenta: bMagenta, brightCyan: bCyan, brightWhite: bWhite,
   };
 }
+
+/** Let the open session's agent colour the app: sets `data-agent`, which style.css maps to --accent. */
+export function setAgentAccent(agent: 'claude' | 'codex' | null, root: HTMLElement = document.documentElement) {
+  if (agent) root.dataset.agent = agent;
+  else delete root.dataset.agent;
+}
