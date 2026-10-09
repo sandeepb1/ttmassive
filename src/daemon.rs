@@ -19,6 +19,8 @@ use crate::{
 
 const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `start --tunnel` waits for the public address before saying it is still trying.
+const TUNNEL_WAIT: Duration = Duration::from_secs(15);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub const LAUNCHD_LABEL: &str = "com.ttm.server";
@@ -93,7 +95,8 @@ fn last_lines(path: &Path, n: usize) -> Vec<String> {
     lines[lines.len().saturating_sub(n)..].iter().map(|s| (*s).to_owned()).collect()
 }
 
-pub async fn start(config_path: Option<&Path>, cfg: &Config) -> Result<()> {
+/// `extra` is passed on to the `serve` process (the tunnel flags).
+pub async fn start(config_path: Option<&Path>, cfg: &Config, extra: &[String]) -> Result<()> {
     let data_dir = cfg.data_dir()?;
     let sock = cfg.socket_path()?;
     if let Some(pid) = running_pid(&data_dir) {
@@ -106,7 +109,7 @@ pub async fn start(config_path: Option<&Path>, cfg: &Config) -> Result<()> {
     let err = out.try_clone()?;
 
     let mut cmd = Command::new(std::env::current_exe().context("locating the ttm executable")?);
-    cmd.arg("serve");
+    cmd.arg("serve").args(extra);
     if let Some(p) = config_path {
         cmd.arg("--config").arg(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));
     }
@@ -127,6 +130,9 @@ pub async fn start(config_path: Option<&Path>, cfg: &Config) -> Result<()> {
     loop {
         if control::call(&sock, &Request::Ping).await.is_ok() {
             println!("ttm started (pid {}), listening on http://{}", child.id(), cfg.bind);
+            if cfg.tunnel.is_some() {
+                print_tunnel_wait(&sock).await;
+            }
             println!("log: {}", log.display());
             return Ok(());
         }
@@ -138,6 +144,29 @@ pub async fn start(config_path: Option<&Path>, cfg: &Config) -> Result<()> {
             bail!("ttm did not become ready within {}s; see {}", START_TIMEOUT.as_secs(), log.display());
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+/// The tunnel needs a few seconds to get its address; show it, or say why not yet.
+async fn print_tunnel_wait(sock: &Path) {
+    let deadline = Instant::now() + TUNNEL_WAIT;
+    let mut last = serde_json::Value::Null;
+    while Instant::now() < deadline {
+        if let Ok(s) = control::call(sock, &Request::Status).await {
+            last = s["tunnel"].clone();
+            if let Some(url) = last["url"].as_str() {
+                println!("public  {url}  ({})", last["provider"].as_str().unwrap_or("?"));
+                if last["expires"].as_bool() == Some(true) {
+                    println!("        free pinggy tunnels close after an hour; set `tunnel_token` for one that lasts");
+                }
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    match last["last_error"].as_str() {
+        Some(e) => println!("warning: no public address yet; the tunnel keeps retrying ({e})"),
+        None => println!("warning: no public address yet; the tunnel keeps retrying (see `ttm status`)"),
     }
 }
 
@@ -188,6 +217,7 @@ pub async fn status(cfg: &Config) -> Result<bool> {
             println!("ttm {} is running (pid {})", s["version"].as_str().unwrap_or("?"), s["pid"]);
             println!("  listening   http://{}", s["bind"].as_str().unwrap_or("?"));
             println!("  uptime      {}", human_duration(secs));
+            print_tunnel_status(&s["tunnel"]);
             println!(
                 "  sessions    {} running, {} exited, {} stopped",
                 s["sessions"]["running"], s["sessions"]["exited"], s["sessions"]["stopped"]
@@ -205,6 +235,21 @@ pub async fn status(cfg: &Config) -> Result<bool> {
             }
             Ok(false)
         }
+    }
+}
+
+fn print_tunnel_status(t: &serde_json::Value) {
+    let Some(provider) = t["provider"].as_str() else { return };
+    match t["url"].as_str() {
+        Some(url) => println!(
+            "  tunnel      {url} ({provider}, up {}, {} reconnect(s))",
+            human_duration(t["up_secs"].as_u64().unwrap_or(0)),
+            t["reconnects"]
+        ),
+        None => println!(
+            "  tunnel      {provider}: connecting{}",
+            t["last_error"].as_str().map(|e| format!(" (last error: {e})")).unwrap_or_default()
+        ),
     }
 }
 

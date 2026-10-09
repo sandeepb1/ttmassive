@@ -62,6 +62,20 @@ self.addEventListener('push', (e) => {
     data = { title: 'ttm', body: e.data ? e.data.text() : '' };
   }
   const session = data.session || 'main';
+  // The tunnel has a new address: show it, and open it when tapped.
+  if (data.open_url) {
+    e.waitUntil(
+      self.registration.showNotification(data.title || 'ttm has a new address', {
+        body: data.body || '',
+        tag: 'tunnel',
+        renotify: true,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        data: { open_url: data.open_url },
+      }),
+    );
+    return;
+  }
   // A usage-limit warning is not about a session: always show it, and open the usage panel.
   if (data.limit) {
     e.waitUntil(
@@ -128,6 +142,10 @@ self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const data = e.notification.data || {};
   const session = data.session || 'main';
+  if (data.open_url && /^https:\/\//.test(data.open_url)) {
+    e.waitUntil(self.clients.openWindow(data.open_url));
+    return;
+  }
   if (data.limit) {
     e.waitUntil(
       (async () => {

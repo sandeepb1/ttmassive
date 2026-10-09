@@ -17,6 +17,10 @@ use crate::config::Config;
 pub const COOKIE_NAME: &str = "ttm_session";
 const MAX_FAILURES: u32 = 5;
 const LOCKOUT: Duration = Duration::from_secs(60);
+/// `ttm hash-password` refuses anything shorter.
+pub const MIN_PASSWORD_LEN: usize = 12;
+/// Logins over a tunnel whose client we cannot tell apart share one slow lane.
+const SHARED_GAP: Duration = Duration::from_secs(2);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -30,6 +34,8 @@ pub struct Auth {
     key: Vec<u8>,
     ttl: Duration,
     failures: DashMap<IpAddr, (u32, Instant)>,
+    /// When the last login attempt from an unidentifiable client began.
+    shared_last: std::sync::Mutex<Option<Instant>>,
 }
 
 pub fn hash_password(pw: &str) -> Result<String> {
@@ -51,6 +57,7 @@ impl Auth {
             key: load_or_create_key(&data_dir.join("cookie.key"))?,
             ttl: Duration::from_secs(cfg.session_ttl_hours * 3600),
             failures: DashMap::new(),
+            shared_last: std::sync::Mutex::new(None),
         })
     }
 
@@ -64,6 +71,18 @@ impl Auth {
             Some(e) => e.0 < MAX_FAILURES || e.1.elapsed() > LOCKOUT,
             None => true,
         }
+    }
+
+    /// For logins that arrive through a tunnel without the client's address: every one of them
+    /// looks like 127.0.0.1, so a per-address lockout would let one attacker lock everyone out.
+    /// Allow one attempt per `SHARED_GAP` across all of them instead.
+    pub fn may_attempt_shared(&self) -> bool {
+        let mut last = self.shared_last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let ok = last.is_none_or(|t| t.elapsed() >= SHARED_GAP);
+        if ok {
+            *last = Some(Instant::now());
+        }
+        ok
     }
 
     pub fn record(&self, ip: IpAddr, ok: bool) {
@@ -149,6 +168,7 @@ mod tests {
             key: vec![7; 32],
             ttl: Duration::from_secs(60),
             failures: DashMap::new(),
+            shared_last: std::sync::Mutex::new(None),
         }
     }
 
@@ -179,5 +199,16 @@ mod tests {
         assert!(!a.may_attempt(ip));
         a.record(ip, true);
         assert!(a.may_attempt(ip));
+    }
+
+    #[test]
+    fn anonymous_logins_share_one_slow_lane_and_never_lock_out() {
+        let a = auth(Credential::Plain("x".into()));
+        assert!(a.may_attempt_shared());
+        assert!(!a.may_attempt_shared(), "a second attempt right away waits");
+        *a.shared_last.lock().unwrap() = Some(Instant::now() - SHARED_GAP);
+        assert!(a.may_attempt_shared());
+        // The per-address lockout is untouched by any of this.
+        assert!(a.may_attempt([127, 0, 0, 1].into()));
     }
 }

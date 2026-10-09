@@ -61,6 +61,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/answer", post(session_answer))
         .route("/api/sessions/{id}/meta", post(session_meta))
         .route("/api/usage", get(get_usage))
+        .route("/api/tunnel", get(get_tunnel))
         .route("/api/dirs", get(recent_dirs))
         .route("/api/groups", get(list_groups))
         .route("/api/groups/{name}/start", post(start_group))
@@ -98,25 +99,44 @@ struct LoginBody {
     password: String,
 }
 
-fn client_ip(st: &AppState, headers: &HeaderMap, peer: SocketAddr) -> std::net::IpAddr {
-    if st.cfg.trust_proxy
-        && let Some(ip) = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            // The last entry is the one our own proxy appended; earlier ones are client-supplied.
-            .and_then(|v| v.split(',').next_back())
-            .and_then(|v| v.trim().parse().ok())
-    {
-        return ip;
-    }
-    peer.ip()
+/// Forwarding headers are believed when the config says to trust the proxy, and, while the
+/// tunnel is on, from connections that come from this machine (that is where ssh delivers them).
+fn proxy_trusted(st: &AppState, peer: SocketAddr) -> bool {
+    st.cfg.trust_proxy
+        || (st.cfg.tunnel.is_some() && peer.ip().is_loopback())
 }
 
-fn is_https(st: &AppState, headers: &HeaderMap) -> bool {
-    st.cfg.trust_proxy
-        && headers
-            .get("x-forwarded-proto")
-            .is_some_and(|v| v.as_bytes() == b"https")
+/// The client's address as the proxy saw it, if we are allowed to believe it.
+fn forwarded_ip(st: &AppState, headers: &HeaderMap, peer: SocketAddr) -> Option<std::net::IpAddr> {
+    if !proxy_trusted(st, peer) {
+        return None;
+    }
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        // The last entry is the one our own proxy appended; earlier ones are client-supplied.
+        .and_then(|v| v.split(',').next_back())
+        .and_then(|v| v.trim().parse().ok())
+}
+
+fn client_ip(st: &AppState, headers: &HeaderMap, peer: SocketAddr) -> std::net::IpAddr {
+    forwarded_ip(st, headers, peer).unwrap_or_else(|| peer.ip())
+}
+
+/// A request that came in through the tunnel: from this machine, but addressed to a public name.
+fn via_tunnel(st: &AppState, headers: &HeaderMap, peer: SocketAddr) -> bool {
+    st.cfg.tunnel.is_some() && peer.ip().is_loopback() && !is_local_host(headers)
+}
+
+fn is_https(st: &AppState, headers: &HeaderMap, peer: SocketAddr) -> bool {
+    if !proxy_trusted(st, peer) {
+        return false;
+    }
+    match headers.get("x-forwarded-proto") {
+        Some(v) => v.as_bytes() == b"https",
+        // localhost.run says nothing; the address we hand out is https, so treat it as such.
+        None => via_tunnel(st, headers, peer),
+    }
 }
 
 async fn login(
@@ -127,7 +147,13 @@ async fn login(
     Json(body): Json<LoginBody>,
 ) -> Response {
     let ip = client_ip(&st, &headers, peer);
-    if !st.auth.may_attempt(ip) {
+    // Through the tunnel without a client address, everyone is "127.0.0.1": slow them all down
+    // together instead of locking out the one address (which would include you).
+    let anonymous_tunnel = !st.cfg.trust_proxy
+        && via_tunnel(&st, &headers, peer)
+        && forwarded_ip(&st, &headers, peer).is_none();
+    let allowed = if anonymous_tunnel { st.auth.may_attempt_shared() } else { st.auth.may_attempt(ip) };
+    if !allowed {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     // Argon2 is CPU-heavy; keep it off the async workers.
@@ -142,11 +168,23 @@ async fn login(
     let cookie = Cookie::build((COOKIE_NAME, st.auth.issue_token()))
         .http_only(true)
         .same_site(SameSite::Strict)
-        .secure(is_https(&st, &headers))
+        .secure(is_https(&st, &headers, peer))
         .path("/")
         .max_age(time_from(st.auth.ttl()))
         .build();
     (jar.add(cookie), StatusCode::NO_CONTENT).into_response()
+}
+
+/// True when the request was addressed to this machine directly (not to the public address).
+fn is_local_host(headers: &HeaderMap) -> bool {
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let name = host.rsplit_once(':').map_or(host, |(n, _)| n).trim_matches(['[', ']']);
+    matches!(name, "localhost" | "127.0.0.1" | "::1")
+}
+
+async fn get_tunnel(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let v = st.tunnel.lock().map_or(serde_json::Value::Null, |t| t.to_json());
+    ([(header::CACHE_CONTROL, "no-store")], Json(v))
 }
 
 async fn logout(jar: CookieJar) -> impl IntoResponse {

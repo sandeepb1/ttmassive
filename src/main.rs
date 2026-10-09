@@ -24,6 +24,7 @@ mod subagents;
 mod sessions;
 mod suggest;
 mod tmux;
+mod tunnel;
 mod uploads;
 mod usage;
 mod ws;
@@ -58,6 +59,8 @@ pub struct AppState {
     pub chat: chat::ChatCache,
     /// Held while keys are being typed into an agent's menus, so two requests never interleave.
     pub driver: tokio::sync::Mutex<()>,
+    /// The public address ssh gave us, when `--tunnel` is on.
+    pub tunnel: std::sync::Mutex<tunnel::TunnelState>,
     /// What each Claude session last said about itself through its status line, by session uid.
     pub statusline: dashmap::DashMap<String, usage::StatusLive>,
 }
@@ -72,13 +75,46 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// Whether to open a public HTTPS address for the web app (see `tunnel` in the config).
+#[derive(clap::Args, Clone, Default)]
+struct TunnelArgs {
+    /// Reach ttm from anywhere through an ssh tunnel: `localhost.run` (default) or `pinggy`.
+    #[arg(long, value_name = "SERVICE", num_args = 0..=1, default_missing_value = "localhost.run")]
+    tunnel: Option<tunnel::Provider>,
+    /// Do not open a tunnel, even if the config asks for one.
+    #[arg(long, conflicts_with = "tunnel")]
+    no_tunnel: bool,
+}
+
+impl TunnelArgs {
+    /// The flags beat the config file.
+    fn apply(&self, cfg: &mut config::Config) {
+        if self.no_tunnel {
+            cfg.tunnel = None;
+        } else if self.tunnel.is_some() {
+            cfg.tunnel = self.tunnel;
+        }
+    }
+
+    /// The same choice as arguments for the `serve` process that `start` launches.
+    fn to_args(&self) -> Vec<String> {
+        if self.no_tunnel {
+            vec!["--no-tunnel".into()]
+        } else if let Some(p) = self.tunnel {
+            vec![format!("--tunnel={}", p.name())]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     // ---- the daemon
     /// Run the server in the foreground (what service managers run).
-    Serve,
+    Serve(TunnelArgs),
     /// Start the server in the background.
-    Start,
+    Start(TunnelArgs),
     /// Stop the background server. Sessions keep running in tmux unless --kill-sessions.
     Stop {
         /// Also stop tmux and every agent in it.
@@ -89,7 +125,7 @@ enum Cmd {
         force: bool,
     },
     /// Stop and start the background server.
-    Restart,
+    Restart(TunnelArgs),
     /// Show whether the server is running.
     Status,
     /// Show the server log.
@@ -237,7 +273,13 @@ async fn main() -> Result<()> {
     // Commands that need no config or daemon.
     match &cli.cmd {
         Cmd::HashPassword => {
-            println!("{}", auth::hash_password(&read_password()?)?);
+            let pw = read_password()?;
+            anyhow::ensure!(
+                pw.chars().count() >= auth::MIN_PASSWORD_LEN,
+                "use at least {} characters: with `--tunnel` this password is all that stands between the internet and your terminals",
+                auth::MIN_PASSWORD_LEN
+            );
+            println!("{}", auth::hash_password(&pw)?);
             return Ok(());
         }
         Cmd::Notify { kind, stdin, payload } => {
@@ -255,12 +297,23 @@ async fn main() -> Result<()> {
 
     // Commands that run or manage the server need a full config (with a password).
     match cli.cmd {
-        Cmd::Serve => return server::serve(config::Config::load(cfg_path)?).await,
-        Cmd::Start => return daemon::start(cfg_path, &config::Config::load(cfg_path)?).await,
-        Cmd::Restart => {
-            let cfg = config::Config::load(cfg_path)?;
+        Cmd::Serve(t) => {
+            let mut cfg = config::Config::load(cfg_path)?;
+            t.apply(&mut cfg);
+            return server::serve(cfg).await;
+        }
+        Cmd::Start(t) => {
+            let mut cfg = config::Config::load(cfg_path)?;
+            t.apply(&mut cfg);
+            tunnel::check_config(&cfg)?;
+            return daemon::start(cfg_path, &cfg, &t.to_args()).await;
+        }
+        Cmd::Restart(t) => {
+            let mut cfg = config::Config::load(cfg_path)?;
+            t.apply(&mut cfg);
+            tunnel::check_config(&cfg)?;
             daemon::stop(&cfg, false, false).await?;
-            return daemon::start(cfg_path, &cfg).await;
+            return daemon::start(cfg_path, &cfg, &t.to_args()).await;
         }
         Cmd::InstallService { now } => {
             return daemon::install_service(cfg_path, &config::Config::load(cfg_path)?, now).await;

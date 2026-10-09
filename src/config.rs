@@ -16,6 +16,10 @@ pub struct Config {
     pub password: Option<String>,
     /// Honor `X-Forwarded-For` / `X-Forwarded-Proto` from a reverse proxy.
     pub trust_proxy: bool,
+    /// Open a public HTTPS address over ssh (`localhost.run` or `pinggy`). `--tunnel` overrides it.
+    pub tunnel: Option<crate::tunnel::Provider>,
+    /// Pinggy account token, for a tunnel that does not close after an hour. Or `TTM_TUNNEL_TOKEN`.
+    pub tunnel_token: Option<String>,
     pub session_ttl_hours: u64,
     pub data_dir: Option<PathBuf>,
     /// Contact URI sent to push services (`mailto:` or `https:`). Apple is strict about it.
@@ -132,6 +136,8 @@ impl Default for Config {
             password_hash: None,
             password: None,
             trust_proxy: false,
+            tunnel: None,
+            tunnel_token: None,
             session_ttl_hours: 24 * 30,
             data_dir: None,
             vapid_subject: "mailto:ttm@example.com".into(),
@@ -169,6 +175,9 @@ impl Config {
         }
         if let Ok(h) = std::env::var("TTM_PASSWORD_HASH") {
             cfg.password_hash = Some(h);
+        }
+        if let Ok(t) = std::env::var("TTM_TUNNEL_TOKEN") {
+            cfg.tunnel_token = Some(t);
         }
         for p in &mut cfg.presets {
             anyhow::ensure!(

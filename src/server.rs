@@ -27,6 +27,10 @@ pub async fn serve(cfg: Config) -> Result<()> {
     // Refuse to run twice; removed again when `serve` returns.
     let _pid = daemon::PidGuard::acquire(&data_dir)?;
 
+    crate::tunnel::check_config(&cfg)?;
+    if cfg.tunnel.is_some() {
+        crate::tunnel::check_ssh().await?;
+    }
     let auth = auth::Auth::new(&cfg, &data_dir)?;
     let bind = cfg.bind;
     crate::uploads::cleanup(&data_dir, crate::uploads::KEEP);
@@ -45,6 +49,10 @@ pub async fn serve(cfg: Config) -> Result<()> {
         usage: crate::usage::Usage::new(),
         chat: crate::chat::ChatCache::default(),
         driver: tokio::sync::Mutex::new(()),
+        tunnel: std::sync::Mutex::new(crate::tunnel::TunnelState {
+            provider: cfg.tunnel,
+            ..Default::default()
+        }),
         statusline: dashmap::DashMap::new(),
         data_dir,
         cfg,
@@ -64,6 +72,9 @@ pub async fn serve(cfg: Config) -> Result<()> {
     let mut control_task = tokio::spawn(control::serve(state.clone(), sock.clone()));
     tokio::spawn(sessions::reconcile_loop(state.clone()));
     tracing::info!("ttm {} listening on http://{bind}", env!("CARGO_PKG_VERSION"));
+    let tunnel_task = state.cfg.tunnel.map(|p| {
+        tokio::spawn(crate::tunnel::run(state.clone(), p, state.cfg.tunnel_token.clone()))
+    });
 
     tokio::select! {
         () = shutdown_signal(&state) => {}
@@ -79,6 +90,9 @@ pub async fn serve(cfg: Config) -> Result<()> {
     // Open WebSockets would keep a graceful shutdown waiting forever; give them a moment.
     let _ = tokio::time::timeout(Duration::from_secs(3), http).await;
     control_task.abort();
+    if let Some(t) = tunnel_task {
+        t.abort(); // kill_on_drop ends the ssh child
+    }
     // Leave a final copy of every session's screen, then persist state.
     scrollback::snapshot_all(&state).await;
     sessions::save(&state).await;

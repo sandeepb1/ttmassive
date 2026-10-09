@@ -36,6 +36,8 @@ pub enum Kind {
     Session,
     /// A plan limit (5h or weekly) is nearly used up. Not tied to a tmux session.
     Limit,
+    /// The tunnel's public address changed. Not tied to a tmux session.
+    Tunnel,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,6 +66,8 @@ struct PushPayload<'a> {
     actions: Vec<PushAction>,
     /// A usage-limit warning: `session` is not a real session, so clicking must not open it.
     limit: bool,
+    /// The tunnel's new address: clicking opens it instead of a session.
+    open_url: Option<String>,
 }
 
 fn short(s: &str, max: usize) -> String {
@@ -105,12 +109,15 @@ impl Alert {
         if self.kind == Kind::Limit {
             return "Usage limit".into();
         }
+        if self.kind == Kind::Tunnel {
+            return "ttm has a new address".into();
+        }
         let what = match self.kind {
             Kind::NeedsInput => "needs your input",
             Kind::Done => "finished",
             Kind::Idle => "went quiet",
             Kind::Exited => "exited",
-            Kind::Test | Kind::Session | Kind::Limit => unreachable!("handled above"),
+            Kind::Test | Kind::Session | Kind::Limit | Kind::Tunnel => unreachable!("handled above"),
         };
         format!("{} {what}", if agent.is_empty() { &self.session } else { agent })
     }
@@ -207,6 +214,9 @@ pub async fn send(st: &AppState, alert: Alert) {
         prompt_id: alert.prompt.as_ref().map(|p| p.id.as_str()),
         actions: alert.actions(),
         limit: alert.kind == Kind::Limit,
+        open_url: (alert.kind == Kind::Tunnel)
+            .then(|| alert.message.as_deref().and_then(|m| m.rsplit(' ').next()).map(str::to_owned))
+            .flatten(),
     }) {
         Ok(p) => p,
         Err(e) => return tracing::warn!("encoding push payload: {e}"),

@@ -20,6 +20,18 @@ password_hash = "$argon2id$REPLACE_ME"
 # rate limit per real client IP and marks the session cookie Secure.
 trust_proxy = false
 
+# Reach ttm from anywhere through an ssh tunnel (needs `ssh` on PATH, nothing else): a public
+# https address from "localhost.run" (no account) or "pinggy". `ttm start --tunnel` does the
+# same for one run, and `--no-tunnel` overrides this. A tunnel needs `password_hash`; a plaintext
+# `password` is refused. The address is printed by `ttm start` and shown by `ttm status` and in
+# Settings. localhost.run keeps the same address while it can; free pinggy tunnels close after an
+# hour, so their address changes (you get a push notification when it does).
+# tunnel = "localhost.run"
+
+# A pinggy account token (or TTM_TUNNEL_TOKEN) for a tunnel that does not close after an hour.
+# A token pinggy does not accept silently gives a free tunnel; ttm logs a warning when it does.
+# tunnel_token = ""
+
 # How long a login stays valid, in hours (default 30 days).
 session_ttl_hours = 720
 

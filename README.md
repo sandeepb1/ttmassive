@@ -43,6 +43,9 @@ line](#command-line) · [Configuration](#configuration) · [How it works](#how-i
 - Use a long, unique password. Failed logins are limited to 5 per minute per IP, which slows an
   attacker down but doesn't replace a strong password.
 - Set `trust_proxy = true` only when ttm is reachable through your proxy and nothing else.
+- `--tunnel` puts the login page on the public internet. It refuses to start unless the config has
+  a `password_hash` (not a plaintext `password`), and `ttm hash-password` refuses passwords under
+  12 characters. See [Public address](#public-address-from-anywhere).
 - ttm is a single-user tool: one password, one Unix user, no accounts or roles.
 - The CLI talks to the daemon over a Unix socket (`ttm.sock`, mode 0600, inside the owner-only
   data directory), so only your user can drive it that way.
@@ -149,6 +152,9 @@ Pick one:
   app and push notifications work.
 - Your own domain: put a TLS reverse proxy in front (`contrib/Caddyfile.example` or
   `contrib/nginx.conf.example`) and set `trust_proxy = true`.
+- Anywhere, with nothing to set up: `ttm start --tunnel` opens an ssh tunnel to
+  [localhost.run](https://localhost.run) and prints a public `https://…lhr.life` address (see
+  [Public address](#public-address-from-anywhere)).
 
 Without HTTPS or localhost, the browser won't install the app or allow push notifications, and
 plain HTTP over a network exposes your password and terminal (see [Security](#security)).
@@ -526,6 +532,45 @@ fresh and cache-written input, output, and cache reads).
 - These are the tools' own endpoints, not documented public APIs, so they can change. When one
   breaks, the panel shows the error and keeps the last numbers it had.
 
+## Public address from anywhere
+
+`ttm start --tunnel` (or `tunnel = "localhost.run"` in the config) runs your system's `ssh` as a
+reverse tunnel and gives ttm a public HTTPS address. No account, no extra program and no extra
+Rust crates: OpenSSH is the only requirement.
+
+```
+$ ttm start --tunnel
+ttm started (pid 4242), listening on http://127.0.0.1:7681
+public  https://b78e2f4d1619ec.lhr.life  (localhost.run)
+```
+
+| | |
+|---|---|
+| `--tunnel` / `--tunnel localhost.run` | localhost.run: no account, no time limit. The address usually survives a reconnect, but is not promised |
+| `--tunnel pinggy` | pinggy.io over port 443. The free tier closes after an hour and the address changes. `tunnel_token` (or `TTM_TUNNEL_TOKEN`) gives a tunnel that lasts |
+| `--no-tunnel` | Turn off a tunnel the config asks for |
+
+Works on `serve`, `start` and `restart`. The flag beats the config.
+
+- **Where you see the address:** `ttm start` waits up to 15 seconds for it, `ttm status` shows it
+  with the uptime and reconnect count, and Settings in the web app has it with a Copy button.
+  When it changes you get a push notification that opens the new address.
+- **Reconnecting:** ssh runs with a keepalive. If it drops (sleep, Wi-Fi change), ttm reconnects
+  with a growing pause, up to a minute. If the tunnel can't come up at all, ttm keeps serving on
+  localhost and `start` warns instead of failing; `ttm status` shows the last error. Only a
+  missing `ssh` stops the start.
+- **ssh runs isolated:** with `-F none`, no agent, no keys from `~/.ssh`, and its own
+  `known_hosts` in the data directory (`accept-new`, so a changed host key is still refused).
+- **Login protection:** the tunnel refuses a plaintext password (see [Security](#security)).
+  pinggy tells ttm each visitor's address, so the 5-per-minute limit applies per visitor.
+  localhost.run does not, so every visitor looks like `127.0.0.1`; ttm then lets one login
+  attempt through every 2 seconds for everyone instead, so a stranger can't lock you out.
+  While the tunnel is on, ttm believes `X-Forwarded-*` headers only from connections made by
+  this machine, and marks the session cookie `Secure` for the public address.
+- **Both services are free third-party services.** Everything you do in ttm passes through their
+  servers (over TLS that they terminate), and they can rate-limit or drop you. For something you
+  depend on, use Tailscale or your own domain and proxy.
+
 ## Command line
 
 These commands talk to the running daemon, so run `ttm start` first.
@@ -534,12 +579,12 @@ These commands talk to the running daemon, so run `ttm start` first.
 
 | Command | What it does |
 |---|---|
-| `ttm start` | Start the server in the background (new session, pidfile, log file). Waits until it answers and prints the log tail if it fails |
+| `ttm start [--tunnel [SERVICE]] [--no-tunnel]` | Start the server in the background (new session, pidfile, log file). Waits until it answers and prints the log tail if it fails. `--tunnel` also opens a [public address](#public-address-from-anywhere) |
 | `ttm stop` | Stop the daemon. Sessions keep running in tmux. `--kill-sessions` also stops tmux and every agent, after saving their screens |
-| `ttm restart` | `stop`, then `start` |
+| `ttm restart [--tunnel [SERVICE]] [--no-tunnel]` | `stop`, then `start` |
 | `ttm status` | Version, uptime, address, session counts, push devices, and whether a service manager owns it. Exit status 3 when not running |
 | `ttm logs [-n N] [-f]` | Show or follow the log |
-| `ttm serve` | Run in the foreground (what service managers run) |
+| `ttm serve [--tunnel [SERVICE]] [--no-tunnel]` | Run in the foreground (what service managers run) |
 | `ttm install-service [--now]` | Write a systemd (Linux) or launchd (macOS) user service that runs `ttm serve`, using this shell's `PATH` so your agents are found. `--now` also starts it |
 | `ttm uninstall-service` | Remove it. Sessions keep running |
 
@@ -601,7 +646,7 @@ the CLI, `--prompt-id` does the same.
 | `agent`, `idle_alert_secs` | Override the agent guess (`claude`, `codex` or `other`), and set the quiet-time threshold for `other` |
 
 Groups (`[[groups]]`, with `name` and `presets = [...]`) start several presets together. Other
-settings are `bind`, `password_hash`, `trust_proxy`, `session_ttl_hours`, `data_dir`, `socket`,
+settings are `bind`, `password_hash`, `trust_proxy`, `tunnel`, `tunnel_token`, `session_ttl_hours`, `data_dir`, `socket`,
 `vapid_subject` and `notify_url`.
 
 ## How it works
@@ -722,6 +767,9 @@ has no locale. After Ctrl+C out of Claude, the pane dropped into a working shell
 
 ### Not verified
 
+- The tunnel in a browser. It was driven with curl over the real localhost.run and pinggy: start,
+  address, login limits, the `Secure` cookie, reconnecting, bad token, no `ssh`. A full browser
+  session through it (WebSocket terminal, installing the PWA, push on the new address) was not.
 - Real agent screens. Question detection is tuned for the menu layouts Claude Code and Codex
   draw, but it was tested against fixtures and stand-in programs that print the same shapes, not
   live permission prompts from the real tools. If a prompt isn't recognised there are no answer

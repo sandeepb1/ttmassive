@@ -186,6 +186,7 @@ async fn status(st: &Arc<AppState>) -> Result<Value> {
         "managed": std::env::var_os("TTM_MANAGED").is_some(),
         "sessions": { "running": count("running"), "exited": count("exited"), "stopped": count("stopped") },
         "push_devices": st.subscriptions.lock().map_or(0, |g| g.len()),
+        "tunnel": st.tunnel.lock().map_or(Value::Null, |t| t.to_json()),
     }))
 }
 

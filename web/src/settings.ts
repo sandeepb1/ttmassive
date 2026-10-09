@@ -7,6 +7,7 @@ import { disablePush, enablePush, pushState, sendTest, type PushState } from './
 import { getUiScale, SCALE_MAX, SCALE_MIN, SCALE_STEP, setUiScale } from './scale';
 import { Sheet } from './sheet';
 import { ThemePicker } from './theme-picker';
+import { fetchTunnel, tunnelStatus } from './tunnel';
 
 export interface SettingsHooks {
   onUnauthorized: () => void;
@@ -49,6 +50,7 @@ function stepper(label: string, value: () => string, step: (dir: -1 | 1) => void
 export class SettingsSheet extends Sheet {
   private note = el('div', 'sheet-hint');
   private notif = el('div', 'more-block');
+  private tunnel = el('div', 'more-block');
 
   constructor(
     host: HTMLElement,
@@ -101,13 +103,41 @@ export class SettingsSheet extends Sheet {
     });
     account.append(out);
 
-    this.body.replaceChildren(...blocks, this.notif, this.note, account);
+    this.body.replaceChildren(...blocks, this.tunnel, this.notif, this.note, account);
     void this.renderNotif();
+    void this.renderTunnel();
     this.show();
   }
 
   private say(text: string) {
     this.note.textContent = text;
+  }
+
+  /** The public address, when the server was started with `--tunnel`. */
+  private async renderTunnel() {
+    const t = await fetchTunnel();
+    if (!t) return this.tunnel.replaceChildren();
+    const row = el('div', 'drawer-chips');
+    row.append(el('span', 'notif-state', tunnelStatus(t)));
+    if (t.url) {
+      const url = t.url;
+      const open = el('a', 'chip', url.replace('https://', ''));
+      open.href = url;
+      open.target = '_blank';
+      open.rel = 'noopener';
+      const copy = el('button', 'chip', 'Copy');
+      copy.type = 'button';
+      copy.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(url);
+          this.say('Address copied');
+        } catch {
+          this.say(url);
+        }
+      });
+      row.append(open, copy);
+    }
+    this.tunnel.replaceChildren(el('div', 'sheet-label', 'Public address'), row);
   }
 
   private async renderNotif() {
