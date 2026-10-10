@@ -23,6 +23,13 @@ const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// A connection that lasted this long counts as healthy: the next failure starts the backoff over.
 const HEALTHY_AFTER: Duration = Duration::from_secs(30);
+/// How soon after the address appears, and how often after that, we check from outside that it
+/// still reaches ttm. A sleeping laptop leaves ssh looking alive while the service has forgotten us.
+const WATCH_FIRST: Duration = Duration::from_secs(20);
+const WATCH_EVERY: Duration = Duration::from_secs(60);
+const WATCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Failed checks in a row before the tunnel is torn down and rebuilt.
+const WATCH_STRIKES: u32 = 2;
 /// How many of ssh's last lines to keep for `status`.
 const ERROR_LINES: usize = 3;
 
@@ -150,7 +157,8 @@ impl TunnelState {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "provider": self.provider.map(Provider::name),
-            "url": self.url,
+            // Only while connected: after a drop the old address would be a dead link.
+            "url": self.since.and(self.url.as_deref()),
             "up_secs": self.since.map(|t| t.elapsed().as_secs()),
             "reconnects": self.reconnects,
             "last_error": self.last_error,
@@ -248,7 +256,20 @@ async fn connect(
     let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     let mut announced = false;
     let mut expires = expires;
-    while let Some((is_err, line)) = rx.recv().await {
+    let (dead_tx, mut dead_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let mut watcher: Option<tokio::task::JoinHandle<()>> = None;
+    let mut gone: Option<String> = None;
+    loop {
+        let (is_err, line) = tokio::select! {
+            msg = rx.recv() => match msg {
+                Some(m) => m,
+                None => break,
+            },
+            Some(why) = dead_rx.recv() => {
+                gone = Some(why);
+                break;
+            }
+        };
         let clean = strip_ansi(&line);
         // A token the service does not accept is not an error: it hands out a free tunnel.
         if says_free_tier(&clean) && !expires {
@@ -261,6 +282,7 @@ async fn connect(
             // Some services print more than one address; the first is the one to use.
             if !announced {
                 announced = true;
+                watcher = Some(tokio::spawn(watch(url.clone(), dead_tx.clone())));
                 announce(st, provider, url, expires).await;
             }
             continue;
@@ -272,6 +294,13 @@ async fn connect(
                 tail.pop_front();
             }
         }
+    }
+    if let Some(w) = watcher {
+        w.abort();
+    }
+    if let Some(why) = gone {
+        let _ = child.kill().await;
+        anyhow::bail!("{why}");
     }
     let status = child.wait().await.context("waiting for ssh")?;
     let why = tail.iter().cloned().collect::<Vec<_>>().join(" / ");
@@ -310,6 +339,42 @@ async fn announce(st: &Arc<AppState>, provider: Provider, url: String, expires: 
         let mut alert = crate::notify::Alert::new("tunnel", crate::notify::Kind::Tunnel, Some(url));
         alert.message = alert.message.take().map(|u| format!("ttm is now at {u}"));
         crate::notify::send(st, alert).await;
+    }
+}
+
+/// Whether an answer from the public address means it no longer reaches ttm. ttm answers
+/// `/api/me` with 401 to a stranger; the relay answers 502 ("no tunnel") or 404 when it has
+/// dropped us, and a timeout or refused connection means nothing is listening.
+fn public_side_is_down(status: Option<u16>) -> bool {
+    status.is_none_or(|s| s == 404 || s >= 500)
+}
+
+/// Check from the outside, every minute, that `url` still reaches ttm. After two misses in a row
+/// report it on `dead` and stop.
+async fn watch(url: String, dead: tokio::sync::mpsc::UnboundedSender<String>) {
+    let Ok(http) = reqwest::Client::builder()
+        .timeout(WATCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return;
+    };
+    let probe = format!("{url}/api/me");
+    let mut strikes = 0;
+    tokio::time::sleep(WATCH_FIRST).await;
+    loop {
+        let status = http.get(&probe).send().await.ok().map(|r| r.status().as_u16());
+        if public_side_is_down(status) {
+            strikes += 1;
+            if strikes >= WATCH_STRIKES {
+                let seen = status.map_or_else(|| "no answer".to_owned(), |s| format!("HTTP {s}"));
+                let _ = dead.send(format!("{url} stopped reaching ttm ({seen}); reconnecting"));
+                return;
+            }
+        } else {
+            strikes = 0;
+        }
+        tokio::time::sleep(WATCH_EVERY).await;
     }
 }
 
@@ -417,6 +482,25 @@ mod tests {
         assert!(Provider::Pinggy.expires(None));
         assert!(!Provider::Pinggy.expires(Some("tok")));
         assert!(!Provider::LocalhostRun.expires(None));
+    }
+
+    #[test]
+    fn only_the_relay_giving_up_counts_as_down() {
+        assert!(!public_side_is_down(Some(401)), "ttm itself answers 401 to strangers");
+        assert!(!public_side_is_down(Some(200)));
+        assert!(!public_side_is_down(Some(429)));
+        assert!(public_side_is_down(Some(502)), "localhost.run: no tunnel");
+        assert!(public_side_is_down(Some(503)));
+        assert!(public_side_is_down(Some(404)));
+        assert!(public_side_is_down(None), "timeout or refused");
+    }
+
+    #[test]
+    fn a_dropped_tunnel_reports_no_address() {
+        let mut t = TunnelState { provider: Some(Provider::LocalhostRun), url: Some("https://a.lhr.life".into()), ..Default::default() };
+        assert!(t.to_json()["url"].is_null(), "not connected yet");
+        t.since = Some(Instant::now());
+        assert_eq!(t.to_json()["url"], "https://a.lhr.life");
     }
 
     #[test]

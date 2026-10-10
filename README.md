@@ -546,7 +546,7 @@ public  https://b78e2f4d1619ec.lhr.life  (localhost.run)
 
 | | |
 |---|---|
-| `--tunnel` / `--tunnel localhost.run` | localhost.run: no account, no time limit. The address usually survives a reconnect, but is not promised |
+| `--tunnel` / `--tunnel localhost.run` | localhost.run: no account, no time limit. The address can change whenever the tunnel reconnects |
 | `--tunnel pinggy` | pinggy.io over port 443. The free tier closes after an hour and the address changes. `tunnel_token` (or `TTM_TUNNEL_TOKEN`) gives a tunnel that lasts |
 | `--no-tunnel` | Turn off a tunnel the config asks for |
 
@@ -556,7 +556,10 @@ Works on `serve`, `start` and `restart`. The flag beats the config.
   with the uptime and reconnect count, and Settings in the web app has it with a Copy button.
   When it changes you get a push notification that opens the new address.
 - **Reconnecting:** ssh runs with a keepalive. If it drops (sleep, Wi-Fi change), ttm reconnects
-  with a growing pause, up to a minute. If the tunnel can't come up at all, ttm keeps serving on
+  with a growing pause, up to a minute. ssh can also look connected after the Mac sleeps while the
+  service has forgotten the tunnel (its address then shows "no tunnel"), so ttm checks the public
+  address from outside every minute and rebuilds the tunnel after two misses in a row. If the
+  tunnel can't come up at all, ttm keeps serving on
   localhost and `start` warns instead of failing; `ttm status` shows the last error. Only a
   missing `ssh` stops the start.
 - **ssh runs isolated:** with `-F none`, no agent, no keys from `~/.ssh`, and its own
