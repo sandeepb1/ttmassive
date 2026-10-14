@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyMods, encodeKey } from './keys.ts';
+import { applyMods, encodeKey, newlineFor } from './keys.ts';
 
 const none = { ctrl: false, alt: false };
 const ctrl = { ctrl: true, alt: false };
@@ -43,4 +43,10 @@ test('multi-character input and unmapped keys pass through', () => {
   assert.equal(applyMods('hello', ctrl), 'hello');
   assert.equal(applyMods('1', ctrl), '1');
   assert.equal(applyMods('x', none), 'x');
+});
+
+test('newline keys: Claude gets ESC CR, Codex gets LF, a shell is left alone', () => {
+  assert.equal(newlineFor('claude'), '\x1b\r');
+  assert.equal(newlineFor('codex'), '\n');
+  assert.equal(newlineFor(null), null);
 });

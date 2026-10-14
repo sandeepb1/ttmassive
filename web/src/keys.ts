@@ -63,3 +63,13 @@ export function applyMods(data: string, m: Mods): string {
   if (m.ctrl) out = ctrlChar(data) ?? data;
   return m.alt ? ESC + out : out;
 }
+
+/**
+ * What Shift+Enter (or Alt+Enter) sends to start a new line instead of submitting. Claude Code reads
+ * ESC CR (what its /terminal-setup installs); Codex reads Ctrl+J. A shell keeps a plain Enter.
+ */
+export function newlineFor(agent: 'claude' | 'codex' | null): string | null {
+  if (agent === 'claude') return '\x1b\r';
+  if (agent === 'codex') return '\n';
+  return null;
+}

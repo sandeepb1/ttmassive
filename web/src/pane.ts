@@ -240,6 +240,7 @@ export class Pane {
           this.renderStatus();
         },
         onOpenFile: (path, line) => this.events.onOpenFile(this.name, path, line),
+        agent: () => this.agent,
         onProgress: (kind) => {
           if ((this.el.dataset.progress ?? '') === (kind ?? '')) return;
           this.el.dataset.progress = kind ?? '';

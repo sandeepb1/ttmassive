@@ -14,6 +14,8 @@ import { linkAction, progressView, type Progress } from './term-addons';
 import { skewFromDate } from './activity-chip';
 import { findPaths } from './paths';
 import { markedRows } from './turn-marks';
+import { newlineFor } from './keys';
+import { getOptionMeta, onPrefsChange } from './prefs';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
@@ -27,6 +29,8 @@ export interface SessionHooks {
   onProgress: (kind: 'normal' | 'error' | 'indeterminate' | 'paused' | null) => void;
   /** A file path in the output was tapped. */
   onOpenFile: (path: string, line: number | null) => void;
+  /** Which agent the session runs, or null for a plain shell. */
+  agent: () => 'claude' | 'codex' | null;
 }
 
 /** Copies text for a program that asked via OSC 52. Reading the clipboard is never allowed. */
@@ -69,6 +73,7 @@ export class TerminalSession {
     fontSize: initialFontSize(),
     scrollback: 0, // tmux owns scrollback
     allowProposedApi: true,
+    macOptionIsMeta: getOptionMeta(),
     fontFamily: MONO_FALLBACK, // swapped to MONO_FONT once the web font has loaded
     theme: xtermTheme(),
     // OSC 8 hyperlinks: only http(s)/mailto, and a label that fakes another address is confirmed.
@@ -121,6 +126,7 @@ export class TerminalSession {
     this.setGpu(gpu);
     this.loadAddons();
     this.watchTaps();
+    this.term.attachCustomKeyEventHandler((e) => this.newlineKey(e));
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
     this.term.onResize(({ rows, cols }) => this.sendCtl({ type: 'resize', rows, cols }));
@@ -142,8 +148,12 @@ export class TerminalSession {
       this.term.options.fontFamily = MONO_FONT;
       this.fit.fit();
     });
+    const offPrefs = onPrefsChange(() => {
+      this.term.options.macOptionIsMeta = getOptionMeta();
+    });
     this.cleanup = () => {
       offTheme();
+      offPrefs();
       ro.disconnect();
       window.removeEventListener('orientationchange', refit);
       window.visualViewport?.removeEventListener('resize', refit);
@@ -357,6 +367,20 @@ export class TerminalSession {
     this.el.append(toast);
     this.toastEl = toast;
     this.toastTimer = window.setTimeout(() => toast.remove(), 10_000);
+  }
+
+  /**
+   * Shift+Enter (and Alt+Enter) start a new line in Claude Code and Codex instead of submitting.
+   * xterm sends a bare CR for all of them, so send the agent's own newline. Returns false when handled.
+   */
+  private newlineKey(e: KeyboardEvent): boolean {
+    if (e.type !== 'keydown' || e.key !== 'Enter' || e.isComposing || e.ctrlKey || e.metaKey) return true;
+    if (!e.shiftKey && !e.altKey) return true;
+    const seq = newlineFor(this.hooks.agent());
+    if (!seq) return true;
+    e.preventDefault();
+    this.sendInput(this.enc.encode(seq));
+    return false;
   }
 
   /** Raw bytes to the PTY (used by the keybar too). */

@@ -3,6 +3,7 @@
 
 import { el } from './dom';
 import { warn } from './haptics';
+import { getBellSound, getOptionMeta, setBellSound, setOptionMeta } from './prefs';
 import { disablePush, enablePush, pushState, sendTest, type PushState } from './push';
 import { getUiScale, SCALE_MAX, SCALE_MIN, SCALE_STEP, setUiScale } from './scale';
 import { Sheet } from './sheet';
@@ -114,7 +115,7 @@ export class SettingsSheet extends Sheet {
       );
     }
 
-    blocks.push(this.panesBlock());
+    blocks.push(this.keyboardBlock(), this.panesBlock());
 
     const account = el('div', 'more-block');
     account.append(el('div', 'sheet-label', 'Account'));
@@ -132,6 +133,32 @@ export class SettingsSheet extends Sheet {
     void this.renderNotif();
     void this.renderTunnel();
     this.show();
+  }
+
+  /** Hardware-keyboard and bell behaviour; kept per device because layouts and keyboards differ. */
+  private keyboardBlock(): HTMLElement {
+    const box = el('div', 'more-block');
+    const toggle = (label: string, get: () => boolean, set: (on: boolean) => void) => {
+      const row = el('div', 'ps-row');
+      row.append(el('span', 'ps-label', label));
+      const b = el('button', 'chip', get() ? 'On' : 'Off');
+      b.type = 'button';
+      b.setAttribute('aria-pressed', String(get()));
+      b.addEventListener('click', () => {
+        set(!get());
+        b.textContent = get() ? 'On' : 'Off';
+        b.setAttribute('aria-pressed', String(get()));
+      });
+      row.append(b);
+      return row;
+    };
+    box.append(
+      el('div', 'sheet-label', 'Keyboard'),
+      toggle('Option key as Meta', getOptionMeta, setOptionMeta),
+      el('div', 'sheet-hint', 'Option+B/F jump by word and Option+Enter adds a new line. Turn off to type characters like é with Option.'),
+      toggle('Bell sound', getBellSound, setBellSound),
+    );
+    return box;
   }
 
   /** Several panes at once: on or off, how many, and which grid to start from. */
