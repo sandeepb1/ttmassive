@@ -1,6 +1,6 @@
 @layer components {
   .cmd-backdrop { position: absolute; inset: 0; z-index: 30; background: var(--scrim); }
-  .cmd { position: absolute; z-index: 31; top: max(8%, var(--safe-top)); left: 50%; transform: translateX(-50%);
+  .cmd { position: absolute; z-index: 31; top: max(8%, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
     width: min(calc(100% - 24px), 600px); max-height: min(70%, 520px); display: flex; flex-direction: column; overflow: hidden;
     background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: 0 18px 48px var(--shadow); }
   .cmd-input { flex: none; height: 52px; padding: 0 16px; border: 0; border-bottom: 1px solid var(--border); background: transparent;
