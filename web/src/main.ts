@@ -26,6 +26,7 @@ import { AgentSheet } from './agent-sheet';
 import { fetchPresets, launchSession, mainAgents, type PresetInfo } from './dirs';
 import { openMenu, type MenuItem } from './menu';
 import { NewSessionSheet } from './new-session-sheet';
+import { chip } from './ui/chip';
 import { SHEET_SELECTOR } from './ui/sheet';
 import type { SubAgent } from './agents';
 
@@ -390,10 +391,7 @@ function renderEmpty(empty: string[]) {
       if (!box.isConnected) continue;
       const row = el('div', 'te-chips');
       for (const s of free) {
-        const chip = el('button', 'chip', s.id);
-        chip.type = 'button';
-        chip.addEventListener('click', () => addPane(s.id));
-        row.append(chip);
+        row.append(chip({ onClick: () => addPane(s.id) }, s.id));
       }
       box.append(row.childElementCount ? row : el('div', 'te-hint', 'No other sessions. Start one from the list.'));
     }

@@ -33,7 +33,7 @@
     color: var(--accent-text); background: var(--accent-bg); border: 1px solid var(--accent-border); border-radius: var(--radius-md); }
   .rb-status { margin-top: 4px; font-size: var(--fs-sm); color: var(--fg-muted); } .rb-status:empty { display: none; }
   .rb-section { display: flex; flex-direction: column; gap: 8px; }
-  .rb-uhead { display: flex; align-items: center; justify-content: space-between; } .rb-uhead .drawer-label { margin: 0; }
+  .rb-uhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; } .rb-uhead .drawer-label { margin: 0; }
   .rb-rows { display: flex; flex-direction: column; gap: 6px; }
   .rb-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 52px; padding: 8px 12px; text-align: left; font: inherit;
     color: var(--fg); background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }

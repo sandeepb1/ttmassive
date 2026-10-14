@@ -40,6 +40,11 @@ const chipStyles = tv({
   defaultVariants: { tone: 'neutral' },
 });
 
+/** The chip look as a class string, for an element that is not a button (a link). */
+export function chipClass(props: { tone?: Tone; cls?: string } = {}): string {
+  return cn(chipStyles({ tone: props.tone }), props.cls);
+}
+
 export interface ChipProps {
   /** Shorthand for the accent tone, and sets aria-pressed. */
   on?: boolean;

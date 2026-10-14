@@ -8,6 +8,7 @@
 @import './sheets.css';
 @import './sidebar.css';
 @import './rightbar.css';
+@import './tabs.css';
 @import 'tailwindcss/utilities.css' layer(utilities);
 
 /* Semantic names (shadcn's vocabulary) over the vars theme.ts and style.css already derive from the active theme.

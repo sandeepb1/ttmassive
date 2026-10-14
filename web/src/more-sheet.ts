@@ -6,8 +6,8 @@ import { stepEffort } from './chat-model';
 import { el } from './dom';
 import { warn } from './haptics';
 import { Sheet, row } from './sheet';
-import { icon } from './icons';
 import { button } from './ui/button';
+import { stepper } from './ui/stepper';
 import { cn } from './ui/cn';
 import { sheetActions, sheetBlock, sheetHint, sheetLabel, sheetList } from './ui/sheet-parts';
 
@@ -72,11 +72,9 @@ export class MoreSheet extends Sheet {
     if (note) parts.push(sheetHint(note));
 
     // Reasoning
-    const stepBtn = (label: string, glyph: 'minus' | 'plus', up: boolean) =>
-      button({ variant: 'secondary', size: 'icon', label, cls: 'size-13 rounded-full', onClick: () => void this.step(up) }, icon(glyph));
-    const stepper = el('div', 'flex items-center justify-center gap-5 py-2');
-    stepper.append(stepBtn('Less reasoning', 'minus', false), el('span', 'min-w-24 text-center text-lg font-bold tabular-nums', effort ?? 'unknown'), stepBtn('More reasoning', 'plus', true));
-    parts.push(sheetBlock(sheetLabel('Reasoning'), stepper, sheetHint('Applies to this session only.')));
+    const steps = stepper({ less: 'Less reasoning', more: 'More reasoning' }, (dir) => void this.step(dir > 0));
+    steps.out.textContent = effort ?? 'unknown';
+    parts.push(sheetBlock(sheetLabel('Reasoning'), steps.el, sheetHint('Applies to this session only.')));
 
     // Codex permissions
     if (agent === 'codex') {

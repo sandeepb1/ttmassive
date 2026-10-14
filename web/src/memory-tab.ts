@@ -5,6 +5,8 @@
 import { getJson, postJson, sessionUrl } from './api-json';
 import { renderMarkdown } from './chat-render';
 import { el } from './dom';
+import { button } from './ui/button';
+import { input as textInput } from './ui/input';
 import { icon } from './icons';
 import {
   dayLabel,
@@ -39,7 +41,7 @@ export class MemoryTab {
   private stats = el('section', 'rb-section');
   private searchBox = el('section', 'rb-section');
   private found = el('div', 'mem-found');
-  private input = el('input', 'mem-input');
+  private input = textInput({ type: 'search', cls: 'flex-1' });
   private rollupBox = el('section', 'rb-section');
   private timeline = el('section', 'rb-section');
 
@@ -66,11 +68,9 @@ export class MemoryTab {
     this.input.setAttribute('aria-label', 'Search this project’s memory');
     this.input.enterKeyHint = 'search';
     this.input.autocomplete = 'off';
-    const form = el('form', 'mem-search');
-    const go = el('button', 'icon mem-go');
+    const form = el('form', 'flex items-center gap-2');
+    const go = button({ variant: 'secondary', size: 'icon', label: 'Search' }, icon('search'));
     go.type = 'submit';
-    go.setAttribute('aria-label', 'Search');
-    go.append(icon('search'));
     form.append(this.input, go);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -171,10 +171,8 @@ export class MemoryTab {
     if (o.index_status && o.index_status !== 'ok') card.append(el('div', 'mem-err', `The last index run: ${o.index_status}`));
 
     const actions = el('div', 'mem-actions');
-    const reindex = el('button', 'chip', o.reindex.running ? 'Indexing…' : 'Re-index');
-    reindex.type = 'button';
+    const reindex = button({ variant: 'secondary', size: 'sm', onClick: () => void this.reindex() }, o.reindex.running ? 'Indexing…' : 'Re-index');
     reindex.disabled = o.reindex.running || o.days.length === 0;
-    reindex.addEventListener('click', () => void this.reindex());
     actions.append(reindex);
     if (o.unindexed && !o.reindex.running) actions.append(el('span', 'mem-flag', 'Newer notes are not indexed yet'));
     const line = jobLine(o.reindex, 'Reading the notes into the index. Searching still works while this runs.', 'Indexing failed');
@@ -258,9 +256,7 @@ export class MemoryTab {
       if (!d.open || d.childElementCount > 1) return;
       const body = el('div', 'mem-hit-body');
       body.append(renderMarkdown(h.text.replace(/^#{1,6} .*\n?/, '')));
-      const more = el('button', 'chip', 'Show the surrounding notes');
-      more.type = 'button';
-      more.addEventListener('click', () => void this.expand(h, body, more));
+      const more = button({ variant: 'secondary', size: 'sm', onClick: () => void this.expand(h, body, more) }, 'Show the surrounding notes');
       body.append(more);
       d.append(body);
     });
@@ -292,12 +288,10 @@ export class MemoryTab {
     }
     const job = this.rollup?.job ?? o.rollup;
     const info = this.rollup?.rollup ?? null;
-    const button = el('button', 'chip', job.running ? 'Summarising…' : info ? 'Regenerate' : 'Generate');
-    button.type = 'button';
-    button.disabled = job.running || o.days.length === 0;
-    button.addEventListener('click', () => void this.generate());
+    const gen = button({ variant: 'secondary', size: 'sm', onClick: () => void this.generate() }, job.running ? 'Summarising…' : info ? 'Regenerate' : 'Generate');
+    gen.disabled = job.running || o.days.length === 0;
     const head = el('div', 'rb-uhead');
-    head.append(el('div', 'drawer-label', 'Decisions & open questions'), button);
+    head.append(el('div', 'drawer-label', 'Decisions & open questions'), gen);
     const parts: HTMLElement[] = [head];
     const line = jobLine(job, 'Asking the model to read the notes. This takes up to a minute.', 'Summarising failed');
     if (line) parts.push(el('div', job.error ? 'mem-err' : 'mem-note', line));
