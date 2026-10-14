@@ -21,7 +21,7 @@ const TICK_MS = 15_000;
 
 const now = () => Math.floor(Date.now() / 1000);
 
-function meter(label: string, w: LimitWindow): HTMLElement {
+export function meter(label: string, w: LimitWindow): HTMLElement {
   const lvl = level(w.used_pct);
   const row = el('div', 'u-win');
   const top = el('div', 'u-win-top');

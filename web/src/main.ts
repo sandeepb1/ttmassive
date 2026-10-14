@@ -743,6 +743,8 @@ async function showApp() {
       layout.dismissOverlays(); // on a phone the sidebar would cover the message
       focused?.showMessage(id);
     },
+    sheetHost: () => $('app'),
+    signedOut: () => showLogin(),
   });
   usage.start(); // before syncPanels: start() resets what the sidebar asked the usage view to watch
   syncPanels();

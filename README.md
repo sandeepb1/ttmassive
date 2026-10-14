@@ -497,7 +497,7 @@ what an agent is doing and its latest message come from the agent's own log, whi
 about for sessions it started.
 
 The right sidebar (the panel button in the top bar, or a swipe from the right edge) has search and
-four tabs:
+up to six tabs:
 
 - **Overview**: the model, mode and conversation actions, and plan usage.
 - **Files**: every file the agent edited, wrote or deleted in the conversation, newest first, with
@@ -507,9 +507,71 @@ four tabs:
   plan Codex proposed, as formatted text. Codex's own to-do updates are not shown: it records them
   as code inside a tool call, which is not a stable format to read.
 - **Images**: pictures you attached in the chat, kept for a week.
+- **Memory**: the [memsearch](#memory-memsearch) notes of the session's project.
+- **Team** (only for a session whose agent goes through [Team Claude](#team-claude)): the proxy's
+  health, pooled limits, accounts and requests.
 
 Search covers the messages loaded in the chat (not the whole log). Tap a result to jump to the
 message, which flashes once.
+
+### Memory (memsearch)
+
+If you use the [memsearch](https://github.com/zilliztech/memsearch) plugin for Claude Code, the
+**Memory** tab shows what it has remembered about the session's project. The project is the nearest
+folder above the session's working folder that has a `.memsearch` folder, else its git root. The
+home folder's `.memsearch` (your global memory) is not used for other projects.
+
+- **Stats**: the folder, how many days, entries and index chunks there are, when the index last
+  ran, and the embedding model. **Re-index** reads the notes into the index again (it runs in the
+  background, one at a time per project); a flag says when notes are newer than the index.
+- **Search**: type a question and press Enter. This runs `memsearch search` for the project's own
+  collection, so the first search after a while takes a few seconds (it loads a model); repeats
+  are instant until the index changes. A result opens to the full note, and **Show the surrounding
+  notes** loads the rest of that section.
+- **Decisions & open questions**: press **Generate** and the notes (newest first, up to about
+  24,000 characters, with the session ids left out) are sent once to the summarising model in
+  memsearch's own config (`[compact]` in `~/.memsearch/config.toml`). It answers with the decisions
+  still standing, the questions still open and the recurring topics. The result is kept in ttm's
+  data folder (`memory-rollups/`, owner-only) and marked stale when the notes change; nothing is
+  sent unless you press the button.
+- **Notes by day**: every daily note, newest first, opened into its entries.
+
+ttm finds `memsearch` on `PATH`, in `~/.local/bin`, or in the Homebrew folders. The tab only reads
+the notes; Re-index is the one thing it changes.
+
+### Team Claude
+
+[Team Claude](https://github.com/KarpelesLab/teamclaude) is a local proxy that pools several Claude
+and Codex accounts and moves on to the next when one runs out. ttm works out per session whether
+the agent goes through it, the way the agent does: for Claude Code from `ANTHROPIC_BASE_URL` (the
+environment ttm runs in, then the project's `.claude/settings.local.json` and `settings.json`, then
+`~/.claude/settings.json`), and for Codex from the `base_url` of the `model_provider` in
+`~/.codex/config.toml`. The address only counts if it answers like Team Claude, so another proxy is
+left alone. A session that goes through it shows **via Team Claude** in the list, gets the **Team**
+tab, and for Claude the plan usage shows the pool's limits instead of the signed-in account's
+(labelled *Team Claude*). Codex's usage stays the signed-in account's.
+
+The tab shows:
+
+- **Health**: version, uptime, lag, active sessions and the upstream.
+- **Pooled limits**: the 5-hour and 7-day limits combined across the Claude accounts.
+- **Routing**: the account in use, the default, and when it moves on.
+- **Accounts**: each one's state, 5-hour and 7-day limits, requests, tokens and recent models. The
+  others (Codex's, for a Claude session) are folded away. **Use this account** asks first, since it
+  moves Team Claude for every session; it only acts on the session's own provider and is refused
+  when Team Claude would pick a different provider's account of the same name. The proxy's
+  dashboard link appears only when you open ttm on the machine the proxy runs on.
+- **Requests**: the latest requests through the proxy, for this conversation or all of them.
+
+Requests come from Team Claude's own request log, which is off unless configured. In
+`~/.config/teamclaude.json` set `"logDir"` (an absolute path) and `"logLevel": "headers"`, then
+**restart Team Claude** (a reload does not pick these up). `headers` keeps prompts out of the log
+and is all the tab needs; ttm reads only the time, method, path, status, account and retry count of
+each file, and never returns headers or bodies. `body` also works, and the tab warns that it writes
+your prompts to disk. Team Claude removes logs older than 72 hours by default
+(`logRetentionHours`).
+
+Everything is read from the proxy on this machine; nothing from it is stored by ttm.
 
 ## Helper agents
 

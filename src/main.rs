@@ -12,6 +12,7 @@ mod files;
 mod gitinfo;
 mod layouts;
 mod limits;
+mod memory;
 mod modelmenu;
 mod modes;
 mod notify;
@@ -27,6 +28,7 @@ mod server;
 mod subagents;
 mod sessions;
 mod suggest;
+mod teamclaude;
 mod tmux;
 mod turns;
 mod tunnel;
@@ -68,6 +70,10 @@ pub struct AppState {
     pub tunnel: std::sync::Mutex<tunnel::TunnelState>,
     /// What each Claude session last said about itself through its status line, by session uid.
     pub statusline: dashmap::DashMap<String, usage::StatusLive>,
+    /// memsearch: search results, config and background jobs, per project.
+    pub memory: memory::Memory,
+    /// Whether a pane routes through Team Claude, remembered briefly.
+    pub teamclaude: teamclaude::Probes,
 }
 
 #[derive(Parser)]

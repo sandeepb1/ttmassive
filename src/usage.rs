@@ -109,6 +109,8 @@ pub enum Source {
     Hook,
     /// Codex's own session log.
     SessionLog,
+    /// The pooled limits of every account behind Team Claude.
+    TeamClaude,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
@@ -780,11 +782,44 @@ pub struct Snapshot {
     pub sessions: BTreeMap<String, SessionTokens>,
 }
 
+fn pool_window(bucket: &Value) -> Option<Window> {
+    let used = bucket.get("utilization")?.as_f64()?;
+    let resets_at = bucket.get("nextResetAt").and_then(Value::as_i64).map(|ms| ms / 1000);
+    Some(Window { used_pct: (used * 100.0).clamp(0.0, 100.0), resets_at })
+}
+
+/// Team Claude's `aggregate` quota (0-1 utilisation, reset times in ms) as Claude usage.
+fn from_pool(aggregate: &Value, now: i64) -> Option<ToolUsage> {
+    let five_hour = aggregate.get("fiveHour").and_then(pool_window);
+    let seven_day = aggregate.get("weeklyShared").and_then(pool_window);
+    if five_hour.is_none() && seven_day.is_none() {
+        return None;
+    }
+    let mut out = ToolUsage::new(now, Source::TeamClaude);
+    out.five_hour = five_hour;
+    out.seven_day = seven_day;
+    for (key, name) in [("weeklySonnet", "sonnet"), ("weeklyFable", "fable")] {
+        // A model window that matches the shared one says nothing more.
+        if let Some(w) = aggregate.get(key).and_then(pool_window).filter(|w| seven_day.is_none_or(|s| (s.used_pct - w.used_pct).abs() > 0.05)) {
+            out.per_model.push(ModelWindow { name: name.to_owned(), window: w });
+        }
+    }
+    Some(out)
+}
+
+/// When Claude Code goes through Team Claude, the limit that matters is the pool's, not the one
+/// signed-in account's. Falls back to `own` when Team Claude cannot be asked.
+async fn pooled(st: &Arc<AppState>, own: ToolUsage) -> ToolUsage {
+    let Some(origin) = crate::teamclaude::detect_global(st, crate::config::Agent::Claude).await else { return own };
+    let Some(aggregate) = crate::teamclaude::pool(st, &origin).await else { return own };
+    from_pool(&aggregate, now_secs()).unwrap_or(own)
+}
+
 /// Everything the strip and panel show. `refresh` is the panel being opened.
 pub async fn snapshot(st: &Arc<AppState>, refresh: bool) -> Snapshot {
     let max_age = if refresh { REFRESH_AGE_SECS } else { MAX_AGE_SECS };
     let (claude, codex, sessions) = tokio::join!(
-        current(st, Tool::Claude, max_age),
+        async { pooled(st, current(st, Tool::Claude, max_age).await).await },
         current(st, Tool::Codex, max_age),
         session_tokens(st),
     );
@@ -821,6 +856,26 @@ mod tests {
     use serde_json::json;
 
     const NOW: i64 = 1_791_500_000;
+
+    #[test]
+    fn team_claudes_pool_becomes_claude_usage() {
+        let agg = json!({
+            "fiveHour": {"utilization": 0.82, "nextResetAt": 1_791_994_200_000_i64},
+            "weeklyShared": {"utilization": 0.085, "nextResetAt": 1_792_180_800_000_i64},
+            "weeklySonnet": {"utilization": 0.085, "nextResetAt": 1_792_180_800_000_i64},
+            "weeklyFable": {"utilization": 0.30, "nextResetAt": null},
+        });
+        let u = from_pool(&agg, NOW).unwrap();
+        assert_eq!(u.source, Source::TeamClaude);
+        assert_eq!(u.five_hour, Some(Window { used_pct: 82.0, resets_at: Some(1_791_994_200) }));
+        assert_eq!(u.seven_day.map(|w| w.used_pct), Some(8.5));
+        assert_eq!(u.per_model.len(), 1, "sonnet matches the shared window and is left out");
+        assert_eq!(u.per_model[0].name, "fable");
+        assert_eq!(u.per_model[0].window.resets_at, None);
+        assert_eq!(u.plan, None);
+        assert!(from_pool(&json!({}), NOW).is_none());
+        assert!(from_pool(&json!({"fiveHour": {"utilization": null}}), NOW).is_none());
+    }
 
     #[test]
     fn parses_times_in_every_shape() {

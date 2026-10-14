@@ -54,6 +54,8 @@ pub async fn serve(cfg: Config) -> Result<()> {
             ..Default::default()
         }),
         statusline: dashmap::DashMap::new(),
+        memory: crate::memory::Memory::new(),
+        teamclaude: crate::teamclaude::Probes::new(),
         data_dir,
         cfg,
         auth,

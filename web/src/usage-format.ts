@@ -19,7 +19,7 @@ export interface ToolUsage {
   plan: string | null;
   /** Unix seconds; 0 when nothing has been read yet. */
   fetched_at: number;
-  source: 'api' | 'hook' | 'session_log';
+  source: 'api' | 'hook' | 'session_log' | 'team_claude';
   /** Why the latest refresh failed. Older numbers may still be present. */
   error: string | null;
 }
@@ -109,4 +109,5 @@ export const SOURCE_LABEL: Record<ToolUsage['source'], string> = {
   api: 'live',
   hook: 'from claude',
   session_log: 'from codex log',
+  team_claude: 'Team Claude pool',
 };

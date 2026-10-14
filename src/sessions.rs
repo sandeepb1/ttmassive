@@ -264,6 +264,8 @@ pub struct SessionView {
     pub preview: Option<String>,
     /// How many helper agents the session has running. Filled in by `enrich`.
     pub running_subagents: u32,
+    /// The proxy the session's agent goes through (`"teamclaude"`), if it does. Filled in by `enrich`.
+    pub routed_via: Option<&'static str>,
 }
 
 pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
@@ -300,6 +302,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             activity: None,
             preview: None,
             running_subagents: 0,
+            routed_via: None,
             id: s.id.clone(),
         });
     }
@@ -338,6 +341,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             activity: None,
             preview: None,
             running_subagents: 0,
+            routed_via: None,
             id,
         });
     }
@@ -359,6 +363,7 @@ pub async fn enrich(st: &Arc<AppState>, views: &mut [SessionView]) {
             continue;
         }
         let (st, id, running) = (st.clone(), v.id.clone(), v.status == "running");
+        let (agent, cwd) = (v.agent, v.cwd.clone());
         tasks.spawn(async move {
             let activity = if running {
                 ops::screen(&id).await.ok().map(|a| if a.prompt.is_some() { Activity::Waiting } else { a.activity })
@@ -366,16 +371,44 @@ pub async fn enrich(st: &Arc<AppState>, views: &mut [SessionView]) {
                 None
             };
             let (preview, running) = crate::chat::overview(&st, &id).await;
-            (i, activity, preview, running)
+            let routed = match (agent, cwd) {
+                (Some(a), Some(c)) => crate::teamclaude::detect(&st, a, Path::new(&c)).await.map(|_| "teamclaude"),
+                _ => None,
+            };
+            (i, activity, preview, running, routed)
         });
     }
     while let Some(done) = tasks.join_next().await {
-        if let Ok((i, activity, preview, running)) = done {
+        if let Ok((i, activity, preview, running, routed)) = done {
             views[i].activity = activity;
             views[i].preview = preview;
             views[i].running_subagents = running;
+            views[i].routed_via = routed;
         }
     }
+}
+
+/// What the details sidebar needs to know about one session's pane.
+pub struct PaneContext {
+    /// Where the pane is now while it runs, where it was started otherwise.
+    pub cwd: PathBuf,
+    pub agent: Option<Agent>,
+    /// The agent's own conversation id, once a hook has reported it.
+    pub conversation: Option<String>,
+}
+
+pub async fn pane_context(st: &AppState, id: &str) -> Option<PaneContext> {
+    let meta = st.sessions.get(id).map(|m| m.clone());
+    let live = tmux::list().await.ok()?.into_iter().find(|s| s.id == id).map(|s| s.cwd).filter(|c| !c.is_empty());
+    let home = crate::agentlog::home();
+    let cwd = live
+        .map(PathBuf::from)
+        .or_else(|| meta.as_ref()?.spec.dir.as_deref().map(|d| expand_home(d, home.as_deref())))?;
+    Some(PaneContext {
+        cwd,
+        agent: meta.as_ref().and_then(SessionMeta::agent),
+        conversation: meta.and_then(|m| m.agent_session_id).filter(|c| valid_agent_id(c)),
+    })
 }
 
 // -------------------------------------------------------------- lifecycle

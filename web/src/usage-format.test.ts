@@ -6,6 +6,7 @@ import {
   countdown,
   isStale,
   level,
+  SOURCE_LABEL,
   stripSegments,
   tokenLine,
   type ToolUsage,
@@ -97,4 +98,13 @@ test('strip segments carry a level each, and say when there is nothing to show',
     { text: '7d 80%', level: 'warn' },
   ]);
   assert.equal(stripSegments(usage({ error: 'token expired' })).unavailable, true);
+});
+
+test('every source the server can send has a label', () => {
+  // The server's `Source` enum, as it arrives in JSON. A missing label shows as "undefined".
+  for (const source of ['api', 'hook', 'session_log', 'team_claude'] as const) {
+    assert.ok(SOURCE_LABEL[source], `${source} has a label`);
+  }
+  assert.equal(SOURCE_LABEL.team_claude, 'Team Claude pool');
+  assert.deepEqual(stripSegments(usage({ source: 'team_claude', five_hour: { used_pct: 97, resets_at: null } })).items.map((i) => i.text), ['5h 97%']);
 });

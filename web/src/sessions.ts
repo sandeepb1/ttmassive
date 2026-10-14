@@ -36,6 +36,8 @@ export interface SessionView {
   preview: string | null;
   /** How many helper agents the session has running. */
   running_subagents?: number;
+  /** The proxy the session's agent goes through, when it does. */
+  routed_via?: 'teamclaude' | null;
 }
 
 interface Group {
@@ -459,6 +461,7 @@ export class SessionSidebar {
     if (s.status === 'stopped') bits.push(s.resumable ? 'stopped · can resume' : 'stopped');
     else if (s.status === 'exited') bits.push(`exited${s.exit_code !== null ? ` (${s.exit_code})` : ''}`);
     else bits.push(state === 'working' ? 'working' : `idle ${ago(s.idle_secs)}`);
+    if (s.routed_via === 'teamclaude') bits.push('via Team Claude');
     if (s.yolo) bits.push('⚡ permissions skipped');
     if (s.attached > 0) bits.push(`${s.attached} attached`);
     if (s.restarts > 0) bits.push(`${s.restarts}× restarted`);

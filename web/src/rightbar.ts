@@ -1,7 +1,8 @@
-// The right sidebar: what is going on in the open session. Four tabs: Overview (model, mode,
+// The right sidebar: what is going on in the open session. Tabs: Overview (model, mode,
 // conversation actions, plan usage), Files (what the agent changed), Plan (its to-do list and
-// plan) and Images (what you attached). A search box pinned above them looks through the
-// conversation; picking a result jumps to the message.
+// plan), Images (what you attached), Memory (the project's memsearch notes) and, when the
+// session's agent goes through one, Team Claude. A search box pinned above them looks through
+// the conversation; picking a result jumps to the message.
 
 import type { ChatInfo, ChatPanelData } from './chat';
 import { asTree, elapsedSecs, fmtElapsed, stateOf, type SubAgent } from './agents';
@@ -10,6 +11,8 @@ import { renderDiff, renderMarkdown } from './chat-render';
 import type { Todo } from './chat-model';
 import { el } from './dom';
 import { icon, type IconName } from './icons';
+import { MemoryTab } from './memory-tab';
+import { TeamClaudeTab } from './teamclaude-tab';
 
 export interface ChatActions {
   model: () => void;
@@ -27,15 +30,22 @@ export interface RightHooks {
   jump: (id: string) => void;
   /** Open a helper agent's transcript. */
   openAgent: (agent: SubAgent) => void;
+  /** Where sheets are put. */
+  sheetHost: () => HTMLElement;
+  /** A call came back 401. */
+  signedOut: () => void;
 }
 
-type Tab = 'overview' | 'files' | 'plan' | 'images';
+type Tab = 'overview' | 'files' | 'plan' | 'images' | 'memory' | 'teamclaude';
 
-const TABS: { id: Tab; label: string; icon: IconName }[] = [
+/** `title` is the full name where the label is shortened to fit the tab. */
+const TABS: { id: Tab; label: string; icon: IconName; title?: string }[] = [
   { id: 'overview', label: 'Overview', icon: 'info' },
   { id: 'files', label: 'Files', icon: 'files' },
   { id: 'plan', label: 'Plan', icon: 'todo' },
   { id: 'images', label: 'Images', icon: 'image' },
+  { id: 'memory', label: 'Memory', icon: 'memory', title: 'Memory' },
+  { id: 'teamclaude', label: 'Team', icon: 'route', title: 'Team Claude' },
 ];
 
 const TAB_KEY = 'ttm.rightTab';
@@ -89,6 +99,10 @@ export class RightBar {
   private searchTimer = 0;
   private attachTimer = 0;
   private active = false;
+  private memory: MemoryTab;
+  private team: TeamClaudeTab;
+  /** The open session's agent goes through Team Claude, so that tab is offered. */
+  private teamDetected = false;
   /** Files whose diff is open, kept across re-renders. */
   private openFiles = new Set<string>();
 
@@ -99,6 +113,16 @@ export class RightBar {
   ) {
     this.root.classList.add('sidebar', 'sidebar-right');
     this.root.setAttribute('aria-label', 'Session details');
+    this.memory = new MemoryTab(hooks.signedOut);
+    this.team = new TeamClaudeTab({
+      host: hooks.sheetHost,
+      signedOut: hooks.signedOut,
+      detected: (yes) => {
+        if (yes === this.teamDetected) return;
+        this.teamDetected = yes;
+        this.showTab();
+      },
+    });
 
     const head = el('div', 'sb-head');
     const hide = el('button', 'icon sb-collapse');
@@ -137,8 +161,8 @@ export class RightBar {
       const b = el('button', 'rb-tab');
       b.type = 'button';
       b.setAttribute('role', 'tab');
-      b.setAttribute('aria-label', t.label);
-      b.title = t.label;
+      b.setAttribute('aria-label', t.title ?? t.label);
+      b.title = t.title ?? t.label;
       const badge = el('span', 'rb-tab-badge');
       badge.hidden = true;
       b.append(icon(t.icon), el('span', 'rb-tab-label', t.label), badge);
@@ -168,7 +192,7 @@ export class RightBar {
 
     const body = el('div', 'rb-body');
     for (const t of TABS) {
-      const p = t.id === 'overview' ? overview : el('div', 'rb-panel');
+      const p = t.id === 'overview' ? overview : t.id === 'memory' ? this.memory.root : t.id === 'teamclaude' ? this.team.root : el('div', 'rb-panel');
       p.setAttribute('role', 'tabpanel');
       this.panels.set(t.id, p);
       body.append(p);
@@ -193,6 +217,8 @@ export class RightBar {
     this.openFiles.clear();
     this.search.value = '';
     this.setQuery('');
+    this.memory.setSession(name);
+    this.team.setSession(name);
     this.render();
     if (this.active) void this.loadAttachments();
   }
@@ -226,6 +252,7 @@ export class RightBar {
       void this.loadAttachments();
       this.attachTimer = window.setInterval(() => void this.loadAttachments(), ATTACH_POLL_MS);
     }
+    this.syncTabs();
   }
 
   // ------------------------------------------------------------------ tabs
@@ -250,14 +277,30 @@ export class RightBar {
     this.showTab();
   }
 
+  /** The tab on screen: the chosen one, unless it is Team Claude and this session has none. */
+  private shownTab(): Tab {
+    return this.tab === 'teamclaude' && !this.teamDetected ? 'overview' : this.tab;
+  }
+
   private showTab() {
     const searching = this.query.length >= 2;
-    for (const [id, p] of this.panels) p.hidden = searching || id !== this.tab;
+    const shown = this.shownTab();
+    for (const [id, p] of this.panels) p.hidden = searching || id !== shown;
     this.results.hidden = !searching;
     for (const [id, b] of this.tabBtns) {
-      b.setAttribute('aria-selected', String(id === this.tab && !searching));
-      b.classList.toggle('on', id === this.tab && !searching);
+      b.hidden = id === 'teamclaude' && !this.teamDetected;
+      b.setAttribute('aria-selected', String(id === shown && !searching));
+      b.classList.toggle('on', id === shown && !searching);
     }
+    this.syncTabs();
+  }
+
+  /** The Memory and Team Claude tabs read their own data, so tell them when they are on screen. */
+  private syncTabs() {
+    const showing = (t: Tab) => this.active && this.shownTab() === t && this.query.length < 2;
+    this.memory.setActive(showing('memory'));
+    this.team.setActive(this.active);
+    this.team.setVisible(showing('teamclaude'));
   }
 
   private renderBadges() {

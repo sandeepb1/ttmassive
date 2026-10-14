@@ -12,7 +12,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 
 use crate::{
-    AppState, assets, auth::COOKIE_NAME, chat, config::{Agent, RestartPolicy}, files, layouts, modelmenu, modes, notify, ops, resume, search, sessions, suggest, tmux, turns, uploads, usage,
+    AppState, assets, auth::COOKIE_NAME, chat, config::{Agent, RestartPolicy}, files, layouts, memory, modelmenu, modes, notify, ops, resume, search, sessions, suggest, teamclaude, tmux, turns, uploads, usage,
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -61,6 +61,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/sessions/{id}/attachments", get(session_attachments))
         .route("/api/sessions/{id}/agents", get(session_agents))
+        .route("/api/sessions/{id}/memory", get(memory_overview))
+        .route("/api/sessions/{id}/memory/search", get(memory_search))
+        .route("/api/sessions/{id}/memory/expand/{hash}", get(memory_expand))
+        .route("/api/sessions/{id}/memory/day/{date}", get(memory_day))
+        .route("/api/sessions/{id}/memory/reindex", get(memory_reindex).post(memory_reindex_start))
+        .route("/api/sessions/{id}/memory/rollup", get(memory_rollup).post(memory_rollup_start))
+        .route("/api/sessions/{id}/teamclaude", get(session_teamclaude))
+        .route("/api/sessions/{id}/teamclaude/requests", get(teamclaude_requests))
+        .route("/api/sessions/{id}/teamclaude/switch", post(teamclaude_switch))
         .route("/api/sessions/{id}/agents/{aid}/chat", get(session_agent_chat))
         .route("/api/uploads/{uid}/{file}", get(get_upload))
         .route("/api/sessions/{id}/answer", post(session_answer))
@@ -660,6 +669,165 @@ async fn session_agents(State(st): State<Arc<AppState>>, Path(id): Path<String>)
         return StatusCode::BAD_REQUEST.into_response();
     }
     ([(header::CACHE_CONTROL, "no-store")], Json(crate::chat::agents(&st, &id).await)).into_response()
+}
+
+/// The session's pane, or the response to give when it is not one.
+async fn pane(st: &AppState, id: &str) -> Result<sessions::PaneContext, Response> {
+    if !valid_id(id) {
+        return Err(StatusCode::BAD_REQUEST.into_response());
+    }
+    sessions::pane_context(st, id).await.ok_or_else(|| StatusCode::NOT_FOUND.into_response())
+}
+
+fn no_store<T: serde::Serialize>(body: T) -> Response {
+    ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
+}
+
+async fn project_of(st: &AppState, id: &str) -> Result<memory::Project, Response> {
+    let ctx = pane(st, id).await?;
+    Ok(memory::resolve(&ctx.cwd, crate::agentlog::home().as_deref()))
+}
+
+async fn memory_overview(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match project_of(&st, &id).await {
+        Ok(p) => no_store(memory::overview(&st, &p).await),
+        Err(r) => r,
+    }
+}
+
+#[derive(Deserialize)]
+struct MemorySearchQuery {
+    q: String,
+    k: Option<usize>,
+}
+
+async fn memory_search(State(st): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<MemorySearchQuery>) -> Response {
+    let p = match project_of(&st, &id).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match memory::search(&st, &p, &q.q, q.k.unwrap_or(8)).await {
+        Ok(hits) => no_store(serde_json::json!({ "hits": hits })),
+        Err(e) => server_error(&e),
+    }
+}
+
+async fn memory_expand(State(st): State<Arc<AppState>>, Path((id, hash)): Path<(String, String)>) -> Response {
+    let p = match project_of(&st, &id).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match memory::expand(&st, &p, &hash).await {
+        Ok(e) => no_store(e),
+        Err(e) => server_error(&e),
+    }
+}
+
+async fn memory_day(State(st): State<Arc<AppState>>, Path((id, date)): Path<(String, String)>) -> Response {
+    let p = match project_of(&st, &id).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match memory::day(&p, &date).await {
+        Some(entries) => no_store(serde_json::json!({ "date": date, "entries": entries })),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn memory_reindex(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match project_of(&st, &id).await {
+        Ok(p) => no_store(memory::overview(&st, &p).await.reindex),
+        Err(r) => r,
+    }
+}
+
+async fn memory_reindex_start(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match project_of(&st, &id).await {
+        Ok(p) => (StatusCode::ACCEPTED, Json(memory::start_reindex(&st, p))).into_response(),
+        Err(r) => r,
+    }
+}
+
+async fn memory_rollup(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match project_of(&st, &id).await {
+        Ok(p) => no_store(memory::rollup(&st, &p).await),
+        Err(r) => r,
+    }
+}
+
+async fn memory_rollup_start(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match project_of(&st, &id).await {
+        Ok(p) => (StatusCode::ACCEPTED, Json(memory::start_rollup(&st, p))).into_response(),
+        Err(r) => r,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct TeamClaudeReply {
+    detected: bool,
+    agent: Option<Agent>,
+    #[serde(flatten)]
+    overview: Option<teamclaude::Overview>,
+    /// Team Claude was found but did not answer properly.
+    error: Option<String>,
+}
+
+/// The Team Claude `id`'s agent goes through, with its status and quota.
+async fn session_teamclaude(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let ctx = match pane(&st, &id).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let mut reply = TeamClaudeReply { detected: false, agent: ctx.agent, overview: None, error: None };
+    if let Some(agent) = ctx.agent
+        && let Some(origin) = teamclaude::detect(&st, agent, &ctx.cwd).await
+    {
+        reply.detected = true;
+        match teamclaude::overview(&st, &origin, agent).await {
+            Ok(o) => reply.overview = Some(o),
+            Err(e) => reply.error = Some(format!("{e:#}")),
+        }
+    }
+    no_store(reply)
+}
+
+#[derive(Deserialize)]
+struct RequestsQuery {
+    /// `1`: every request, not only this pane's.
+    all: Option<u8>,
+}
+
+async fn teamclaude_requests(State(st): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<RequestsQuery>) -> Response {
+    let ctx = match pane(&st, &id).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let Some(origin) = async { teamclaude::detect(&st, ctx.agent?, &ctx.cwd).await }.await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    no_store(teamclaude::feed(&origin, ctx.conversation, q.all.unwrap_or(0) == 0, teamclaude::FEED_LIMIT).await)
+}
+
+#[derive(Deserialize)]
+struct SwitchBody {
+    account: String,
+}
+
+async fn teamclaude_switch(State(st): State<Arc<AppState>>, Path(id): Path<String>, Json(b): Json<SwitchBody>) -> Response {
+    let ctx = match pane(&st, &id).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let Some(agent) = ctx.agent else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(origin) = teamclaude::detect(&st, agent, &ctx.cwd).await else { return StatusCode::NOT_FOUND.into_response() };
+    match teamclaude::switch(&st, &origin, agent, &b.account).await {
+        Ok(reply) => no_store(reply),
+        Err(teamclaude::SwitchError::Refused(why)) => (StatusCode::CONFLICT, why).into_response(),
+        Err(teamclaude::SwitchError::Failed(e)) => {
+            tracing::warn!("{e:#}");
+            (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response()
+        }
+    }
 }
 
 /// One helper agent's whole transcript, polled like a conversation (`epoch`, `after`).
