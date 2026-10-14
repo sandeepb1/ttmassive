@@ -37,10 +37,14 @@ import { toast } from './ui/toast';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
-/** Scrolls are sent in batches this often, one at a time. */
-const SCROLL_BATCH_MS = 30;
-/** A reply that never came: send again after this long. */
+/** Scrolls are sent in batches this often (about a frame). */
+const SCROLL_BATCH_MS = 16;
+/** Requests that may await a reply at once. Waiting for each reply would tie the scroll to the round trip. */
+const SCROLL_IN_FLIGHT = 4;
+/** Replies that never came: forget them after this long. */
 const SCROLL_LOST_MS = 1500;
+/** Wheel notches waiting to go to an app, at most. */
+const WHEEL_QUEUE_MAX = 60;
 
 export interface SessionHooks {
   /** The session exists only as saved output; offer a restore. */
@@ -139,9 +143,18 @@ export class TerminalSession {
   private scrolled: { position: number } | null = null;
   private scrollPending = 0;
   private scrollTimer = 0;
-  /** When the scroll now awaiting its reply was sent; 0 when none is. */
+  /** Scrolls sent and not yet answered, and when the latest went out. */
+  private scrollInFlight = 0;
   private scrollSent = 0;
   private flingFrame = 0;
+  /**
+   * The pane is a full-screen app that takes the mouse (Claude Code's full-screen view) and scrolls
+   * itself: a drag becomes wheel events sent as input, a few a frame, since the app speeds up on
+   * events that arrive in a burst and a steady trickle keeps the scroll even.
+   */
+  private wheelMode = false;
+  private wheelQueue = 0;
+  private wheelFrame = 0;
   private liveEl: HTMLButtonElement | null = null;
   private cleanup: () => void = () => {};
 
@@ -547,6 +560,7 @@ export class TerminalSession {
     const stopFling = () => {
       cancelAnimationFrame(this.flingFrame);
       this.flingFrame = 0;
+      this.dropWheel();
     };
     const fling = (v0: number) => {
       let v = v0;
@@ -558,7 +572,7 @@ export class TerminalSession {
         if (lines !== 0) this.scrollBy(lines);
         v = slow(v, dt);
         // Moving down the history and already at the live screen: nothing more to do.
-        if (!keepGoing(v) || (v < 0 && !this.scrolled)) {
+        if (!keepGoing(v) || (v < 0 && !this.scrolled && !this.wheelMode)) {
           this.flingFrame = 0;
           return;
         }
@@ -566,45 +580,63 @@ export class TerminalSession {
       };
       this.flingFrame = requestAnimationFrame(tick);
     };
-    this.el.addEventListener('pointerdown', (e) => {
-      stopFling();
-      if (e.pointerType !== 'touch' || !e.isPrimary) return;
-      id = e.pointerId;
-      startY = lastY = e.clientY;
-      dragging = false;
-      carry.reset();
-      samples = [{ y: e.clientY, t: performance.now() }];
-    });
-    this.el.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== id) return;
-      if (!dragging) {
-        if (Math.abs(e.clientY - startY) < SLOP_PX || document.querySelector(SHEET_SELECTOR)) return;
-        dragging = true;
-        try {
-          this.el.setPointerCapture(e.pointerId);
-        } catch {
-          /* the finger is already gone */
+    // Touch events, not pointer events: iOS (a home-screen app above all) is far more dependable
+    // with them, and cancelling touchmove is what stops the page itself from being dragged.
+    const find = (list: TouchList) => Array.from(list).find((t) => t.identifier === id);
+    this.el.addEventListener(
+      'touchstart',
+      (e) => {
+        stopFling();
+        if (e.touches.length !== 1) {
+          id = null;
+          return;
         }
-      }
-      const lines = carry.add(e.clientY - lastY, lineHeight());
-      lastY = e.clientY;
-      samples = addSample(samples, { y: e.clientY, t: performance.now() });
-      if (lines !== 0) this.scrollBy(lines);
-    });
-    const end = (e: PointerEvent) => {
-      if (e.pointerId !== id) return;
+        const t = e.touches[0]!;
+        id = t.identifier;
+        startY = lastY = t.clientY;
+        dragging = false;
+        carry.reset();
+        samples = [{ y: t.clientY, t: performance.now() }];
+      },
+      { passive: true },
+    );
+    this.el.addEventListener(
+      'touchmove',
+      (e) => {
+        const t = id === null ? undefined : find(e.touches);
+        if (!t) return;
+        if (!dragging) {
+          if (Math.abs(t.clientY - startY) < SLOP_PX || document.querySelector(SHEET_SELECTOR)) return;
+          dragging = true;
+          // Is the pane still one that scrolls itself? The reply says.
+          this.sendCtl({ type: 'scroll', lines: 0 });
+        }
+        if (e.cancelable) e.preventDefault();
+        const lines = carry.add(t.clientY - lastY, lineHeight());
+        lastY = t.clientY;
+        samples = addSample(samples, { y: t.clientY, t: performance.now() });
+        if (lines !== 0) this.scrollBy(lines);
+      },
+      { passive: false },
+    );
+    const end = (e: TouchEvent) => {
+      if (id === null || !find(e.changedTouches)) return;
       id = null;
       if (!dragging) return;
       dragging = false;
-      const v = e.type === 'pointerup' ? velocity(samples, performance.now()) : 0;
+      const v = e.type === 'touchend' ? velocity(samples, performance.now()) : 0;
       if (flings(v)) fling(v);
     };
-    this.el.addEventListener('pointerup', end);
-    this.el.addEventListener('pointercancel', end);
+    this.el.addEventListener('touchend', end);
+    this.el.addEventListener('touchcancel', end);
   }
 
   /** Scroll by `lines` (positive: up the history). Batched, and one request at a time. */
   private scrollBy(lines: number) {
+    if (this.wheelMode) {
+      this.queueWheel(lines);
+      return;
+    }
     this.scrollPending = clampLines(this.scrollPending + lines);
     if (!this.scrollTimer) this.scrollTimer = window.setTimeout(() => this.flushScroll(), SCROLL_BATCH_MS);
   }
@@ -612,16 +644,45 @@ export class TerminalSession {
   private flushScroll() {
     this.scrollTimer = 0;
     if (this.scrollPending === 0) return;
-    // The reply to the one in flight sends the next, so they never pile up behind a slow link.
-    if (this.scrollSent && performance.now() - this.scrollSent < SCROLL_LOST_MS) return;
+    const now = performance.now();
+    if (this.scrollInFlight && now - this.scrollSent > SCROLL_LOST_MS) this.scrollInFlight = 0;
+    // A few at a time: the replies send the rest, so they cannot pile up behind a slow link.
+    if (this.scrollInFlight >= SCROLL_IN_FLIGHT) return;
     const lines = this.scrollPending;
     this.scrollPending = 0;
-    this.scrollSent = performance.now();
+    this.scrollInFlight++;
+    this.scrollSent = now;
     this.sendCtl({ type: 'scroll', lines });
   }
 
-  private onScrolled(active: boolean, position: number) {
-    this.scrollSent = 0;
+  /** Notches for the app, a few per frame so they arrive evenly; a long queue drains faster. */
+  private queueWheel(lines: number) {
+    this.wheelQueue = Math.max(-WHEEL_QUEUE_MAX, Math.min(WHEEL_QUEUE_MAX, this.wheelQueue + lines));
+    if (!this.wheelFrame) this.wheelFrame = requestAnimationFrame(() => this.pumpWheel());
+  }
+
+  private pumpWheel() {
+    this.wheelFrame = 0;
+    const q = this.wheelQueue;
+    if (q === 0) return;
+    const n = Math.min(Math.abs(q), Math.max(1, Math.ceil(Math.abs(q) / 4)));
+    this.wheelQueue = q - Math.sign(q) * n;
+    // Dragging down shows older output: the wheel turns up (button 64), and down is 65.
+    const notch = `\x1b[<${q > 0 ? 64 : 65};${Math.ceil(this.term.cols / 2)};${Math.ceil(this.term.rows / 2)}M`;
+    this.sendInput(this.enc.encode(notch.repeat(n)));
+    if (this.wheelQueue !== 0) this.wheelFrame = requestAnimationFrame(() => this.pumpWheel());
+  }
+
+  private dropWheel() {
+    cancelAnimationFrame(this.wheelFrame);
+    this.wheelFrame = 0;
+    this.wheelQueue = 0;
+  }
+
+  private onScrolled(active: boolean, position: number, wheel: boolean) {
+    this.wheelMode = wheel;
+    if (!wheel) this.dropWheel();
+    this.scrollInFlight = Math.max(0, this.scrollInFlight - 1);
     this.setScrolled(active ? { position } : null);
     if (this.scrollPending !== 0) this.flushScroll();
   }
@@ -701,7 +762,9 @@ export class TerminalSession {
       this.term.reset();
       this.sendCtl({ type: 'resize', rows: this.term.rows, cols: this.term.cols });
       this.scrollPending = 0;
-      this.scrollSent = 0;
+      this.scrollInFlight = 0;
+      this.wheelMode = false;
+      this.dropWheel();
       this.setScrolled(null);
       // The session may have been left showing its history by an earlier visit or another device.
       this.sendCtl({ type: 'scroll', lines: 0 });
@@ -734,7 +797,7 @@ export class TerminalSession {
       this.hooks.onScreen(null, 0);
       this.onStatus(`session ended (${m.code})`);
     } else if (m.type === 'scroll') {
-      this.onScrolled(m.active, m.position);
+      this.onScrolled(m.active, m.position, m.wheel);
     } else if (m.type === 'error') {
       this.onStatus(m.message);
     } else if (m.type === 'stopped') {

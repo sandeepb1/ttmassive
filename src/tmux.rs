@@ -267,6 +267,8 @@ pub struct Scrolled {
     pub active: bool,
     /// How many lines above the live screen it is.
     pub position: u32,
+    /// The pane is a full-screen app that takes the mouse: it scrolls itself, from wheel events.
+    pub wheel: bool,
 }
 
 /// `#{pane_in_mode} #{scroll_position}` as `display-message` prints it; the position is empty
@@ -274,7 +276,7 @@ pub struct Scrolled {
 fn parse_scrolled(out: &str) -> Scrolled {
     let mut it = out.split_whitespace();
     let active = it.next() == Some("1");
-    Scrolled { active, position: if active { it.next().and_then(|p| p.parse().ok()).unwrap_or(0) } else { 0 } }
+    Scrolled { active, position: if active { it.next().and_then(|p| p.parse().ok()).unwrap_or(0) } else { 0 }, wheel: false }
 }
 
 /// Most lines one scroll moves.
@@ -287,6 +289,12 @@ const MAX_SCROLL: i32 = 400;
 pub async fn scroll(id: &str, lines: i32) -> Result<Scrolled> {
     let t = target(id);
     let n = lines.clamp(-MAX_SCROLL, MAX_SCROLL);
+    if let Some((w, h)) = wheel_pane(&t).await? {
+        if n != 0 {
+            wheel(&t, n, w, h).await?;
+        }
+        return Ok(Scrolled { active: false, position: 0, wheel: true });
+    }
     let state = ["display-message", "-p", "-t", &t, "#{pane_in_mode} #{scroll_position}"];
     let mut cmd = base();
     match n {
@@ -304,14 +312,43 @@ pub async fn scroll(id: &str, lines: i32) -> Result<Scrolled> {
         let err = String::from_utf8_lossy(&out.stderr);
         // Scrolling down when not in history is not an error.
         anyhow::ensure!(err.contains("not in a mode"), "tmux: {}", err.trim());
-        return Ok(Scrolled { active: false, position: 0 });
+        return Ok(Scrolled { active: false, position: 0, wheel: false });
     }
     let st = parse_scrolled(&String::from_utf8_lossy(&out.stdout));
     if st.active && st.position == 0 && n > 0 {
         search_close(id).await?;
-        return Ok(Scrolled { active: false, position: 0 });
+        return Ok(Scrolled { active: false, position: 0, wheel: false });
     }
     Ok(st)
+}
+
+/// Most wheel notches one scroll sends to an app.
+const MAX_WHEEL: i32 = 60;
+
+/// The size of the pane when it is a full-screen app that takes the mouse (Claude Code's full-screen
+/// view). It keeps its own history, so tmux has none of it to scroll: the wheel is turned for it.
+async fn wheel_pane(t: &str) -> Result<Option<(i32, i32)>> {
+    let fmt = "#{alternate_on} #{mouse_any_flag} #{mouse_sgr_flag} #{pane_in_mode} #{pane_width} #{pane_height}";
+    let out = base().args(["display-message", "-p", "-t", t, fmt]).output().await.context("running tmux display-message")?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let f: Vec<&str> = text.split_whitespace().collect();
+    if f.len() != 6 || f[..4] != ["1", "1", "1", "0"] {
+        return Ok(None);
+    }
+    Ok(Some((f[4].parse().unwrap_or(0), f[5].parse().unwrap_or(0))))
+}
+
+/// Turn the wheel for the app: positive `n` is up.
+async fn wheel(t: &str, n: i32, w: i32, h: i32) -> Result<()> {
+    let button = if n > 0 { 64 } else { 65 };
+    let notch = format!("\x1b[<{button};{};{}M", (w / 2).max(1), (h / 2).max(1));
+    let keys = notch.repeat(n.abs().min(MAX_WHEEL) as usize);
+    let out = base().args(["send-keys", "-l", "-t", t, &keys]).output().await.context("running tmux send-keys")?;
+    anyhow::ensure!(out.status.success(), "tmux: {}", String::from_utf8_lossy(&out.stderr).trim());
+    Ok(())
 }
 
 /// Leave copy-mode. Fine when the session is not in it (the user may have pressed `q` already).
@@ -420,11 +457,11 @@ mod tests {
 
     #[test]
     fn scroll_state_is_read_from_tmux() {
-        assert_eq!(parse_scrolled("1 42\n"), Scrolled { active: true, position: 42 });
-        assert_eq!(parse_scrolled("0 \n"), Scrolled { active: false, position: 0 });
-        assert_eq!(parse_scrolled("1 \n"), Scrolled { active: true, position: 0 });
-        assert_eq!(parse_scrolled(""), Scrolled { active: false, position: 0 });
-        assert_eq!(parse_scrolled("garbage"), Scrolled { active: false, position: 0 });
+        assert_eq!(parse_scrolled("1 42\n"), Scrolled { active: true, position: 42, wheel: false });
+        assert_eq!(parse_scrolled("0 \n"), Scrolled { active: false, position: 0, wheel: false });
+        assert_eq!(parse_scrolled("1 \n"), Scrolled { active: true, position: 0, wheel: false });
+        assert_eq!(parse_scrolled(""), Scrolled { active: false, position: 0, wheel: false });
+        assert_eq!(parse_scrolled("garbage"), Scrolled { active: false, position: 0, wheel: false });
     }
 
     #[test]

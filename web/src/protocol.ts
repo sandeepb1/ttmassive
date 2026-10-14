@@ -10,7 +10,7 @@ export type ClientMsg =
 export type ServerMsg =
   | { type: 'pong' }
   /** Where the history view stands after a scroll. */
-  | { type: 'scroll'; active: boolean; position: number }
+  | { type: 'scroll'; active: boolean; position: number; wheel: boolean }
   | { type: 'stopped'; resumable: boolean }
   | { type: 'exit'; code: number }
   | { type: 'error'; message: string };

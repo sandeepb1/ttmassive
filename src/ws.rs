@@ -40,7 +40,7 @@ enum ClientMsg {
 enum ServerMsg {
     Pong,
     /// Where the history view stands after a scroll.
-    Scroll { active: bool, position: u32 },
+    Scroll { active: bool, position: u32, wheel: bool },
     /// The tmux session is gone but remembered: show its saved output and offer a restore.
     Stopped { resumable: bool },
     Exit { code: u32 },
@@ -136,19 +136,19 @@ async fn run(mut sock: WebSocket, st: Arc<AppState>, q: AttachQuery) {
                     }
                     Ok(ClientMsg::Scroll { lines }) => match tmux::scroll(&q.session, lines).await {
                         Ok(st) => {
-                            if !send_json(&mut sock, &ServerMsg::Scroll { active: st.active, position: st.position }).await { break; }
+                            if !send_json(&mut sock, &ServerMsg::Scroll { active: st.active, position: st.position, wheel: st.wheel }).await { break; }
                         }
                         Err(e) => {
                             tracing::debug!("scroll {}: {e:#}", q.session);
                             // Answer anyway: the client waits for it before sending the next.
-                            if !send_json(&mut sock, &ServerMsg::Scroll { active: false, position: 0 }).await { break; }
+                            if !send_json(&mut sock, &ServerMsg::Scroll { active: false, position: 0, wheel: false }).await { break; }
                         }
                     },
                     Ok(ClientMsg::ScrollEnd) => {
                         if let Err(e) = tmux::search_close(&q.session).await {
                             tracing::debug!("scroll end {}: {e:#}", q.session);
                         }
-                        if !send_json(&mut sock, &ServerMsg::Scroll { active: false, position: 0 }).await { break; }
+                        if !send_json(&mut sock, &ServerMsg::Scroll { active: false, position: 0, wheel: false }).await { break; }
                     }
                     Err(e) => tracing::debug!("bad control message: {e}"),
                 },
