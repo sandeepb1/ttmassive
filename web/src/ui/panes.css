@@ -1,7 +1,9 @@
 @layer components {
   .p-term { flex: 1; min-height: 0; padding: 4px; overflow: hidden; position: relative; }
   .pane.agent-mode .t-chip { display: none; }
-  .p-status:empty { display: none; }
+  /* An empty status keeps its line, so the name does not jump up and down as status text comes and goes. */
+  .p-status:empty { visibility: hidden; }
+  .p-status:empty::before { content: '\200b'; }
   .p-viewtoggle { flex: none; display: flex; padding: 2px; background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
   .p-viewtoggle button { font: 600 0.8125rem var(--font-ui); padding: 5px 12px; color: var(--fg-muted); background: none; border: 0; border-radius: var(--radius-lg);
     touch-action: manipulation; }

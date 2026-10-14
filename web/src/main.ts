@@ -30,6 +30,10 @@ import { chip } from './ui/chip';
 import { SHEET_SELECTOR } from './ui/sheet';
 import type { SubAgent } from './agents';
 
+// Start the web fonts now rather than when the first text uses them: no swap flash, and the terminal measures its
+// cells with the real font the first time instead of fitting twice.
+void Promise.all([document.fonts?.load("1rem 'Inter Variable'"), document.fonts?.load("14px 'JetBrains Mono Variable'")]).catch(() => {});
+
 initTheme();
 initUiScale();
 armBell();
@@ -914,16 +918,30 @@ edgeSwipe({
 // keybar sits above the soft keyboard.
 const vv = window.visualViewport;
 if (vv) {
-  const sync = () => {
+  // The keyboard animation fires resize and scroll many times a frame; relayout once per frame, and only when the
+  // height really changed.
+  let last = '';
+  let queued = false;
+  const apply = () => {
+    queued = false;
     // Follow the visual viewport only while something (the keyboard, a pinch) has really shrunk it. With none, the
     // layout height is right, and an installed iOS app can report a visual height a few dozen points short.
-    if (window.innerHeight - vv.height > 120) document.documentElement.style.setProperty('--vvh', `${vv.height}px`);
-    else document.documentElement.style.removeProperty('--vvh');
-    window.scrollTo(0, 0);
+    const next = window.innerHeight - vv.height > 120 ? `${vv.height}px` : '';
+    if (next !== last) {
+      last = next;
+      if (next) document.documentElement.style.setProperty('--vvh', next);
+      else document.documentElement.style.removeProperty('--vvh');
+    }
+    if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
+  };
+  const sync = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(apply);
   };
   vv.addEventListener('resize', sync);
   vv.addEventListener('scroll', sync);
-  sync();
+  apply();
 }
 
 if ('serviceWorker' in navigator) {

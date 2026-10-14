@@ -1,9 +1,11 @@
 @layer components {
-  .t-progress { position: absolute; top: 0; left: 0; height: 3px; width: var(--pct, 0%); z-index: 3; pointer-events: none;
-    background: var(--accent); transition: width .2s ease, background-color .2s ease; }
+  .t-progress { position: absolute; top: 0; left: 0; height: 3px; width: 100%; z-index: 3; pointer-events: none;
+    /* Grows with transform, not width, so it never lays out the terminal under it. */
+    transform-origin: left; transform: scaleX(var(--p, 0));
+    background: var(--accent); transition: transform .2s ease, background-color .2s ease; }
   .t-progress[data-kind="error"] { background: var(--danger); }
   .t-progress[data-kind="paused"] { background: var(--warn); }
-  .t-progress[data-kind="indeterminate"] { animation: t-sweep 1.2s ease-in-out infinite alternate; }
+  .t-progress[data-kind="indeterminate"] { width: 35%; transform: none; animation: t-sweep 1.2s ease-in-out infinite alternate; }
   .tk-kw { color: var(--accent-text); } .tk-str { color: var(--ok-text); } .tk-com { color: var(--fg-faint); font-style: italic; } .tk-num { color: var(--warn-text); }
 
   .pane.chat-mode .ts-open, .pane.chat-mode .ts-panel, .pane.chat-mode .t-toast, .pane.chat-mode .t-progress { display: none !important; }
@@ -19,8 +21,9 @@
   .t-chip[data-kind="waiting"] .t-chip-dot { background: var(--warn); animation-duration: 1s; }
   .t-marks { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
   .t-marks .t-mark { position: absolute; left: 0; width: 14px; padding: 0; background: none; border: 0; pointer-events: auto; cursor: pointer; touch-action: manipulation; }
-  .t-marks .t-mark::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); border-radius: 0 2px 2px 0; opacity: .85; transition: width .12s; }
-  .t-marks .t-mark:hover::before, .t-marks .t-mark:active::before { width: 6px; opacity: 1; }
+  .t-marks .t-mark::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--accent); border-radius: 0 2px 2px 0; opacity: .85;
+    transform: scaleX(.5); transform-origin: left; transition: transform .12s; }
+  .t-marks .t-mark:hover::before, .t-marks .t-mark:active::before { transform: none; opacity: 1; }
   .ts-open { position: absolute; top: 8px; right: 8px; z-index: 5; opacity: .7; }
   .ts-open:hover, .ts-open:focus-visible { opacity: 1; }
   .ts-panel { position: absolute; top: 6px; left: 6px; right: 6px; z-index: 6; display: flex; flex-direction: column; gap: 6px; max-width: 620px; margin-left: auto;

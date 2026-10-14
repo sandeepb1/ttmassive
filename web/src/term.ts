@@ -187,12 +187,26 @@ export class TerminalSession {
     this.term.onBell(() => this.hooks.onBell());
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
-    this.term.onResize(({ rows, cols }) => this.sendCtl({ type: 'resize', rows, cols }));
+    // The soft keyboard resizes the viewport over ~250ms; tell the server where it settled, not every step.
+    let resizeTimer = 0;
+    this.term.onResize(({ rows, cols }) => {
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => this.sendCtl({ type: 'resize', rows, cols }), 80);
+    });
     this.term.onWriteParsed(() => this.scheduleMarks());
     this.term.onResize(() => this.scheduleMarks());
 
     // Orientation change, soft keyboard and window resizes all land here.
-    const refit = () => requestAnimationFrame(() => this.fit.fit());
+    // The observers fire together (a keyboard raises several at once): fit once per frame.
+    let refitQueued = false;
+    const refit = () => {
+      if (refitQueued) return;
+      refitQueued = true;
+      requestAnimationFrame(() => {
+        refitQueued = false;
+        if (!this.closed) this.fit.fit();
+      });
+    };
     const ro = new ResizeObserver(refit);
     ro.observe(el);
     window.addEventListener('orientationchange', refit);
@@ -444,7 +458,7 @@ export class TerminalSession {
       this.el.append(this.barEl);
     }
     this.barEl.dataset.kind = v.kind;
-    this.barEl.style.setProperty('--pct', v.pct === null ? '35%' : `${v.pct}%`);
+    this.barEl.style.setProperty('--p', String(v.pct === null ? 0.35 : v.pct / 100));
   }
 
   /**
