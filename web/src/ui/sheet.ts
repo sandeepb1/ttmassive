@@ -5,6 +5,7 @@
 
 import { el } from '../dom';
 import { dragToDismiss } from '../gestures';
+import { pushOverlay } from '../overlays';
 import { icon } from '../icons';
 import { button } from './button';
 import { cn } from './cn';
@@ -58,6 +59,7 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
   });
 
   let returnTo: Element | null = null;
+  let releaseOverlay: (() => void) | null = null; // Back closes the sheet; see overlay-stack.ts
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     e.stopPropagation();
@@ -79,9 +81,12 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
       host.append(backdrop, dialog);
       dialog.show();
       document.addEventListener('keydown', onKey, true);
+      releaseOverlay = pushOverlay(() => onDismiss());
     },
     remove() {
       document.removeEventListener('keydown', onKey, true);
+      releaseOverlay?.();
+      releaseOverlay = null;
       // The sheet is gone as far as the app is concerned (no longer matched by SHEET_SELECTOR, no longer tappable),
       // but stays on screen for the length of its exit animation.
       delete dialog.dataset.sheet;

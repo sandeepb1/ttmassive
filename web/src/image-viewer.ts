@@ -6,6 +6,7 @@ import { el } from './dom';
 import { icon } from './icons';
 import { button, buttonStyles } from './ui/button';
 import { cn } from './ui/cn';
+import { pushOverlay } from './overlays';
 
 /** The viewer sits on a fixed dark overlay in every theme, so its buttons are white on translucent. */
 const OVERLAY_BTN = 'bg-white/15 text-white active:bg-white/25';
@@ -119,12 +120,14 @@ export function openImageViewer(urls: string[], start = 0): void {
     closed = true;
     document.removeEventListener('keydown', onKey, true);
     root.remove();
+    releaseOverlay();
     if (current === handle) current = null;
     // Back to what had the focus, unless it has gone.
     if (opener?.isConnected) opener.focus({ preventScroll: true });
   }
   const handle = { close: dismiss };
   current = handle;
+  const releaseOverlay = pushOverlay(dismiss);
 
   show();
   document.addEventListener('keydown', onKey, true);

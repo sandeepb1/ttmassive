@@ -2,6 +2,7 @@
 // or opens a second step, like picking a folder and then what to start in it.
 
 import { el } from './dom';
+import { pushOverlay } from './overlays';
 import { rank, type Item, type Step } from './command-model';
 
 const MAX_SHOWN = 50;
@@ -31,6 +32,7 @@ export class CommandBar {
   private pending: Promise<void> = Promise.resolve();
   private flush: (() => Promise<void>) | null = null;
   private open_ = false;
+  private releaseOverlay: (() => void) | null = null; // Back closes the bar; see overlay-stack.ts
 
   constructor(
     private host: HTMLElement,
@@ -68,12 +70,15 @@ export class CommandBar {
     this.open_ = true;
     this.stack = [root];
     this.host.append(this.backdrop, this.panel);
+    this.releaseOverlay = pushOverlay(() => this.close());
     this.enter();
   }
 
   close() {
     if (!this.open_) return;
     this.open_ = false;
+    this.releaseOverlay?.();
+    this.releaseOverlay = null;
     window.clearTimeout(this.timer);
     this.seq++;
     this.backdrop.remove();

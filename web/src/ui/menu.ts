@@ -4,6 +4,7 @@
 
 import { autoUpdate, computePosition, flip, offset, shift, size } from '@floating-ui/dom';
 import { el } from '../dom';
+import { pushOverlay } from '../overlays';
 import { cn } from './cn';
 
 export interface MenuItem {
@@ -104,8 +105,10 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], label = 'Action
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('scroll', onScroll, true);
   window.addEventListener('resize', closeMenu);
+  const releaseOverlay = pushOverlay(closeMenu);
   closeOpen = () => {
     closeOpen = null;
+    releaseOverlay();
     stopUpdate();
     // Fade out where it stands (the position is fixed), then go; a new menu may already be opening.
     menu.inert = true;

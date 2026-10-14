@@ -25,6 +25,7 @@ import { defaultLayouts, fetchLayouts, MAX_PANES_LIMIT, paneLimit, updateLayouts
 import { AgentSheet } from './agent-sheet';
 import { fetchPresets, launchSession, loadNewSessionData, mainAgents, type PresetInfo } from './dirs';
 import { openMenu, type MenuItem } from './menu';
+import { pushOverlay } from './overlays';
 import { NewSessionSheet } from './new-session-sheet';
 import { chip } from './ui/chip';
 import { SHEET_SELECTOR } from './ui/sheet';
@@ -870,6 +871,18 @@ function syncPanels() {
   $('right').inert = !right;
 }
 layout.onChange(syncPanels);
+
+// A sidebar that has slid over the page is an overlay too: Back closes it.
+let releaseSidebar: (() => void) | null = null;
+layout.onChange(() => {
+  const app = $('app');
+  const over = app.classList.contains('l-open') || app.classList.contains('r-open');
+  if (over && !releaseSidebar) releaseSidebar = pushOverlay(() => layout.dismissOverlays());
+  else if (!over && releaseSidebar) {
+    releaseSidebar();
+    releaseSidebar = null;
+  }
+});
 
 $<HTMLFormElement>('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();

@@ -74,6 +74,11 @@ Things that are easy to get wrong:
   open?", use `SHEET_SELECTOR`.
 - **Buttons must not take focus from the terminal.** Anything pressed while the soft keyboard is up
   needs `pointerdown` `preventDefault()` (the sheet shell and the menu already do it).
+- **Back closes the top overlay.** Anything that sits over the page and can be dismissed (a sheet, a menu, the
+  image viewer, the command bar, a sidebar that slid over) registers with `pushOverlay(close)` from
+  `src/overlays.ts` when it opens and calls the function it returns when it closes by any other route. The kit's
+  sheet and menu do this for you. There is one history entry for all open overlays, not one each
+  (`overlay-stack.ts` says why), so a new overlay needs no history code of its own.
 - **`@floating-ui` positions menus; scrolling the page closes them.** That is deliberate.
 
 ## Stylesheets
