@@ -293,7 +293,10 @@ export class ChatView {
     this.replyChip.hidden = true;
     this.replyChip.addEventListener('click', () => this.useSuggestedReply());
     const row = el('div', 'flex items-center gap-2');
-    row.append(this.attachBtn, this.chip, this.modeChip, el('span', 'flex-1'), this.moreBtn, this.stopBtn, this.sendBtn);
+    // The chips scroll sideways when a long model or mode name does not fit; the buttons around them stay on screen.
+    const chips = el('div', 'flex min-w-0 flex-1 items-center gap-2 overflow-x-auto [scrollbar-width:none] [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] [&::-webkit-scrollbar]:hidden');
+    chips.append(this.chip, this.modeChip);
+    row.append(this.attachBtn, chips, this.moreBtn, this.stopBtn, this.sendBtn);
     form.append(this.suggestEl, this.replyChip, this.note, this.err, this.attachRow, this.input, row, this.fileInput);
     form.addEventListener('submit', (e) => {
       e.preventDefault();

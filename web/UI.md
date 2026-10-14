@@ -111,11 +111,16 @@ important). The guard knows the hook classes of the kit buttons that CSS hides (
 ### iOS 26 and the top edge
 
 An installed web app on iOS 26 gets a blur that fades the top of the page (the usage strip). No CSS turns it off.
-WebKit skips it when a fixed, opaque, full-width box spans the top edge, so `index.html` has `#edge`: a fixed strip in
-the page colour, as tall as `env(safe-area-inset-top)` (so 0 elsewhere), painted in the status-bar zone the page
-leaves empty. Keep it, and do not give it a different colour from `--bg`. It is not reproducible in a headless
-browser; check on a device, and if it comes back, remove the home-screen icon and add it again. Making `#app`
-itself fixed also suppresses the blur but risks the soft-keyboard layout (`--vvh`), so it was not used.
+WebKit is meant to skip it when a fixed, opaque, full-width box spans the top edge, so `index.html` has `#edge`, a fixed
+strip as tall as `--safe-top`. On a real iPhone that alone did not stop the blur, so the page also stays out of it:
+in an installed iOS app `--safe-top` is the status-bar inset **plus 32px** of "ramp", and `#edge` paints the whole
+area in the usage strip's colour (`--surface-1`), where a blur over a flat colour is invisible. Everything that has to
+clear the top (the shell, overlay sidebars, command bar, image viewer) uses `--safe-top`, not `env(safe-area-inset-top)`.
+It is not reproducible in a headless browser; check on a device. Making `#app` itself fixed would also suppress the
+blur but risks the soft-keyboard layout, so it was not used.
+
+The app also follows `visualViewport.height` (`--vvh`) only while the keyboard has shrunk it by more than 120px;
+otherwise it uses the normal height, because an installed iOS app can report a visual height short of the screen.
 
 Also: Tailwind generates only the utilities it finds in source, scanned across the project, so a class
 must appear as a whole string in a `.ts` file (do not build `bg-${x}` at runtime).

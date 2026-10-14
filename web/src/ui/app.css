@@ -9,6 +9,9 @@
     /* Type scale (rem, so the root size scales the whole UI). */
     --fs-2xs: .6875rem; --fs-xs: .75rem; --fs-sm: .8125rem; --fs-md: .875rem; --fs-base: 1rem; --fs-lg: 1.125rem;
 
+    /* Room above the page for the status bar. See #edge: an installed iOS app also needs the blur ramp. */
+    --safe-top: env(safe-area-inset-top);
+
     /* Fallbacks so the page is usable before theme.ts runs (Midnight). */
     --bg: #0b0d10; --fg: #d7dae0; --accent-base: #7aa2f7; --ok: #9ece6a; --warn: #e0af68; --danger: #f7768e;
     --claude: #e8a06b; --codex: #5ec4b6; --on-accent: #0b0d10;
@@ -51,6 +54,13 @@
     --shadow: rgb(0 0 0 / .4);
     color-scheme: dark;
   }
+  /* iOS 26 blurs and fades the top ~90pt of an installed app: the status-bar inset plus a ramp. Leaving the ramp
+     empty (painted by #edge in the usage strip's colour) keeps the blur off the strip text. */
+  @supports (-webkit-touch-callout: none) {
+    @media (display-mode: standalone) {
+      :root { --safe-top: calc(env(safe-area-inset-top) + 32px); }
+    }
+  }
   /* The open session's agent decides the accent. */
   [data-agent='claude'] { --accent: var(--claude); }
   [data-agent='codex'] { --accent: var(--codex); }
@@ -64,12 +74,11 @@
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font: 1rem var(--font-ui); overscroll-behavior: none; }
   [hidden] { display: none !important; }
-  /* iOS 26 blurs and fades the top of an installed web app (over the usage strip) unless an opaque, fixed box spans the
-     top edge. This paints the status-bar zone in the page colour, which the page leaves empty anyway, so it counts as
-     that box. It is as tall as the inset, so it is 0 where there is none. */
-  #edge { position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: var(--bg); z-index: 40; }
+  /* The area above the page, in the usage strip's colour so the strip continues up under the status bar. It is also
+     the opaque fixed box that asks iOS 26 not to blur the top of an installed app. Height 0 where there is no inset. */
+  #edge { position: fixed; top: 0; left: 0; right: 0; height: var(--safe-top); background: var(--surface-1); z-index: 40; }
   #app { display: flex; height: var(--vvh, 100dvh); position: relative; overflow: hidden;
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    padding: var(--safe-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   /* OSC 9;4 progress: a thin bar along the top edge of the terminal. */
   @keyframes t-sweep { from { transform: translateX(0); } to { transform: translateX(185%); } }
   @media (prefers-reduced-motion: reduce) { .t-progress[data-kind="indeterminate"] { animation: none; width: 100%; opacity: .5; } }
@@ -132,7 +141,7 @@
 
   /* Overlay mode: out of the layout, off screen until opened. */
   #app:not(.l-pinned) #left, #app:not(.r-pinned) #right { position: absolute; top: 0; bottom: 0; z-index: 30; visibility: hidden;
-    padding-top: env(safe-area-inset-top); box-shadow: 0 0 40px var(--shadow);
+    padding-top: var(--safe-top); box-shadow: 0 0 40px var(--shadow);
     transition: transform .28s var(--ease), visibility 0s .28s; }
   #app:not(.l-pinned) #left { left: 0; width: min(var(--sb-w), 88%); transform: translateX(-104%); border-right: 1px solid var(--border); }
   #app:not(.r-pinned) #right { right: 0; width: min(var(--sb-right-w), 92%); transform: translateX(104%); border-left: 1px solid var(--border); }

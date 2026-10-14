@@ -903,7 +903,10 @@ edgeSwipe({
 const vv = window.visualViewport;
 if (vv) {
   const sync = () => {
-    document.documentElement.style.setProperty('--vvh', `${vv.height}px`);
+    // Follow the visual viewport only while something (the keyboard, a pinch) has really shrunk it. With none, the
+    // layout height is right, and an installed iOS app can report a visual height a few dozen points short.
+    if (window.innerHeight - vv.height > 120) document.documentElement.style.setProperty('--vvh', `${vv.height}px`);
+    else document.documentElement.style.removeProperty('--vvh');
     window.scrollTo(0, 0);
   };
   vv.addEventListener('resize', sync);
