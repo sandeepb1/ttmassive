@@ -3,7 +3,23 @@
 
 import type { Layout, Side } from './layout';
 
-const EDGE_PX = 24;
+/**
+ * Where a swipe may start to pull a sidebar in, measured from the screen edge. The first few pixels are left alone:
+ * the system's own edge gestures (Back, the home bar) live there, and a swipe that starts a little in is the one
+ * that is meant for the app.
+ */
+const EDGE_INSET_PX = 10;
+const EDGE_PX = 36;
+
+export const inEdgeZone = (fromEdge: number) => fromEdge >= EDGE_INSET_PX && fromEdge <= EDGE_PX;
+
+/**
+ * Pulling a sidebar in from the edge is for the installed app, where nothing else claims the edge. In a browser tab
+ * the browser's own Back swipe does, and the menu button opens the list.
+ */
+function edgeEnabled(): boolean {
+  return window.matchMedia('(display-mode: standalone)').matches || (navigator as { standalone?: boolean }).standalone === true;
+}
 const SLOP_PX = 8;
 /** Faster than this (px/ms) counts as a flick and decides the outcome by itself. */
 const FLICK = 0.5;
@@ -44,7 +60,7 @@ export function edgeSwipe(o: EdgeSwipeOpts) {
     for (const side of ['left', 'right'] as const) {
       if (o.layout.placement(side) !== 'overlay') continue;
       const open = o.layout.isVisible(side);
-      const atEdge = side === 'left' ? t.clientX <= EDGE_PX : t.clientX >= w - EDGE_PX;
+      const atEdge = edgeEnabled() && (side === 'left' ? inEdgeZone(t.clientX) : inEdgeZone(w - t.clientX));
       if (!open && atEdge) return mk(side, 'open', t);
       if (open) return mk(side, 'close', t);
     }
@@ -77,46 +93,47 @@ export function edgeSwipe(o: EdgeSwipeOpts) {
     o.app.classList.remove('dragging');
   };
 
+  // The move handler is attached only while a touch that might be a sidebar swipe is down. A touchmove listener on
+  // the document that can cancel makes every scroll in the app wait for the main thread, and the terminal is
+  // busy while an agent streams; most touches are not swipes, so they now scroll unhindered.
   document.addEventListener(
     'touchstart',
     (e) => {
       tr = begin(e);
+      if (tr) document.addEventListener('touchmove', move, { passive: false });
     },
     { passive: true },
   );
 
-  document.addEventListener(
-    'touchmove',
-    (e) => {
-      const k = tr;
-      if (!k) return;
-      const t = e.touches[0]!;
-      const raw = towardOpen(k, t.clientX);
-      const dx = k.intent === 'open' ? raw : -raw; // movement in the direction this gesture wants
-      const dyAbs = Math.abs(t.clientY - k.y0);
-      if (!k.dragging) {
-        if (dyAbs > 12 && dyAbs > Math.abs(dx)) {
-          tr = null; // a vertical scroll: not ours
-          return;
-        }
-        if (dx < SLOP_PX || dx < dyAbs * 1.2) return;
-        k.dragging = true;
-        o.app.classList.add('dragging');
+  const move = (e: TouchEvent) => {
+    const k = tr;
+    if (!k) return;
+    const t = e.touches[0]!;
+    const raw = towardOpen(k, t.clientX);
+    const dx = k.intent === 'open' ? raw : -raw; // movement in the direction this gesture wants
+    const dyAbs = Math.abs(t.clientY - k.y0);
+    if (!k.dragging) {
+      if (dyAbs > 12 && dyAbs > Math.abs(dx)) {
+        tr = null; // a vertical scroll: not ours
+        return;
       }
-      if (e.cancelable) e.preventDefault();
-      const width = o.panels[k.side].offsetWidth || 1;
-      k.progress = clamp((k.intent === 'open' ? 0 : 1) + raw / width, 0, 1);
-      const now = performance.now();
-      const dt = now - k.lastT;
-      if (dt > 0) k.velocity = (towardOpen(k, t.clientX) - towardOpen(k, k.lastX)) / dt;
-      k.lastX = t.clientX;
-      k.lastT = now;
-      paint(k);
-    },
-    { passive: false },
-  );
+      if (dx < SLOP_PX || dx < dyAbs * 1.2) return;
+      k.dragging = true;
+      o.app.classList.add('dragging');
+    }
+    if (e.cancelable) e.preventDefault();
+    const width = o.panels[k.side].offsetWidth || 1;
+    k.progress = clamp((k.intent === 'open' ? 0 : 1) + raw / width, 0, 1);
+    const now = performance.now();
+    const dt = now - k.lastT;
+    if (dt > 0) k.velocity = (towardOpen(k, t.clientX) - towardOpen(k, k.lastX)) / dt;
+    k.lastX = t.clientX;
+    k.lastT = now;
+    paint(k);
+  };
 
   const end = () => {
+    document.removeEventListener('touchmove', move);
     const k = tr;
     tr = null;
     if (!k || !k.dragging) return;

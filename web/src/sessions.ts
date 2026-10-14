@@ -479,9 +479,11 @@ export class SessionSidebar {
     let x = 0;
     let y = 0;
     let fired = false;
+    let mouse = false;
     const cancel = () => window.clearTimeout(timer);
     target.addEventListener('pointerdown', (e) => {
-      if (e.pointerType === 'mouse') return;
+      mouse = e.pointerType === 'mouse';
+      if (mouse) return;
       fired = false;
       x = e.clientX;
       y = e.clientY;
@@ -505,7 +507,12 @@ export class SessionSidebar {
       },
       true,
     );
-    target.addEventListener('contextmenu', (e) => e.preventDefault());
+    // A finger's long press also raises this event: the timer above has it covered, and the system's own menu is unwanted.
+    // A mouse's right-click is the same menu, on demand.
+    target.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (mouse) fn();
+    });
   }
 
   private async restore(id: string, fresh: boolean) {
