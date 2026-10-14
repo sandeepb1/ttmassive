@@ -984,6 +984,9 @@ rebuild. Release builds embed it. On macOS the default data directory is
 `~/Library/Application Support/ttm` (`XDG_DATA_HOME` is ignored). Set `data_dir` in a dev config
 to keep experiments out of it.
 
+The web UI is Tailwind plus a small component kit in `web/src/ui`. `web/UI.md` covers the tokens,
+the kit, the rules `npm test` enforces and how to screenshot a change.
+
 ## Status
 
 ttm was built and exercised on macOS with a Samsung Galaxy Tab S9 Ultra (Samsung Internet). That

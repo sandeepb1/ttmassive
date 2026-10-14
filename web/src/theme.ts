@@ -1,4 +1,4 @@
-// Theme engine. A theme is a small base palette; style.css derives the rest of the ramp (surfaces,
+// Theme engine. A theme is a small base palette; ui/app.css derives the rest of the ramp (surfaces,
 // borders, tints) from it with color-mix, so a new theme is ~20 values and stays internally
 // consistent. This module only touches the DOM inside functions so tests can import it.
 
@@ -267,7 +267,7 @@ export function xtermTheme(t: Theme = active) {
   };
 }
 
-/** Let the open session's agent colour the app: sets `data-agent`, which style.css maps to --accent. */
+/** Let the open session's agent colour the app: sets `data-agent`, which ui/app.css maps to --accent. */
 export function setAgentAccent(agent: 'claude' | 'codex' | null, root: HTMLElement = document.documentElement) {
   if (agent) root.dataset.agent = agent;
   else delete root.dataset.agent;
