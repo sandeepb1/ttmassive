@@ -10,6 +10,7 @@ import type { Hit } from './chat-insights';
 import { renderDiff, renderMarkdown } from './chat-render';
 import type { Todo } from './chat-model';
 import { el } from './dom';
+import { button } from './ui/button';
 import { icon, type IconName } from './icons';
 import { viewable } from './image-viewer';
 import { MemoryTab } from './memory-tab';
@@ -126,11 +127,7 @@ export class RightBar {
     });
 
     const head = el('div', 'sb-head');
-    const hide = el('button', 'icon sb-collapse');
-    hide.type = 'button';
-    hide.setAttribute('aria-label', 'Hide details');
-    hide.append(icon('panel-right'));
-    hide.addEventListener('click', () => this.hooks.collapse());
+    const hide = button({ variant: 'ghost', size: 'icon-sm', label: 'Hide details', cls: 'sb-collapse', onClick: () => this.hooks.collapse() }, icon('panel-right'));
     head.append(el('strong', 'sb-brand', 'Details'), el('span', 'sb-spacer'), hide);
 
     // Search, pinned above the tabs.
@@ -181,9 +178,7 @@ export class RightBar {
     const convo = el('section', 'rb-section');
     convo.append(el('div', 'drawer-label', 'Conversation'), this.rows);
     const usage = el('section', 'rb-section');
-    const refresh = el('button', 'chip rb-refresh', 'Refresh');
-    refresh.type = 'button';
-    refresh.addEventListener('click', () => this.hooks.refreshUsage());
+    const refresh = button({ variant: 'secondary', size: 'sm', cls: 'rb-refresh', onClick: () => this.hooks.refreshUsage() }, 'Refresh');
     const uhead = el('div', 'rb-uhead');
     uhead.append(el('div', 'drawer-label', 'Plan usage'), refresh);
     usage.append(uhead, usageBody);
