@@ -90,6 +90,23 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .fv-mark { position: absolute; z-index: 0; left: 0; right: 0; height: var(--fv-lh); background: var(--accent-bg); border-left: 3px solid var(--accent); pointer-events: none; }
 .tk-kw { color: var(--accent-text); } .tk-str { color: var(--ok-text); } .tk-com { color: var(--fg-faint); font-style: italic; } .tk-num { color: var(--warn-text); }
 
+/* The chat is a layer over the terminal. What belongs to the terminal alone must not show through it. */
+.pane.chat-mode .ts-open, .pane.chat-mode .ts-panel, .pane.chat-mode .t-toast, .pane.chat-mode .t-progress { display: none; }
+
+/* What the agent is doing, in the corner of the pane (over the chat too). Taps go through it. */
+.t-chip { position: absolute; top: calc(var(--topbar-h) + 8px); left: 12px; z-index: 5; /* above the chat layer (4), below the search bar (6) */ display: flex; align-items: center; gap: 8px; max-width: calc(100% - 72px);
+  padding: 5px 11px 5px 9px; border-radius: 999px; pointer-events: none; opacity: 0; transform: translateY(-4px);
+  background: color-mix(in srgb, var(--bg) 82%, transparent); border: 1px solid var(--border-strong); backdrop-filter: blur(6px);
+  font: 600 var(--fs-xs) var(--font-ui); color: var(--fg-soft); transition: opacity .35s ease, transform .35s ease; }
+.t-chip.show { opacity: 1; transform: none; }
+.t-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.t-chip-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: ttm-pulse 1.2s ease-in-out infinite; }
+.t-chip[data-kind="waiting"] { border-color: var(--warn); color: var(--warn-text); }
+.t-chip[data-kind="waiting"] .t-chip-dot { background: var(--warn); animation-duration: 1s; }
+/* A helper agent's transcript has its own status. */
+.pane.agent-mode .t-chip { display: none; }
+@media (prefers-reduced-motion: reduce) { .t-chip-dot { animation: none; } .t-chip { transition: none; } }
+
 /* A bar beside each row of the terminal that is one of your messages. */
 .t-marks { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 .t-mark { position: absolute; left: 0; width: 3px; background: var(--accent); border-radius: 0 2px 2px 0; opacity: .85; }
@@ -100,7 +117,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .ts-btn svg { width: 18px; height: 18px; }
 .ts-open { position: absolute; top: 8px; right: 8px; z-index: 5; opacity: .7; }
 .ts-open:hover, .ts-open:focus-visible { opacity: 1; }
-.ts-panel { position: absolute; top: 6px; left: 6px; right: 6px; z-index: 5; display: flex; flex-direction: column; gap: 6px; max-width: 620px; margin-left: auto;
+.ts-panel { position: absolute; top: 6px; left: 6px; right: 6px; z-index: 6; display: flex; flex-direction: column; gap: 6px; max-width: 620px; margin-left: auto;
   padding: 8px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / .45); }
 .ts-row { display: flex; align-items: center; gap: 6px; }
 .ts-input { flex: 1; min-width: 0; min-height: 40px; padding: 0 12px; color: var(--fg); background: var(--surface-3); border: 1px solid var(--border);

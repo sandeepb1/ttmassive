@@ -11,6 +11,7 @@ import { KeyBar } from './keybar';
 import type { Analysis, ClientMsg, ServerMsg } from './protocol';
 import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
 import { linkAction, progressView, type Progress } from './term-addons';
+import { skewFromDate } from './activity-chip';
 import { findPaths } from './paths';
 import { markedRows } from './turn-marks';
 
@@ -21,7 +22,7 @@ export interface SessionHooks {
   /** The session exists only as saved output; offer a restore. */
   onStopped: (resumable: boolean) => void;
   /** Latest screen analysis, or null when unavailable. */
-  onScreen: (a: Analysis | null) => void;
+  onScreen: (a: Analysis | null, skewMs: number) => void;
   /** The program reported progress (OSC 9;4). `kind` is null when it cleared it. */
   onProgress: (kind: 'normal' | 'error' | 'indeterminate' | 'paused' | null) => void;
   /** A file path in the output was tapped. */
@@ -427,7 +428,7 @@ export class TerminalSession {
     if (m.type === 'exit') {
       // The tmux session is gone; reconnecting would only start a new shell.
       this.ended = true;
-      this.hooks.onScreen(null);
+      this.hooks.onScreen(null, 0);
       this.onStatus(`session ended (${m.code})`);
     } else if (m.type === 'error') {
       this.onStatus(m.message);
@@ -449,7 +450,8 @@ export class TerminalSession {
   private async pollScreen() {
     if (document.hidden || this.ws?.readyState !== WebSocket.OPEN) return;
     const r = await fetch(`/api/sessions/${encodeURIComponent(this.session)}/screen`).catch(() => null);
-    this.hooks.onScreen(r?.ok ? ((await r.json()) as Analysis) : null);
+    // The reply's Date header is the server's clock: it lets a time recorded there be shown here.
+    this.hooks.onScreen(r?.ok ? ((await r.json()) as Analysis) : null, skewFromDate(r?.headers.get('date') ?? null, Date.now()));
   }
 
   /** After a restore: leave the saved-output view and attach for real. */

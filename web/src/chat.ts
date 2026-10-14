@@ -24,6 +24,7 @@ import { applySuggestion, attachmentToken, findTrigger, insertToken, isResumeCom
 import { prepareImage } from './image';
 import { ModeSheet } from './mode-sheet';
 import { ModelPicker } from './model-picker';
+import { doingNow, lastUserTs, type Work } from './activity-chip';
 import { MoreSheet } from './more-sheet';
 import { ResumeSheet } from './resume-sheet';
 import type { QuestionRequest } from './question-form';
@@ -52,6 +53,8 @@ export interface ChatHooks {
   onAgent?: (agent: 'claude' | 'codex' | null) => void;
   /** Files changed, to-dos and the plan changed: for the details panel. */
   onData?: (data: ChatPanelData) => void;
+  /** What the agent is doing now and when you sent the message it is answering: for the pane's chip. */
+  onWork?: (work: Work) => void;
   /** Where sheets go. They must stay visible while the terminal is showing, so not the chat itself. */
   sheetHost?: HTMLElement;
 }
@@ -429,6 +432,7 @@ export class ChatView {
     this.syncControls();
     this.renderEmpty();
     this.emitData();
+    this.emitWork();
 
     if (wasStuck) this.scrollToBottom();
     else if (added) this.jump.hidden = false;
@@ -460,6 +464,17 @@ export class ChatView {
     if (key === this.dataKey) return;
     this.dataKey = key;
     this.hooks.onData?.({ files: filesChanged(this.store.items), todos, plan, agents });
+  }
+
+  private workKey = '';
+
+  /** Tell the pane's chip what the agent is doing, but only when that changed. */
+  private emitWork() {
+    const work: Work = { doing: doingNow(this.store.todos, this.store.items), turnStart: lastUserTs(this.store.items) };
+    const key = `${work.doing}|${work.turnStart}`;
+    if (key === this.workKey) return;
+    this.workKey = key;
+    this.hooks.onWork?.(work);
   }
 
   /** Messages containing `query`, newest first. */

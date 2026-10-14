@@ -270,6 +270,23 @@ Matching is literal, not a regular expression. Case is ignored unless the search
 letter, as in tmux. Up to 1000 matches are counted and 200 are listed. It searches running
 sessions only; a stopped session keeps just its saved output (see `ttm output`).
 
+### The activity chip
+
+A small pill in the corner of each pane, under its header, says what the agent is doing and for how
+long, in the chat view and the terminal view alike: `Working · Running the tests · 3m 12s`, or
+`Waiting for you · 40s` in amber when it is stuck on a question. It fades out when the agent is
+idle, and a tap goes straight through it. In tiled view each pane has its own, so one glance shows
+which agents are busy and which need you.
+
+- *What* it is doing comes from the conversation: the to-do the agent is on, else the tool it is
+  running. A plain shell has no chip.
+- *How long* is timed on the page from the moment it sees the change. If you open a pane while the
+  agent is already mid-turn, it counts from when you sent the message instead, using the server's
+  clock (the `Date` header of the screen reading) so a device with a wrong clock still agrees.
+- The state is the same reading that drives the header's "working…" and "waiting for you": the
+  screen is checked every two seconds. If the screen cannot be read for 10 seconds the chip goes
+  away rather than sticking on "Working".
+
 ### Opening files from the terminal
 
 A file path in the terminal output becomes tappable: `src/main.rs:42:7` from a compiler,

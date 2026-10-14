@@ -13,6 +13,7 @@ import type { Analysis } from './protocol';
 import type { ChatActions } from './rightbar';
 import { setAgentAccent } from './theme';
 import { TerminalSession } from './term';
+import { ActivityChip } from './term-chip';
 import { TermSearch } from './term-search';
 
 export interface PaneEvents {
@@ -94,6 +95,7 @@ export class Pane {
   private stoppedBar: StoppedBar | null = null;
   private focused = false;
   private historySearch: TermSearch;
+  private chip: ActivityChip;
   /** Whether the terminal draws on the GPU (browsers cap how many panes can). */
   private gpu = true;
   /** Whether this session's starting view has been picked yet. */
@@ -139,6 +141,7 @@ export class Pane {
       headButton('p-panel', 'Session details', 'panel-right', () => events.onPanel()),
     );
 
+    this.chip = new ActivityChip(this.el); // on the pane, not the terminal: it shows in the chat view too
     this.historySearch = new TermSearch(this.termEl, {
       session: () => this.name,
       onUnauthorized: () => events.onUnauthorized(),
@@ -157,6 +160,7 @@ export class Pane {
   /** Show `name` in this pane, replacing whatever it showed. */
   open(name: string) {
     this.historySearch.reset();
+    this.chip.reset();
     this.leaveAgent();
     this.term?.dispose();
     this.chat?.dispose();
@@ -190,6 +194,9 @@ export class Pane {
         if (this.chat !== chat) return;
         this.data = data;
         this.events.onChange(this, 'data');
+      },
+      onWork: (work) => {
+        if (this.chat === chat) this.chip.setWork(work);
       },
       onInfo: (info) => {
         if (this.chat !== chat) return;
@@ -226,7 +233,8 @@ export class Pane {
       this.keybarEl,
       {
         onStopped: (resumable) => this.stoppedBar?.show(resumable),
-        onScreen: (a) => {
+        onScreen: (a, skewMs) => {
+          this.chip.observe(a ? a.activity : 'unknown', skewMs);
           this.promptBar?.render(a);
           this.activityMsg = a ? ACTIVITY[a.activity] : '';
           this.renderStatus();
@@ -304,6 +312,7 @@ export class Pane {
 
   dispose() {
     this.historySearch.dispose(); // a closed pane must not leave its session in copy-mode
+    this.chip.dispose();
     this.agentView?.dispose();
     window.clearTimeout(this.noticeTimer);
     this.term?.dispose();
