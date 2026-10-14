@@ -434,7 +434,7 @@ function toggleList() {
   }
 }
 
-// Ctrl+Alt+arrows move between tiles; Ctrl+Alt+1..6 jump to one; Ctrl+Alt+F searches the history.
+// Ctrl+Alt+arrows move between tiles; Ctrl+Alt+1..6 jump to one; Ctrl+Alt+F searches the history; Ctrl+Alt+[ and ] step through your messages.
 document.addEventListener(
   'keydown',
   (e) => {
@@ -443,6 +443,12 @@ document.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       focused?.openSearch();
+      return;
+    }
+    if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
+      e.preventDefault();
+      e.stopPropagation();
+      focused?.stepTurns(e.code === 'BracketLeft' ? 'older' : 'newer');
       return;
     }
     const dirs: Record<string, Dir> = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };

@@ -12,6 +12,7 @@ import type { Analysis, ClientMsg, ServerMsg } from './protocol';
 import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
 import { linkAction, progressView, type Progress } from './term-addons';
 import { findPaths } from './paths';
+import { markedRows } from './turn-marks';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
@@ -83,6 +84,9 @@ export class TerminalSession {
   private toastTimer = 0;
   private barEl: HTMLElement | null = null;
   private gl: WebglAddon | null = null;
+  private turnSnippets: string[] = [];
+  private marksEl: HTMLElement | null = null;
+  private marksTimer = 0;
   private fit = new FitAddon();
   private ws: WebSocket | null = null;
   private attempt = 0;
@@ -119,6 +123,8 @@ export class TerminalSession {
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
     this.term.onResize(({ rows, cols }) => this.sendCtl({ type: 'resize', rows, cols }));
+    this.term.onWriteParsed(() => this.scheduleMarks());
+    this.term.onResize(() => this.scheduleMarks());
 
     // Orientation change, soft keyboard and window resizes all land here.
     const refit = () => requestAnimationFrame(() => this.fit.fit());
@@ -222,6 +228,55 @@ export class TerminalSession {
   }
 
   private lastOpened = 0;
+
+  /** The first lines of your messages to the agent, so rows that are one can be marked. */
+  setTurnSnippets(snippets: string[]) {
+    this.turnSnippets = snippets;
+    this.scheduleMarks();
+  }
+
+  private scheduleMarks() {
+    if (this.marksTimer || this.closed) return;
+    // The screen repaints in bursts while an agent streams: look once it settles.
+    this.marksTimer = window.setTimeout(() => {
+      this.marksTimer = 0;
+      this.drawMarks();
+    }, 120);
+  }
+
+  /**
+   * A thin bar beside each row of the screen that is one of your messages. tmux repaints the whole
+   * screen, so xterm's own markers (tied to scrolling lines) would not follow; this reads the rows
+   * as drawn now.
+   */
+  private drawMarks() {
+    const screen = this.el.querySelector('.xterm-screen');
+    const buf = this.term.buffer.active;
+    const rows: string[] = [];
+    if (this.turnSnippets.length) {
+      for (let r = 0; r < this.term.rows; r++) rows.push(buf.getLine(buf.viewportY + r)?.translateToString(true) ?? '');
+    }
+    const hit = screen && rows.length ? markedRows(rows, this.turnSnippets) : [];
+    if (!screen || hit.length === 0) {
+      this.marksEl?.replaceChildren();
+      return;
+    }
+    if (!this.marksEl) {
+      this.marksEl = el('div', 't-marks');
+      this.marksEl.setAttribute('aria-hidden', 'true');
+      this.el.append(this.marksEl);
+    }
+    const host = this.el.getBoundingClientRect();
+    const sr = screen.getBoundingClientRect();
+    const cell = sr.height / this.term.rows;
+    this.marksEl.replaceChildren(
+      ...hit.map((row) => {
+        const m = el('div', 't-mark');
+        m.style.cssText = `top:${sr.top - host.top + row * cell}px;height:${cell}px`;
+        return m;
+      }),
+    );
+  }
 
   private openFile(path: string, line: number | null) {
     this.lastOpened = performance.now();
@@ -445,6 +500,7 @@ export class TerminalSession {
 
   dispose() {
     this.closed = true;
+    window.clearTimeout(this.marksTimer);
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.screenTimer);
     window.clearTimeout(this.retryTimer);

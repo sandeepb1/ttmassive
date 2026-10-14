@@ -54,7 +54,7 @@ pub fn clean(q: &str) -> Result<&str, &'static str> {
 }
 
 /// tmux's smart case: ignore case unless the query has an ASCII capital.
-fn ignores_case(q: &[char]) -> bool {
+pub(crate) fn ignores_case(q: &[char]) -> bool {
     !q.iter().any(char::is_ascii_uppercase)
 }
 
@@ -63,7 +63,7 @@ fn same(a: char, b: char, fold: bool) -> bool {
 }
 
 /// Where each non-overlapping match of `q` starts in `line`, left to right.
-fn starts(line: &[char], q: &[char], fold: bool) -> Vec<usize> {
+pub(crate) fn starts(line: &[char], q: &[char], fold: bool) -> Vec<usize> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + q.len() <= line.len() {
@@ -78,7 +78,7 @@ fn starts(line: &[char], q: &[char], fold: bool) -> Vec<usize> {
 }
 
 /// `text` around `at..at + len`, cut to `SNIPPET` characters.
-fn window(line: &[char], at: usize, len: usize) -> (String, usize, usize) {
+pub(crate) fn window(line: &[char], at: usize, len: usize) -> (String, usize, usize) {
     let n = line.len();
     let (from, to) = if n <= SNIPPET { (0, n) } else {
         let from = at.saturating_sub(40).min(n - SNIPPET);

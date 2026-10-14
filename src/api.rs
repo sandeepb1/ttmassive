@@ -12,7 +12,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 
 use crate::{
-    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, files, layouts, modelmenu, modes, notify, ops, resume, search, sessions, suggest, tmux, uploads, usage,
+    AppState, assets, auth::COOKIE_NAME, chat, config::{Agent, RestartPolicy}, files, layouts, modelmenu, modes, notify, ops, resume, search, sessions, suggest, tmux, turns, uploads, usage,
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -30,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/restore", post(restore_session))
         .route("/api/sessions/{id}/output", get(session_output))
         .route("/api/sessions/{id}/file", get(session_file))
+        .route("/api/sessions/{id}/turns", get(session_turns))
         .route("/api/sessions/{id}/search", get(session_search))
         .route("/api/sessions/{id}/search/jump", post(session_search_jump))
         .route("/api/sessions/{id}/search/close", post(session_search_close))
@@ -518,6 +519,28 @@ async fn session_file(State(st): State<Arc<AppState>>, Path(id): Path<String>, Q
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+/// Your messages to the session's agent, newest first, each placed in the terminal history where
+/// it can be found. Reach one with the search jump, using its `snippet` and `n`.
+async fn session_turns(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    if !tmux::exists(&id).await {
+        return (StatusCode::CONFLICT, "session is not running").into_response();
+    }
+    let msgs = chat::user_messages(&st, &id).await;
+    if msgs.is_empty() {
+        // A plain shell, or no conversation yet: skip reading the whole history.
+        return ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "turns": [] }))).into_response();
+    }
+    let capture = match tmux::capture_all(&id).await {
+        Ok(t) => t,
+        Err(e) => return server_error(&e),
+    };
+    let turns = tokio::task::spawn_blocking(move || turns::locate(&capture, &msgs)).await.unwrap_or_default();
+    ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "turns": turns }))).into_response()
 }
 
 #[derive(Deserialize)]

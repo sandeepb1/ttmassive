@@ -253,6 +253,19 @@ current one in a different colour. The list tucks away after a jump so you can s
 the counter to bring it back. Leave with the close button, Escape in the search box, or `q` in the
 terminal. Closing the tab after a jump also leaves copy-mode.
 
+**Your messages.** With the box empty, the bar lists what you typed to Claude or Codex in this
+session, newest first, with how long ago and how far up each is. Tap one, or use the arrows, to jump
+to it in the terminal history. Each of your messages that is on the terminal screen also gets a thin
+bar in the margin, so they stand out while you scroll back. `Ctrl+Alt+[` and `Ctrl+Alt+]` step to the
+previous and next message without opening the bar. These need the terminal view; an agent session
+opens in the chat view, so switch with the Chat/Terminal toggle.
+
+A message is found by its first line, and counts as yours when only a few symbols come before it on
+its line (`> `, `❯ `, `│ > `), so the agent quoting you is not mistaken for you. One that the agent
+draws differently, such as a long paste shown as `[Pasted text]`, or that has scrolled out of the
+50,000 lines, is greyed out as "not on screen". It does not shift the others, because messages are
+matched from the newest end.
+
 Matching is literal, not a regular expression. Case is ignored unless the search has a capital
 letter, as in tmux. Up to 1000 matches are counted and 200 are listed. It searches running
 sessions only; a stopped session keeps just its saved output (see `ttm output`).
@@ -759,6 +772,10 @@ settings are `bind`, `password_hash`, `trust_proxy`, `tunnel`, `tunnel_token`, `
   text}` for a file inside the session's project folder (404 not found, 403 outside it or private,
   415 a directory or binary file). `path` is absolute, `~/…`, or relative to the session's folder,
   then to its repository root. Text over 1 MB is cut on a line.
+- Messages: `GET /api/sessions/{id}/turns` returns `{turns: [{id, ts, preview, snippet, n, text, up}]}`,
+  your messages to the agent from its transcript, newest first (at most 40), each placed on the
+  terminal. `n` is null when the message is not found there. To go to one, `POST .../search/jump`
+  with `{q: snippet, n, text}`. A plain shell returns an empty list.
 - Search: `GET /api/sessions/{id}/search?q=` reads the whole tmux history and returns
   `{total, capped, hits: [{n, up, text, at, len}]}`, newest first, where `n` counts matches from the
   newest. `POST /api/sessions/{id}/search/jump` with `{q, n, text?}` puts the session in tmux's

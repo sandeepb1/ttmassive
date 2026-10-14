@@ -145,6 +145,7 @@ export class Pane {
       refocus: () => {
         if (this.focused && this.view === 'term') this.term?.focus();
       },
+      onTurns: (snippets) => this.term?.setTurnSnippets(snippets),
     });
     this.el.append(head, this.termEl, this.chatEl, this.agentEl, this.stoppedEl, this.promptEl, this.keybarEl);
     // Capture, so a tap on a button inside still focuses the pane first.
@@ -240,6 +241,7 @@ export class Pane {
       this.gpu,
     );
     this.term = term;
+    this.historySearch.refreshSoon();
     this.promptBar = new PromptBar(this.promptEl, (choice, id) => term.answer(choice, id));
     this.stoppedBar = new StoppedBar(this.stoppedEl, async (fresh) => {
       const r = await fetch(`/api/sessions/${encodeURIComponent(name)}/restore`, {
@@ -301,7 +303,7 @@ export class Pane {
   }
 
   dispose() {
-    this.historySearch.reset(); // a closed pane must not leave its session in copy-mode
+    this.historySearch.dispose(); // a closed pane must not leave its session in copy-mode
     this.agentView?.dispose();
     window.clearTimeout(this.noticeTimer);
     this.term?.dispose();
@@ -317,6 +319,12 @@ export class Pane {
   setGpu(on: boolean) {
     this.gpu = on;
     this.term?.setGpu(on);
+  }
+
+  /** Jump to your previous or next message in the terminal history. */
+  stepTurns(dir: 'older' | 'newer') {
+    if (this.view !== 'term' || this.isAgent || !this.term) return this.say('Messages can be stepped through in the terminal view.');
+    void this.historySearch.stepTurns(dir);
   }
 
   /** Open the history search, if this pane is showing a terminal. */

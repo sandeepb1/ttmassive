@@ -1125,6 +1125,27 @@ pub async fn overview(st: &Arc<AppState>, session: &str) -> (Option<String>, u32
     tokio::task::spawn_blocking(move || cache.overview(&name, agent, &conv_id)).await.unwrap_or((None, 0))
 }
 
+/// What you have typed to `session`'s agent, oldest first. Empty for a plain shell.
+pub async fn user_messages(st: &Arc<AppState>, session: &str) -> Vec<crate::turns::UserMsg> {
+    let Some((agent, conv_id)) = agent_of(st, session) else { return Vec::new() };
+    let cache = st.chat.clone();
+    let name = session.to_owned();
+    tokio::task::spawn_blocking(move || {
+        cache
+            .read(&name, agent, &conv_id, None, 0)
+            .0
+            .items
+            .into_iter()
+            .filter_map(|i| match i.body {
+                Body::User { text, .. } => Some(crate::turns::UserMsg { id: i.id, ts: i.ts, text }),
+                _ => None,
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// The helper agents `session` has started.
 pub async fn agents(st: &Arc<AppState>, session: &str) -> Vec<SubAgent> {
     let Some((agent, conv_id)) = agent_of(st, session) else { return Vec::new() };

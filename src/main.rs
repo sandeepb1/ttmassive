@@ -27,6 +27,7 @@ mod subagents;
 mod sessions;
 mod suggest;
 mod tmux;
+mod turns;
 mod tunnel;
 mod uploads;
 mod usage;
