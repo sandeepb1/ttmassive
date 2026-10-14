@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{AppState, config::Agent};
+use crate::{AppState, config::Agent, lookups::Lookups};
 
 const PROBE_TTL: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -28,6 +28,8 @@ const LOG_EDGE: u64 = 16 * 1024;
 /// Newest log files looked at per request for the feed.
 const LOG_SCAN: usize = 400;
 pub const FEED_LIMIT: usize = 60;
+/// How long a request waits for the settings files to be read.
+const URL_WAIT: Duration = Duration::from_millis(400);
 
 pub fn provider_of(agent: Agent) -> Option<&'static str> {
     match agent {
@@ -90,6 +92,9 @@ pub fn codex_base_url(codex_dir: Option<&Path>) -> Option<String> {
 pub struct Probes {
     http: reqwest::Client,
     seen: Mutex<HashMap<String, (Instant, bool)>>,
+    /// The address each agent is set to use, per folder. Reading the settings files is a file open
+    /// in the session's project folder, so it is kept off the runtime and remembered (see `lookups`).
+    urls: Lookups<(u8, PathBuf), Option<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -105,6 +110,7 @@ impl Probes {
                 .build()
                 .unwrap_or_default(),
             seen: Mutex::default(),
+            urls: Lookups::new(PROBE_TTL / 6, URL_WAIT),
         }
     }
 
@@ -147,8 +153,15 @@ pub async fn detect_global(st: &AppState, agent: Agent) -> Option<String> {
 
 async fn routed(st: &AppState, agent: Agent, cwd: Option<&Path>) -> Option<String> {
     let url = match agent {
-        Agent::Claude => claude_base_url(cwd, std::env::var("ANTHROPIC_BASE_URL").ok().as_deref(), crate::agentlog::claude_dir().as_deref()),
-        Agent::Codex => codex_base_url(crate::agentlog::codex_dir().as_deref()),
+        Agent::Claude => {
+            let (env, dir, cwd) = (std::env::var("ANTHROPIC_BASE_URL").ok(), crate::agentlog::claude_dir(), cwd.map(Path::to_owned));
+            let key = (0, cwd.clone().unwrap_or_default());
+            st.teamclaude.urls.get(key, move || claude_base_url(cwd.as_deref(), env.as_deref(), dir.as_deref())).await.flatten()
+        }
+        Agent::Codex => {
+            let dir = crate::agentlog::codex_dir();
+            st.teamclaude.urls.get((1, PathBuf::new()), move || codex_base_url(dir.as_deref())).await.flatten()
+        }
         Agent::Other => None,
     }?;
     let origin = origin_of(&url)?;

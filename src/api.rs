@@ -686,12 +686,15 @@ fn no_store<T: serde::Serialize>(body: T) -> Response {
 
 async fn project_of(st: &AppState, id: &str) -> Result<memory::Project, Response> {
     let ctx = pane(st, id).await?;
-    Ok(memory::resolve(&ctx.cwd, crate::agentlog::home().as_deref()))
+    memory::resolve_in(ctx.cwd).await.map_err(|e| (StatusCode::GATEWAY_TIMEOUT, e.to_string()).into_response())
 }
 
 async fn memory_overview(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     match project_of(&st, &id).await {
-        Ok(p) => no_store(memory::overview(&st, &p).await),
+        Ok(p) => match memory::overview(&st, &p).await {
+            Ok(o) => no_store(o),
+            Err(e) => (StatusCode::GATEWAY_TIMEOUT, e.to_string()).into_response(),
+        },
         Err(r) => r,
     }
 }
@@ -737,7 +740,10 @@ async fn memory_day(State(st): State<Arc<AppState>>, Path((id, date)): Path<(Str
 
 async fn memory_reindex(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     match project_of(&st, &id).await {
-        Ok(p) => no_store(memory::overview(&st, &p).await.reindex),
+        Ok(p) => match memory::overview(&st, &p).await {
+            Ok(o) => no_store(o.reindex),
+            Err(e) => (StatusCode::GATEWAY_TIMEOUT, e.to_string()).into_response(),
+        },
         Err(r) => r,
     }
 }

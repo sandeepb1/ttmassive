@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{process::Command, sync::Semaphore};
 
-use crate::AppState;
+use crate::{AppState, lookups};
 
+/// How long a read of the project folder gets before the request gives up on it.
+const IO_LIMIT: Duration = Duration::from_secs(5);
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const STATS_TIMEOUT: Duration = Duration::from_secs(15);
 const INDEX_TIMEOUT: Duration = Duration::from_secs(600);
@@ -53,6 +55,18 @@ pub fn resolve(cwd: &Path, home: Option<&Path>) -> Project {
         .filter(|c| valid_collection(c))
         .unwrap_or_else(|| derive_collection(&root));
     Project { memory_dir: root.join(".memsearch").join("memory"), root, collection }
+}
+
+/// A read of the project folder from a request. The folder may be one that never answers (see
+/// `lookups`), so it runs off the runtime and gives up after `IO_LIMIT`.
+async fn io<T: Send + 'static>(read: impl FnOnce() -> T + Send + 'static) -> Result<T> {
+    lookups::off(IO_LIMIT, read).await.ok_or_else(|| anyhow!("the project folder is not responding"))
+}
+
+/// `resolve` for a request.
+pub async fn resolve_in(cwd: PathBuf) -> Result<Project> {
+    let home = crate::agentlog::home();
+    io(move || resolve(&cwd, home.as_deref())).await
 }
 
 /// `ms_<basename>_<8 hex of sha256(path)>`, the same rule as the memsearch plugin's
@@ -371,7 +385,8 @@ impl Memory {
 
     /// Chunks in the index, re-counted only when the index changed.
     async fn chunk_count(&self, p: &Project) -> Option<u64> {
-        let version = mtime_secs(&index_state_path(&p.root)).unwrap_or(0);
+        let root = p.root.clone();
+        let version = io(move || mtime_secs(&index_state_path(&root)).unwrap_or(0)).await.ok()?;
         if let Some(&(v, n)) = lock(&self.chunks).get(&p.collection)
             && v == version
         {
@@ -393,7 +408,9 @@ pub async fn search(st: &AppState, p: &Project, query: &str, k: usize) -> Result
         bail!("the query must be 1 to {MAX_QUERY} characters");
     }
     let k = k.clamp(1, MAX_RESULTS);
-    let key: SearchKey = (p.collection.clone(), query.to_owned(), k, mtime_secs(&index_state_path(&p.root)).unwrap_or(0));
+    let root = p.root.clone();
+    let version = io(move || mtime_secs(&index_state_path(&root)).unwrap_or(0)).await?;
+    let key: SearchKey = (p.collection.clone(), query.to_owned(), k, version);
     {
         let mut cache = lock(&st.memory.searches);
         if let Some(i) = cache.iter().position(|(kk, _)| *kk == key) {
@@ -472,23 +489,25 @@ fn summarize_days(dir: &Path) -> Vec<DaySummary> {
         .collect()
 }
 
-pub async fn overview(st: &AppState, p: &Project) -> Overview {
-    let dir = p.memory_dir.clone();
-    let days = tokio::task::spawn_blocking(move || summarize_days(&dir)).await.unwrap_or_default();
+pub async fn overview(st: &AppState, p: &Project) -> Result<Overview> {
+    let (dir, root) = (p.memory_dir.clone(), p.root.clone());
+    let (days, state, newest) = io(move || {
+        let newest = day_files(&dir).iter().filter_map(|(_, f)| mtime_secs(f)).max();
+        (summarize_days(&dir), index_state(&root), newest)
+    })
+    .await?;
     let (cfg, chunks) = tokio::join!(st.memory.config(p), st.memory.chunk_count(p));
-    let state = index_state(&p.root);
     let indexed_at = state
         .as_ref()
         .and_then(|s| s.last_success_at.as_deref())
         .and_then(|t| time::OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339).ok())
         .map(|t| t.unix_timestamp().max(0) as u64);
-    let newest = day_files(&p.memory_dir).iter().filter_map(|(_, f)| mtime_secs(f)).max();
     let unindexed = match (newest, indexed_at) {
         (Some(n), Some(i)) => n > i + 1,
         (Some(_), None) => true,
         _ => false,
     };
-    Overview {
+    Ok(Overview {
         root: p.root.display().to_string(),
         collection: p.collection.clone(),
         entries: days.iter().map(|d| d.entries).sum(),
@@ -502,7 +521,7 @@ pub async fn overview(st: &AppState, p: &Project) -> Overview {
         llm_model: cfg.llm_model,
         reindex: job(&st.memory.reindex, &p.collection),
         rollup: job(&st.memory.rollup, &p.collection),
-    }
+    })
 }
 
 pub async fn day(p: &Project, date: &str) -> Option<Vec<Entry>> {
@@ -675,7 +694,9 @@ pub struct RollupInfo {
 
 pub async fn rollup(st: &AppState, p: &Project) -> RollupView {
     let stored: Option<Stored> = tokio::fs::read(rollup_path(st, &p.collection)).await.ok().and_then(|b| serde_json::from_slice(&b).ok());
-    let current = stamp(&p.memory_dir);
+    // A folder that does not answer reads as "changed", which only asks for a fresh rollup.
+    let dir = p.memory_dir.clone();
+    let current = io(move || stamp(&dir)).await.unwrap_or_default();
     RollupView {
         job: job(&st.memory.rollup, &p.collection),
         rollup: stored.map(|s| RollupInfo { stale: s.stamp != current, generated_at: s.generated_at, model: s.model, body: s.body }),
@@ -715,13 +736,11 @@ async fn generate(st: &AppState, p: &Project) -> Result<()> {
         bail!("memsearch has no summarizing LLM configured (see `memsearch config list`)");
     };
     let dir = p.memory_dir.clone();
-    let before = stamp(&dir);
-    let notes = tokio::task::spawn_blocking({
+    let (before, notes) = io({
         let dir = dir.clone();
-        move || notes_for_prompt(&dir)
+        move || (stamp(&dir), notes_for_prompt(&dir))
     })
-    .await
-    .context("reading the notes")?;
+    .await?;
     if notes.trim().is_empty() {
         bail!("there are no notes to summarise yet");
     }

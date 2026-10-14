@@ -13,6 +13,7 @@ mod files;
 mod gitinfo;
 mod layouts;
 mod limits;
+mod lookups;
 mod memory;
 mod modelmenu;
 mod modes;
