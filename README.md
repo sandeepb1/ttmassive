@@ -449,12 +449,18 @@ interrupts the agent.
   and Codex read. They show as thumbnails in the chat.
 - Pictures in the conversation: an image you pasted straight into Claude's terminal, a screenshot a
   tool returned (a browser tool, `Read` on an image), and Codex's image attachments all show in the
-  chat, on your message or on the tool's card; tap one to open it at full size. They are read from
+  chat, on your message or on the tool's card; tap one to open it in a viewer. They are read from
   the agent's log, saved once under `chat-images/` in the data directory (owner-only, removed after
   14 days; a conversation that is read again saves the ones it still shows) and served only to a
   signed-in browser. Only PNG, JPEG, GIF and WebP are kept, judged by their bytes, never by name, so
   an SVG or a renamed file is not served. A picture that cannot be shown (too large, or Codex's file
   is gone) is counted as "N images".
+- The image viewer: tapping a picture in the chat, or one in the details panel's **Images** tab,
+  opens it large over the app. **Save** downloads it (named after the file) and **Open in new tab**
+  opens the picture itself. A message with several pictures gets arrows (or the left and right keys,
+  or a swipe) to move between them, and a counter. Escape, the × button or a tap on the dark around
+  the picture closes it and puts you back where you were. Ctrl- or Cmd-click, or a middle click, still
+  opens the picture in a new tab without the viewer. A picture that has since been removed says so.
 - Commands you ran yourself and what the agents record around them: a `!` command and its output
   are one Bash card; a slash command shows as a command, with its output (or error) as a note; a
   background task that finished is a note with its summary; text you pasted into a message is a

@@ -842,7 +842,7 @@ edgeSwipe({
   layout,
   panels: { left: $('left'), right: $('right') },
   scrim: $('scrim'),
-  blocked: () => !!$('app').hidden || document.querySelector('.sheet') !== null,
+  blocked: () => !!$('app').hidden || document.querySelector('.sheet, .img-viewer') !== null,
 });
 
 // iOS Safari ignores interactive-widget: size the app to the *visual* viewport so the

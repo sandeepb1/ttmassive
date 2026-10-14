@@ -8,6 +8,7 @@ import { lineDiff, trimContext } from './diff';
 import { el } from './dom';
 import { agentForItem, elapsedSecs, fmtElapsed, isAgentTool, stateOf, workLine, type SubAgent } from './agents';
 import { icon, toolCategory, toolIconName } from './icons';
+import { viewable } from './image-viewer';
 import { parseMarkdown, type Block, type Inline } from './markdown';
 
 // ----------------------------------------------------------------- markdown
@@ -401,21 +402,23 @@ function preview(text: string): string {
   return line.length > 80 ? line.slice(0, 79) + '…' : line;
 }
 
-/** Pictures from the conversation, each a link to the full size. */
-function picsRow(urls: string[]): HTMLElement {
+/** Pictures from the conversation. A tap opens them in the viewer; the link still points at the file. */
+function picsRow(urls: string[], alt = 'Image from the conversation'): HTMLElement {
   const row = el('div', 'msg-pics');
-  for (const url of urls) {
+  urls.forEach((url, i) => {
     const a = el('a', 'msg-pic');
     a.href = url;
     a.target = '_blank';
     a.rel = 'noopener';
+    a.setAttribute('aria-label', `View image ${i + 1} of ${urls.length}`);
     const img = el('img', 'msg-img');
     img.src = url;
-    img.alt = 'Image from the conversation';
+    img.alt = alt;
     img.loading = 'lazy';
     a.append(img);
+    viewable(a, () => urls, i);
     row.append(a);
-  }
+  });
   return row;
 }
 
@@ -435,13 +438,7 @@ export function renderItem(it: ChatItem, ctx?: RenderCtx, agents?: AgentCtx): HT
       const m = el('div', 'msg user');
       // Images attached through ttm are written into the message as `@path`: show them as pictures.
       const { text, images } = splitUploads(it.text);
-      for (const url of images) {
-        const img = el('img', 'msg-img');
-        img.src = url;
-        img.alt = 'Attached image';
-        img.loading = 'lazy';
-        m.append(img);
-      }
+      if (images.length > 0) m.append(picsRow(images, 'Attached image'));
       if (it.pics?.length) m.append(picsRow(it.pics));
       for (const p of it.pastes ?? []) m.append(renderPaste(p));
       if (text) m.append(el('div', 'bubble', text));

@@ -11,6 +11,7 @@ import { renderDiff, renderMarkdown } from './chat-render';
 import type { Todo } from './chat-model';
 import { el } from './dom';
 import { icon, type IconName } from './icons';
+import { viewable } from './image-viewer';
 import { MemoryTab } from './memory-tab';
 import { TeamClaudeTab } from './teamclaude-tab';
 
@@ -498,7 +499,8 @@ export class RightBar {
       return;
     }
     const grid = el('div', 'rb-grid');
-    for (const a of this.attachments) {
+    const urls = () => this.attachments.map((x) => x.url);
+    this.attachments.forEach((a, i) => {
       const link = el('a', 'rb-thumb');
       link.href = a.url;
       link.target = '_blank';
@@ -509,8 +511,9 @@ export class RightBar {
       img.alt = a.name;
       img.loading = 'lazy';
       link.append(img);
+      viewable(link, urls, i);
       grid.append(link);
-    }
+    });
     p.replaceChildren(grid);
   }
 
