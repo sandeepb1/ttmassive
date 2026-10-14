@@ -91,7 +91,7 @@ test('plain buttons come from src/ui; raw button counts only go down', () => {
 // ---------------------------------------------------------------------------------------------
 
 /** Hook classes carried by kit buttons that CSS hides. Add a class here when you hide another. */
-const KIT_HOOKS = ['p-menu', 'p-panel', 'p-split', 'p-close', 'p-layout', 'p-cmd', 'p-new', 'ts-open', 't-toast', 'sb-collapse', 'rail-expand', 'rail-settings', 'srow-more', 'sg-act', 'rb-refresh'];
+const KIT_HOOKS = ['p-menu', 'p-panel', 'p-split', 'p-close', 'p-layout', 'p-cmd', 'p-new', 'p-more', 'ts-open', 't-toast', 'sb-collapse', 'rail-expand', 'rail-settings', 'srow-more', 'sg-act', 'rb-refresh'];
 
 test('CSS that hides a kit element says !important (a display utility in a later layer would win)', () => {
   const hooks = new RegExp(`\\.(?:${KIT_HOOKS.join('|')})(?![\\w-])`);

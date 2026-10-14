@@ -166,6 +166,9 @@
   /* ---- Native feel ---- */
   button { font-family: inherit; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
   .srow-main:active { transform: scale(.98); }
+  /* Keyboard focus on the raw chrome buttons, drawn like the kit's (a mouse or a finger never shows it). */
+  :is(.srow-main, .rb-tab, .tile-tab, .sg-fold, .srow-agents, .sa-row, .ns-opt, .p-viewtoggle button, #usage, .kb-key, .code-copy, .cmd-row):focus-visible {
+    outline: 2px solid var(--ring); outline-offset: -2px; }
   @keyframes ttm-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 
   /* Session rows: the name gets the width; pin / edit / remove sit behind ⋯ */

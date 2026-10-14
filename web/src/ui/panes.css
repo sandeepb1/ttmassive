@@ -21,6 +21,8 @@
   .tiles { flex: 1; min-height: 0; display: grid; gap: 1px; background: var(--border); position: relative; }
   .pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; background: var(--bg); }
   .pane:not(.is-first) .p-menu, .pane:not(.is-last) .p-panel { display: none !important; }
+  /* A narrow pane (see COMPACT_PANE_PX in pane.ts) folds commands, new, split and layouts into the ⋯ button. */
+  .pane.compact .p-cmd, .pane.compact .p-new, .pane.compact .p-split, .pane.compact .p-layout, .pane:not(.compact) .p-more { display: none !important; }
   .tile-tabs { flex: none; display: flex; gap: 4px; padding: 4px 6px; overflow-x: auto; background: var(--surface-2); border-bottom: 1px solid var(--border); }
   .tile-tab { flex: none; max-width: 40vw; min-height: 36px; padding: 0 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font: 600 var(--fs-sm) var(--font-ui); color: var(--fg-muted); background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); }

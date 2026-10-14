@@ -10,6 +10,7 @@ import { chooseView } from './chat-model';
 import { el } from './dom';
 import { button } from './ui/button';
 import { icon } from './icons';
+import { openMenu, type MenuItem } from './ui/menu';
 import type { Analysis } from './protocol';
 import type { ChatActions } from './rightbar';
 import { setAgentAccent } from './theme';
@@ -59,6 +60,9 @@ function savedView(name: string): string | null {
     return null;
   }
 }
+
+/** Below this width a pane folds the less used header buttons into one ⋯ (a phone is 390 to 440, a split tile often less). */
+const COMPACT_PANE_PX = 480;
 
 /** A header button that does not take focus from the terminal (that would drop the soft keyboard). */
 function headButton(cls: string, label: string, glyph: Parameters<typeof icon>[0], onClick: (b: HTMLButtonElement) => void): HTMLButtonElement {
@@ -143,6 +147,9 @@ export class Pane {
       headButton('p-menu', 'Sessions', 'menu', () => events.onMenu()),
       title,
       this.toggle,
+      // In a narrow pane (a phone, a split tile) the title would be squeezed to nothing, so the less used buttons
+      // fold into this one; the pane gets `compact` from the observer below.
+      headButton('p-more', 'More', 'more', (b) => openMenu(b, this.compactMenu(b), 'Pane actions')),
       headButton('p-cmd', 'Commands (Cmd/Ctrl+K)', 'command', () => events.onCommand()),
       headButton('p-new', 'New session in this folder: Claude, Codex or a shell', 'plus', (b) => events.onLaunch(this, b)),
       headButton('p-split', 'Open another session in a new pane', 'columns', () => events.onSplit(this)),
@@ -163,6 +170,22 @@ export class Pane {
     this.el.append(head, this.termEl, this.chatEl, this.agentEl, this.stoppedEl, this.promptEl, this.keybarEl);
     // Capture, so a tap on a button inside still focuses the pane first.
     this.el.addEventListener('pointerdown', () => events.onActivate(this), { capture: true });
+    // Fold the header when the pane is narrow. The class flips only when the width crosses the line.
+    new ResizeObserver(([entry]) => {
+      if (entry) this.el.classList.toggle('compact', entry.contentRect.width < COMPACT_PANE_PX);
+    }).observe(this.el);
+  }
+
+  /** What the narrow header's ⋯ holds: the buttons it hides, for the ones that are available right now. */
+  private compactMenu(anchor: HTMLElement): MenuItem[] {
+    const app = document.getElementById('app');
+    const items: MenuItem[] = [
+      { label: 'Commands', hint: 'search sessions, run actions', run: () => this.events.onCommand() },
+      { label: 'New session', hint: 'Claude, Codex or a shell in this folder', run: () => this.events.onLaunch(this, anchor) },
+    ];
+    if (app?.classList.contains('can-add')) items.push({ label: 'Open in a new pane', run: () => this.events.onSplit(this) });
+    if (app?.classList.contains('can-split')) items.push({ label: 'Pane layouts', run: () => this.events.onLayout() });
+    return items;
   }
 
   // ------------------------------------------------------------------ opening
