@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseInline, parseMarkdown, type Block, type Inline } from './markdown.ts';
+import { parseInline, parseMarkdown, previewInlines, type Block, type Inline } from './markdown.ts';
 
 /** Inline tree as readable text: `**bold**` → `[b:bold]`, links → `[a href:text]`. */
 function show(c: Inline[]): string {
@@ -135,4 +135,25 @@ test('empty and whitespace input', () => {
 
 test('windows line endings', () => {
   assert.equal(parseMarkdown('a\r\n\r\nb').length, 2);
+});
+
+test('a preview keeps bold and code, bullets list items and puts lines apart', () => {
+  const r = previewInlines('Tick **Media playback** only.\n- **Media playback:** the app plays `mp3`');
+  assert.deepEqual(r[0], { t: 'text', v: 'Tick ' });
+  assert.deepEqual(r[1], { t: 'strong', c: [{ t: 'text', v: 'Media playback' }] });
+  assert.ok(r.some((n) => n.t === 'br'), 'the lines are separated');
+  assert.ok(r.some((n) => n.t === 'text' && n.v === '• '), 'the list item has a bullet');
+  assert.ok(r.some((n) => n.t === 'code' && n.v === 'mp3'));
+});
+
+test('a preview has no links, headings are bold and code blocks are one line', () => {
+  const r = previewInlines('# Done\nSee [the docs](https://example.com/x) now\n```\nlet a = 1;\nlet b = 2;\n```');
+  assert.ok(!JSON.stringify(r).includes('"link"'), 'links are flattened');
+  assert.deepEqual(r[0], { t: 'strong', c: [{ t: 'text', v: 'Done' }] });
+  assert.ok(r.some((n) => n.t === 'code' && n.v === 'let a = 1; let b = 2;'));
+});
+
+test('a preview of plain text is that text', () => {
+  assert.deepEqual(previewInlines('all quiet'), [{ t: 'text', v: 'all quiet' }]);
+  assert.deepEqual(previewInlines(''), []);
 });

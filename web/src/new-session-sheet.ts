@@ -233,11 +233,14 @@ export class NewSessionSheet extends Sheet {
     this.skipBox.checked = locked || this.skip;
     this.skipBox.disabled = locked;
     this.skipRow.classList.toggle('risky', this.skipBox.checked);
-    this.skipText.textContent = locked
-      ? '⚡ Permission checks are always skipped for this preset'
-      : p.agent === 'codex'
-        ? 'Skip permission checks (--yolo)'
-        : 'Skip permission checks (--dangerously-skip-permissions)';
+    this.skipText.replaceChildren(
+      ...(locked ? [icon('shield-alert', 'size-4 shrink-0')] : []),
+      locked
+        ? 'Permission checks are always skipped for this preset'
+        : p.agent === 'codex'
+          ? 'Skip permission checks (--yolo)'
+          : 'Skip permission checks (--dangerously-skip-permissions)',
+    );
   }
 
   private syncGroups() {

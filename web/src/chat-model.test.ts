@@ -262,7 +262,7 @@ test('the mode chip names the mode and flags skipped permissions', () => {
   applyChat(s, resp([], { reset: true, mode: 'accept_edits', modes: [...CLAUDE_MODES] }));
   assert.equal(modeChipText(s), 'Accept edits');
   applyChat(s, resp([], { mode: 'accept_edits', modes: [...CLAUDE_MODES], yolo: true }));
-  assert.equal(modeChipText(s), '⚡ Accept edits');
+  assert.equal(modeChipText(s), 'Accept edits');
 });
 
 test('effort steps one notch and stops at the ends', () => {

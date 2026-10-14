@@ -6,7 +6,9 @@ import { button } from './ui/button';
 import { cn } from './ui/cn';
 import { asTree, elapsedSecs, fmtElapsed, stateOf, type SubAgent } from './agents';
 import { warn } from './haptics';
+import { renderInline } from './chat-render';
 import { icon } from './icons';
+import { previewInlines } from './markdown';
 import { openMenu, type MenuItem } from './menu';
 import { DOT_LABEL, dotState, groupSessions, PINNED_KEY, railLabel } from './session-groups';
 
@@ -364,14 +366,22 @@ export class SessionSidebar {
     kind.append(icon(s.agent ? 'agent' : 'shell'));
     name.append(kind, document.createTextNode(`${s.pinned ? '★ ' : ''}${s.id}`));
     if (s.yolo) {
-      const bolt = el('span', 'srow-yolo', '⚡');
+      const bolt = el('span', 'srow-yolo');
+      bolt.append(icon('shield-alert', 'size-3.5'));
       bolt.title = 'Started with permission checks skipped';
       bolt.setAttribute('aria-label', 'Permission checks skipped');
       name.append(bolt);
     }
     if (state === 'waiting') name.append(el('span', 'srow-flag', 'Needs you'));
     main.append(name);
-    if (s.preview) main.append(el('span', 'srow-preview', s.preview));
+    if (s.preview) {
+      // Inside a single child so the two-line clamp counts lines of the whole run, not of each element.
+      const text = el('span');
+      text.append(...renderInline(previewInlines(s.preview)));
+      const preview = el('span', 'srow-preview');
+      preview.append(text);
+      main.append(preview);
+    }
     // Where the shell has wandered to since the session started, when that is not the project itself.
     const drift = this.drift(s);
     if (drift) {

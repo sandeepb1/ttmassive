@@ -370,7 +370,11 @@ export class RightBar {
     b.type = 'button';
     const text = el('span', 'rb-row-text');
     text.append(el('span', 'rb-row-label', label), el('span', 'rb-row-value', value));
-    if (warn) text.append(el('span', 'rb-row-warn', `⚡ ${warn}`));
+    if (warn) {
+      const w = el('span', 'rb-row-warn');
+      w.append(icon('shield-alert', 'size-3.5 shrink-0'), warn);
+      text.append(w);
+    }
     b.append(text, icon('chevron', 'icon-svg rb-chev'));
     b.addEventListener('click', onClick);
     return b;

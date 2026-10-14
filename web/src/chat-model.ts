@@ -300,7 +300,7 @@ export function buildTarget(s: ChatStore): ModeInfo | null {
 export function modeChipText(s: ChatStore): string {
   if (!s.mode) return '';
   const label = s.modes.find((m) => m.id === s.mode)?.label ?? s.mode;
-  return s.yolo ? `⚡ ${label}` : label;
+  return label;
 }
 
 /** How the mode chip is tinted: plan is the accent, edits go through green, auto is a warning and skipping checks is red. */

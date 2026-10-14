@@ -519,7 +519,8 @@ export class ChatView {
 
   private refreshMode() {
     const text = modeChipText(this.store);
-    this.modeChip.textContent = text;
+    // Skipping permission checks is flagged by the shield and the danger tint, not by the label.
+    this.modeChip.replaceChildren(...(this.store.yolo ? [icon('shield-alert', 'size-4 shrink-0')] : []), text);
     this.modeChip.hidden = text === '';
     setChipTone(this.modeChip, modeTone(this.store.mode, this.store.yolo));
     this.modeChip.title = this.store.yolo ? 'Started with permission checks skipped. Tap to change mode.' : 'Change mode';

@@ -78,6 +78,7 @@
   .srow-kind svg { width: 14px; height: 14px; }
   .srow-kind.claude { color: var(--claude); } .srow-kind.codex { color: var(--codex); }
   .srow-yolo { margin-left: 6px; color: var(--danger-text); }
+  .srow-yolo svg { vertical-align: -0.15em; }
 
 
 }

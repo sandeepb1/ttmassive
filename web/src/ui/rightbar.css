@@ -41,7 +41,7 @@
   .rb-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
   .rb-row-label { font-size: var(--fs-xs); color: var(--fg-muted); }
   .rb-row-value { font-weight: 600; font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rb-row-warn { font-size: var(--fs-xs); color: var(--danger-text); }
+  .rb-row-warn { display: flex; align-items: center; gap: 4px; font-size: var(--fs-xs); color: var(--danger-text); }
   .rb-chev { flex: none; color: var(--fg-faint); }
   .rb-hint { padding: 4px 2px; font-size: var(--fs-sm); line-height: 1.4; color: var(--fg-muted); }
 

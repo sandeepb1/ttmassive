@@ -279,3 +279,62 @@ export function parseMarkdown(src: string): Block[] {
   }
   return out;
 }
+
+// ------------------------------------------------------------------ preview
+
+/** Flatten blocks into lines of inline content: headings bold, list items bulleted, code on one line. */
+function previewLines(blocks: Block[], out: Inline[][]) {
+  for (const b of blocks) {
+    switch (b.t) {
+      case 'p':
+        out.push(b.c);
+        break;
+      case 'h':
+        out.push([{ t: 'strong', c: b.c }]);
+        break;
+      case 'code':
+        out.push([{ t: 'code', v: b.v.trim().replace(/\s*\n\s*/g, ' ') }]);
+        break;
+      case 'quote':
+        previewLines(b.c, out);
+        break;
+      case 'list':
+        b.items.forEach((item, i) => {
+          const start = out.length;
+          previewLines(item, out);
+          const bullet: Inline = { t: 'text', v: b.ordered ? `${b.start + i}. ` : '• ' };
+          if (out.length === start) out.push([bullet]);
+          else out[start] = [bullet, ...out[start]!];
+        });
+        break;
+      case 'table':
+        out.push([{ t: 'text', v: b.head.map((c) => inlineText(c)).join(' · ') }]);
+        break;
+      case 'hr':
+        break;
+    }
+  }
+}
+
+/** The plain text of some inline content. */
+function inlineText(nodes: Inline[]): string {
+  return nodes
+    .map((n) => (n.t === 'text' || n.t === 'code' ? n.v : n.t === 'br' ? ' ' : inlineText(n.c)))
+    .join('');
+}
+
+/** Links become their text: a preview sits inside a button, so it cannot hold a link. */
+function unlink(nodes: Inline[]): Inline[] {
+  return nodes.flatMap((n): Inline[] => {
+    if (n.t === 'link') return unlink(n.c);
+    if (n.t === 'strong' || n.t === 'em' || n.t === 'del') return [{ ...n, c: unlink(n.c) }];
+    return [n];
+  });
+}
+
+/** A short message as inline Markdown for a one-or-two-line preview: no blocks, no links, a line break between lines. */
+export function previewInlines(src: string): Inline[] {
+  const lines: Inline[][] = [];
+  previewLines(parseMarkdown(src), lines);
+  return unlink(lines.flatMap((l, i) => (i === 0 ? l : [{ t: 'br' } as Inline, ...l])));
+}
