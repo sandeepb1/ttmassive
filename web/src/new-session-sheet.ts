@@ -4,8 +4,8 @@
 
 import { el } from './dom';
 import {
-  browseDirs, canSkip, fetchGroups, fetchPresets, fetchRecentDirs, launchGroup, launchSession, mainAgents,
-  type BrowseResult, type GroupInfo, type PresetInfo, type RecentDir,
+  browseDirs, cachedNewSessionData, canSkip, launchGroup, launchSession, loadNewSessionData, mainAgents,
+  type BrowseResult, type GroupInfo, type NewSessionData, type PresetInfo, type RecentDir,
 } from './dirs';
 import { icon } from './icons';
 import { Sheet } from './sheet';
@@ -79,10 +79,27 @@ export class NewSessionSheet extends Sheet {
   /** Open the sheet. Make a new sheet for every opening. `dir` is the folder to start in, when the caller knows one (a project, the focused pane). */
   async open(dir?: string) {
     if (!this.gone) return;
+    const cached = cachedNewSessionData();
+    if (cached) {
+      // Fill the sheet before it is shown, so it slides in at its final height. Fresh data trickles in afterwards.
+      this.apply(cached, dir);
+      this.show();
+      this.focusFolder();
+      void loadNewSessionData().then((fresh) => this.refresh(fresh));
+      return;
+    }
     this.body.replaceChildren(sheetMsg('Loading…'));
+    this.body.style.minHeight = '20rem';
     this.show();
-    [this.presets, this.groups, this.recents] = await Promise.all([fetchPresets(), fetchGroups(), fetchRecentDirs()]);
+    const data = await loadNewSessionData();
     if (this.gone) return;
+    this.body.style.minHeight = '';
+    this.apply(data, dir);
+    this.focusFolder();
+  }
+
+  private apply(data: NewSessionData, dir?: string) {
+    ({ presets: this.presets, groups: this.groups, recents: this.recents } = data);
 
     const names = new Set(this.presets.map((p) => p.name));
     const saved = remembered();
@@ -99,6 +116,24 @@ export class NewSessionSheet extends Sheet {
     if (this.folder) this.input.value = this.folder.short;
     this.syncAll();
     this.showFolders();
+  }
+
+  /** Newer lists than the ones the sheet opened with: swap them in without disturbing what the user has done. */
+  private refresh(fresh: NewSessionData) {
+    if (this.gone) return;
+    const same = JSON.stringify(fresh) === JSON.stringify({ presets: this.presets, groups: this.groups, recents: this.recents });
+    if (same) return;
+    ({ presets: this.presets, groups: this.groups, recents: this.recents } = fresh);
+    if (this.groups.length > 0) this.err.before(this.groupBox);
+    else this.groupBox.remove();
+    this.syncAgents();
+    this.syncGroups();
+    if (!this.browsing && !this.input.value.trim()) this.showFolders();
+  }
+
+  /** A mouse user types at once; on a touch screen the keyboard would cover the sheet, so wait for a tap on the field. */
+  private focusFolder() {
+    if (!window.matchMedia('(pointer: fine)').matches) return;
     this.input.focus({ preventScroll: true });
     this.input.select();
   }

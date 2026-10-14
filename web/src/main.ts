@@ -23,7 +23,7 @@ import {
 } from './tiling';
 import { defaultLayouts, fetchLayouts, MAX_PANES_LIMIT, paneLimit, updateLayouts, type Layouts, type Workspace } from './workspace';
 import { AgentSheet } from './agent-sheet';
-import { fetchPresets, launchSession, mainAgents, type PresetInfo } from './dirs';
+import { fetchPresets, launchSession, loadNewSessionData, mainAgents, type PresetInfo } from './dirs';
 import { openMenu, type MenuItem } from './menu';
 import { NewSessionSheet } from './new-session-sheet';
 import { chip } from './ui/chip';
@@ -90,9 +90,13 @@ function sessionName(): string {
   return /^[A-Za-z0-9_-]{1,64}$/.test(n) ? n : 'main';
 }
 
+/** The last list the server gave, for callers that must not wait on the network. */
+let lastSessions: SessionView[] = [];
+
 async function sessionList(): Promise<SessionView[]> {
   const r = await fetch('/api/sessions').catch(() => null);
-  return r?.ok ? ((await r.json()) as SessionView[]) : [];
+  if (r?.ok) lastSessions = (await r.json()) as SessionView[];
+  return r?.ok ? lastSessions : [];
 }
 
 // ---------------------------------------------------------------------- panes
@@ -472,6 +476,12 @@ async function projectOf(pane: Pane | null): Promise<string | null> {
   return mine?.project ?? mine?.cwd ?? null;
 }
 
+/** Same, from the last list seen, with no wait. */
+function knownProjectOf(pane: Pane | null): string | null {
+  const mine = pane && lastSessions.find((s) => s.id === pane.name);
+  return mine ? mine.project ?? mine.cwd ?? null : null;
+}
+
 /** Start a session in `dir` and show it in the focused pane. */
 async function startHere(preset: string | undefined, dir: string) {
   const r = await launchSession({ preset, yolo: false, dir });
@@ -488,7 +498,8 @@ async function startHere(preset: string | undefined, dir: string) {
 async function newSession(dir?: string) {
   if (document.querySelector(SHEET_SELECTOR)) return;
   layout.dismissOverlays();
-  const from = dir ?? (await projectOf(focused)) ?? undefined;
+  // The sheet opens on the tap: the pane's folder comes from the list already on hand, and only a cold start waits.
+  const from = dir ?? knownProjectOf(focused) ?? (lastSessions.length === 0 ? await projectOf(focused) : null) ?? undefined;
   void new NewSessionSheet($('app'), showLogin, {
     opened: (id) => {
       sidebar?.reload();
@@ -757,6 +768,7 @@ async function logout() {
 async function showApp() {
   $('login').hidden = true;
   $('app').hidden = false;
+  void loadNewSessionData();
   usage ??= new UsageView($('usage'), showLogin);
   sidebar ??= new SessionSidebar(
     $('left'),

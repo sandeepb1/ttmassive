@@ -66,6 +66,23 @@ async function getJson<T>(url: string, fallback: T): Promise<T> {
 export const fetchPresets = () => getJson<PresetInfo[]>('/api/presets', []);
 export const fetchGroups = () => getJson<GroupInfo[]>('/api/groups', []);
 export const fetchRecentDirs = () => getJson<RecentDir[]>('/api/dirs', []);
+export type NewSessionData = { presets: PresetInfo[]; groups: GroupInfo[]; recents: RecentDir[] };
+
+let newSessionData: NewSessionData | null = null;
+let newSessionLoad: Promise<NewSessionData> | null = null;
+
+/** What the new-session sheet needs, if it has been fetched already. */
+export const cachedNewSessionData = (): NewSessionData | null => newSessionData;
+
+/** Fetch what the new-session sheet needs and keep it, so the sheet can open on the tap. Calls share one request. */
+export function loadNewSessionData(): Promise<NewSessionData> {
+  return (newSessionLoad ??= Promise.all([fetchPresets(), fetchGroups(), fetchRecentDirs()])
+    .then(([presets, groups, recents]) => (newSessionData = { presets, groups, recents }))
+    .finally(() => {
+      newSessionLoad = null;
+    }));
+}
+
 export const browseDirs = (typed: string) =>
   getJson<BrowseResult>(`/api/browse?path=${encodeURIComponent(typed)}`, { dir: '', path: '', entries: [] });
 
