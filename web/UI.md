@@ -119,6 +119,10 @@ clear the top (the shell, overlay sidebars, command bar, image viewer) uses `--s
 It is not reproducible in a headless browser; check on a device. Making `#app` itself fixed would also suppress the
 blur but risks the soft-keyboard layout, so it was not used.
 
+In an installed iOS app `dvh` and `innerHeight` come back short by the top inset (894 of 956 on a 16 Pro Max) even though
+the page draws from the top of the screen, so `--app-h` is `100vh` there and the shell uses `var(--vvh, var(--app-h))`.
+Settings → Display shows what a device reports, which is how this was found.
+
 The app also follows `visualViewport.height` (`--vvh`) only while the keyboard has shrunk it by more than 120px;
 otherwise it uses the normal height, because an installed iOS app can report a visual height short of the screen.
 
