@@ -27,7 +27,7 @@ export function badge(props: { tone?: Tone; cls?: string }, ...children: (Node |
 }
 
 const chipStyles = tv({
-  base: 'inline-flex h-ctl-sm shrink-0 touch-manipulation items-center gap-2 rounded-full px-4 text-sm font-semibold transition active:scale-[.98] disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+  base: 'inline-flex h-ctl-sm shrink-0 touch-manipulation touch:min-h-touch items-center gap-2 rounded-full px-4 text-sm font-semibold transition active:scale-[.98] disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
   variants: {
     tone: {
       neutral: 'bg-secondary text-foreground active:bg-muted',

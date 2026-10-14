@@ -1,0 +1,29 @@
+/* Fingers and the feel of a native app. Imported after the component sheets, so these win over them.
+   Sizes are px on purpose: the UI-scale setting (rem) must not shrink a tap target below 44px or an input
+   below the 16px that stops iOS zooming on focus. Kit controls get theirs from the `touch:` variant. */
+@layer components {
+  /* Chrome is not text: no selection loupe or callout when a finger rests on it (the long-press menus own that). */
+  #usage, .p-viewtoggle, .tile-tab, .sg-fold, .srow-main, .srow-agents, .sa-row, .rb-tab, .rail-list, .kb-key, .ns-opt {
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+
+  /* Scrolling lists must not hand their end-of-scroll to the page behind them. */
+  .cmd-list, .suggest, .rail-list { overscroll-behavior: contain; }
+
+  @media (pointer: coarse) {
+    #app { --strip-h: 44px; }
+    #usage { min-height: 44px; }
+    .p-viewtoggle button { min-height: 44px; padding: 0 14px; }
+    .tile-tab, .sg-fold, .srow-agents, .sa-row, .ns-opt, .code-copy, details.thought summary, .ts-input, .rb-search-input { min-height: 44px; }
+    .rb-search-input { height: 44px; }
+    .rb-search-clear { width: 44px; height: 44px; }
+    .kb-key { min-width: 44px; }
+    /* A wider grab for the split divider; the visible line stays thin. */
+    .tile-div.col { width: 28px; margin-left: -14px; }
+    .tile-div.row { height: 28px; margin-top: -14px; }
+    .tile-div.col::after { left: 12px; right: 12px; }
+    .tile-div.row::after { top: 12px; bottom: 12px; }
+    /* 16px is the size below which iOS zooms the page when a field is focused. */
+    .ts-input, .cmd-input, .rb-search-input { font-size: max(16px, 1rem); }
+  }
+}

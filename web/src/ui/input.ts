@@ -4,7 +4,7 @@ import { el } from '../dom';
 import { cn } from './cn';
 
 const field =
-  'w-full min-w-0 rounded-lg bg-secondary px-4 text-md text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
+  'w-full min-w-0 rounded-lg bg-secondary px-4 text-md touch:text-touch text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
 
 export interface InputProps {
   type?: string;

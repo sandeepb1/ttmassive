@@ -116,7 +116,7 @@ export class ChatView {
   private jump = button({ variant: 'secondary', size: 'icon-sm', label: 'Jump to the latest message', cls: 'absolute bottom-2.5 left-1/2 z-5 -translate-x-1/2 rounded-full shadow-pop' }, icon('arrow-down'));
   private promptEl = el('div', 'bar chat-prompt');
   private err = el('div', 'chat-err');
-  private input = el('textarea', 'max-h-40 min-h-7 resize-none bg-transparent px-0.5 py-1 text-base leading-snug text-foreground outline-none placeholder:text-faint');
+  private input = el('textarea', 'max-h-40 min-h-7 resize-none bg-transparent px-0.5 py-1 text-base touch:text-touch leading-snug text-foreground outline-none placeholder:text-faint');
   private chip = chip({ cls: 'px-3' });
   private stopBtn = button({ variant: 'soft-danger', size: 'icon', label: 'Stop', cls: 'size-11 rounded-full' }, icon('stop'));
   private sendBtn = button({ size: 'icon', label: 'Send', cls: 'size-11 rounded-full' }, icon('arrow-up'));

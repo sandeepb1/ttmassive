@@ -190,12 +190,6 @@
   #app:not(.can-split) .srow-split { display: none; }
   /* ---- Helper agents: cards in the chat, their transcript, and the list under a session ---- */
   /* A helper's transcript fills a pane or a tall sheet. */
-  /* Fingers: the small controls get a hit area worth tapping (measured on a real tablet). */
-  @media (pointer: coarse) {
-    #app { --strip-h: 36px; }
-    .p-viewtoggle button { min-height: 34px; padding: 0 14px; }
-  }
-
   /* A pane (or its drawer row) whose program rang the bell while you were looking elsewhere. */
   /* Select text sheet: real text, so the system's selection handles and Copy menu work. */
   /* Command bar (Cmd/Ctrl+K). */

@@ -17,7 +17,7 @@ export function toggleSwitch(props: SwitchProps): HTMLButtonElement {
   b.setAttribute('aria-label', props.label);
   b.setAttribute('aria-checked', String(props.checked));
   b.className = cn(
-    'relative h-8 w-14 shrink-0 touch-manipulation rounded-full bg-secondary transition-colors aria-checked:bg-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+    'relative h-8 w-14 shrink-0 touch-manipulation touch:before:absolute touch:before:-inset-y-2.5 touch:before:inset-x-0 rounded-full bg-secondary transition-colors aria-checked:bg-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
     props.cls,
   );
   b.append(el('span', 'absolute left-1 top-1 size-6 rounded-full bg-foreground transition-transform in-aria-checked:translate-x-6 in-aria-checked:bg-primary-foreground'));

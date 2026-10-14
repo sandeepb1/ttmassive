@@ -13,7 +13,11 @@
 @import './command.css';
 @import './viewer.css';
 @import './terminal.css';
+@import './touch.css';
 @import 'tailwindcss/utilities.css' layer(utilities);
+
+/* `touch:` applies to a coarse pointer (a finger), not to a narrow window. */
+@custom-variant touch (@media (pointer: coarse));
 
 /* Semantic names (shadcn's vocabulary) over the vars theme.ts and app.css already derive from the active theme.
    Declared on [data-agent] too, because a pane re-points --accent there and var() resolves where it is declared.
@@ -86,6 +90,11 @@
   --text-md: 0.875rem;
   --text-base: 1rem;
   --text-lg: 1.125rem;
+
+  /* Finger sizes are px, not rem: the UI-scale setting must not shrink a tap target below 44px or an input
+     below the 16px that stops iOS zooming on focus. Used under the `touch` variant. */
+  --spacing-touch: 44px;
+  --text-touch: 16px;
 
   --shadow-pop: 0 8px 28px var(--shadow);
 }

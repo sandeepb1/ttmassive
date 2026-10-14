@@ -93,6 +93,11 @@ utilities, and holds the token mapping and scale.
 | `tabs.css` | the memory and Team Claude tabs, the theme picker |
 | `terminal.css` | terminal overlays: progress, turn marks, chips, search panel, keybar |
 | `viewer.css`, `command.css` | the image viewer; the command bar |
+| `touch.css` | finger sizes for component CSS under `@media (pointer: coarse)`, no-select on chrome, `overscroll-behavior` on lists |
+
+Touch sizing is by **pointer type**, not by window width. Kit controls use the `touch:` variant
+(`touch:min-h-touch`, `touch:text-touch`); component CSS goes in `touch.css`. Both are in **px** (44px targets,
+16px input text, so iOS does not zoom on focus) so the UI-scale setting cannot shrink them. A mouse keeps the compact sizes.
 
 Rule of thumb: **controls are kit parts; structure is component CSS.** Content typography and
 composite widgets (a markdown block, a tool card, a tab strip, a key-value row) are component CSS using

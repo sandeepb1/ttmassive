@@ -7,8 +7,8 @@ import { createTV } from 'tailwind-variants';
 const twMergeConfig = {
   extend: {
     theme: {
-      text: ['2xs', 'md'],
-      spacing: ['ctl', 'ctl-sm', 'ctl-xs'],
+      text: ['2xs', 'md', 'touch'],
+      spacing: ['ctl', 'ctl-sm', 'ctl-xs', 'touch'],
       shadow: ['pop'],
     },
   },
