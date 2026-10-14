@@ -52,8 +52,9 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
   );
   dialog.append(head, body);
   dragToDismiss(dialog, head, () => {
-    dialog.style.transform = '';
     onDismiss();
+    // A sheet that closed carries on from where the finger left it; one that refused to close goes back.
+    if (dialog.dataset.sheet !== undefined) dialog.style.transform = '';
   });
 
   let returnTo: Element | null = null;
@@ -81,9 +82,25 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
     },
     remove() {
       document.removeEventListener('keydown', onKey, true);
-      dialog.close();
-      backdrop.remove();
-      dialog.remove();
+      // The sheet is gone as far as the app is concerned (no longer matched by SHEET_SELECTOR, no longer tappable),
+      // but stays on screen for the length of its exit animation.
+      delete dialog.dataset.sheet;
+      dialog.inert = true;
+      backdrop.style.pointerEvents = 'none';
+      dialog.classList.remove('animate-[kit-sheet-in_.28s_var(--ease)]');
+      dialog.classList.add('animate-[kit-sheet-out_.2s_var(--ease)_forwards]');
+      backdrop.classList.remove('animate-[kit-fade-in_.2s_ease]');
+      backdrop.classList.add('animate-[kit-fade-out_.2s_ease_forwards]');
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        dialog.close();
+        backdrop.remove();
+        dialog.remove();
+      };
+      dialog.addEventListener('animationend', finish, { once: true });
+      window.setTimeout(finish, 300);
       if (returnTo instanceof HTMLElement && returnTo.isConnected) returnTo.focus({ preventScroll: true });
       returnTo = null;
     },

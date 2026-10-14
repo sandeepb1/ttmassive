@@ -11,6 +11,10 @@
   .cmd-list, .suggest, .rail-list { overscroll-behavior: contain; }
 
   @media (pointer: coarse) {
+    /* Press feedback on the raw chrome buttons, as the kit buttons already have. */
+    .rb-tab, .tile-tab, .sg-fold, .srow-agents, .sa-row, .ns-opt, .p-viewtoggle button { transition: transform .12s ease, background-color .12s ease; }
+    .rb-tab:active, .tile-tab:active, .srow-agents:active, .ns-opt:active, .p-viewtoggle button:active { transform: scale(.97); }
+
     #app { --strip-h: 44px; }
     #usage { min-height: 44px; }
     .p-viewtoggle button { min-height: 44px; padding: 0 14px; }

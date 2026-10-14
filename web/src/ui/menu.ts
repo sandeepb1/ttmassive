@@ -26,7 +26,7 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], label = 'Action
   if (items.length === 0) return;
   const menu = el(
     'div',
-    'fixed inset-auto m-0 flex min-w-52 max-w-[min(20rem,calc(100vw-1rem))] flex-col gap-0.5 overflow-y-auto rounded-xl border-0 bg-popover p-1.5 text-foreground shadow-pop',
+    'fixed inset-auto m-0 flex min-w-52 max-w-[min(20rem,calc(100vw-1rem))] animate-[kit-pop-in_.14s_var(--ease)] flex-col gap-0.5 overflow-y-auto rounded-xl border-0 bg-popover p-1.5 text-foreground shadow-pop',
   );
   menu.popover = 'manual';
   menu.setAttribute('role', 'menu');
@@ -70,9 +70,11 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], label = 'Action
         },
       }),
       ],
-    }).then(({ x, y }) => {
+    }).then(({ x, y, placement }) => {
       menu.style.left = `${x}px`;
       menu.style.top = `${y}px`;
+      // Grow out of the button: from its corner, whichever side the menu landed on.
+      menu.style.transformOrigin = `${placement.startsWith('top') ? 'bottom' : 'top'} ${placement.endsWith('start') ? 'left' : 'right'}`;
     });
   const stopUpdate = autoUpdate(anchor, menu, place, { animationFrame: false });
   anchor.setAttribute('aria-expanded', 'true');
@@ -105,8 +107,19 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], label = 'Action
   closeOpen = () => {
     closeOpen = null;
     stopUpdate();
-    menu.hidePopover();
-    menu.remove();
+    // Fade out where it stands (the position is fixed), then go; a new menu may already be opening.
+    menu.inert = true;
+    menu.classList.remove('animate-[kit-pop-in_.14s_var(--ease)]');
+    menu.classList.add('animate-[kit-pop-out_.1s_ease_forwards]');
+    let gone = false;
+    const finish = () => {
+      if (gone) return;
+      gone = true;
+      menu.hidePopover();
+      menu.remove();
+    };
+    menu.addEventListener('animationend', finish, { once: true });
+    window.setTimeout(finish, 200);
     anchor.setAttribute('aria-expanded', 'false');
     document.removeEventListener('pointerdown', onDown, true);
     document.removeEventListener('keydown', onKey, true);

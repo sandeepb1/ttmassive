@@ -164,8 +164,7 @@ export function dragToDismiss(sheet: HTMLElement, handle: HTMLElement, dismiss: 
     sheet.classList.remove('dragging');
     const dy = Math.max(0, e.clientY - y0);
     if (dy > 100 || (v > FLICK && dy > 20)) {
-      set(sheet.offsetHeight);
-      window.setTimeout(dismiss, 160);
+      dismiss(); // the sheet's exit animation takes it on from here
     } else {
       sheet.style.transform = '';
     }

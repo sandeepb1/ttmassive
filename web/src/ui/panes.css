@@ -34,6 +34,12 @@
   .tile-div.col::after { left: 7px; right: 7px; top: 0; bottom: 0; }
   .tile-div.row::after { top: 7px; bottom: 7px; left: 0; right: 0; }
   .tile-div:hover::after, .tile-div.dragging::after { background: var(--accent); }
+  /* A grip that is always there, so a touch screen (no hover) can see the divider can be dragged. */
+  .tile-div::before { content: ""; position: absolute; left: 50%; top: 50%; border-radius: 2px; background: var(--fg-faint); opacity: .55;
+    transform: translate(-50%, -50%); transition: opacity .15s ease; pointer-events: none; }
+  .tile-div.col::before { width: 4px; height: 36px; }
+  .tile-div.row::before { width: 36px; height: 4px; }
+  .tile-div:hover::before, .tile-div.dragging::before { opacity: 0; }
 
   .te-title { font-size: var(--fs-sm); color: var(--fg-muted); }
   .te-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
