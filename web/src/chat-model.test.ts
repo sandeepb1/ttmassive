@@ -8,6 +8,8 @@ import {
   buildTarget,
   lastUserMessage,
   noteLeavingBuild,
+  pasteHint,
+  pasteLabel,
   modeChipText,
   stepEffort,
   isRecorded,
@@ -302,4 +304,13 @@ test('applyChat keeps the suggested reply and clears it when it goes away', () =
   assert.equal(s.suggestion, 'go ahead with step 2');
   applyChat(s, resp([], { suggestion: null }));
   assert.equal(s.suggestion, null);
+});
+
+test('a paste is labelled by its length and hinted by its first line', () => {
+  assert.equal(pasteLabel('one'), 'Pasted text · 1 line');
+  assert.equal(pasteLabel('a\nb\nc'), 'Pasted text · 3 lines');
+  assert.equal(pasteLabel(''), 'Pasted text · 0 lines');
+  assert.equal(pasteHint('\n\n  ~/code main*  \n❯ ls'), '~/code main*');
+  assert.equal(pasteHint(''), '');
+  assert.equal(pasteHint('x'.repeat(100), 20), `${'x'.repeat(19)}…`);
 });

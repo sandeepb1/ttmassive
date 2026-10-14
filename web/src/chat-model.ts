@@ -36,6 +36,24 @@ export interface DiffData {
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';
 
+export interface Paste {
+  id: string | null;
+  text: string;
+}
+
+/** `Pasted text · 14 lines`, as the heading of a collapsed paste. */
+export function pasteLabel(text: string): string {
+  const lines = text.length === 0 ? 0 : text.split('\n').length;
+  return `Pasted text · ${lines} line${lines === 1 ? '' : 's'}`;
+}
+
+/** The first line of a paste that has one, trimmed to fit a heading. */
+export function pasteHint(text: string, max = 60): string {
+  const line = text.split('\n').find((l) => l.trim()) ?? '';
+  const t = line.trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
 export interface Todo {
   content: string;
   status: TodoStatus;
@@ -44,7 +62,15 @@ export interface Todo {
 }
 
 export type ChatBody =
-  | { kind: 'user'; text: string; images: number }
+  | {
+      kind: 'user';
+      text: string;
+      /** Every picture attached; `pics` are the ones that can be shown. */
+      images: number;
+      pics?: string[];
+      /** Blocks of text pasted into the message. */
+      pastes?: Paste[];
+    }
   | { kind: 'assistant'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'command'; text: string }
@@ -57,6 +83,8 @@ export type ChatBody =
       output: string | null;
       status: ToolStatus;
       diff: DiffData | null;
+      /** Pictures the tool returned, as URLs. */
+      pics?: string[];
     }
   | { kind: 'question'; questions: Question[]; state: QuestionState; answers: Answer[] };
 

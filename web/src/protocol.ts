@@ -1,10 +1,16 @@
 // Binary frames carry raw terminal bytes. Text frames carry these JSON messages.
 export type ClientMsg =
   | { type: 'resize'; rows: number; cols: number }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  /** Scroll the history: positive goes up, negative down, zero asks where it stands. */
+  | { type: 'scroll'; lines: number }
+  /** Back to the live screen. */
+  | { type: 'scroll_end' };
 
 export type ServerMsg =
   | { type: 'pong' }
+  /** Where the history view stands after a scroll. */
+  | { type: 'scroll'; active: boolean; position: number }
   | { type: 'stopped'; resumable: boolean }
   | { type: 'exit'; code: number }
   | { type: 'error'; message: string };

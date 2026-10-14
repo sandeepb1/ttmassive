@@ -2,6 +2,7 @@ import { Terminal, type ILink } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { ClipboardAddon, type IClipboardProvider } from '@xterm/addon-clipboard';
+import { ImageAddon } from '@xterm/addon-image';
 import { ProgressAddon } from '@xterm/addon-progress';
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -15,12 +16,29 @@ import { skewFromDate } from './activity-chip';
 import { findPaths } from './paths';
 import { markedRows } from './turn-marks';
 import { newlineFor } from './keys';
+import {
+  LineCarry,
+  SLOP_PX,
+  addSample,
+  clampLines,
+  flings,
+  inputWhileScrolled,
+  keepGoing,
+  liveLabel,
+  slow,
+  velocity,
+  type Sample,
+} from './touch-scroll';
 import { filesOf, pathsToPaste } from './term-drop';
 import { UnauthorizedError, uploadFile } from './term-upload';
 import { getOptionMeta, onPrefsChange } from './prefs';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
+/** Scrolls are sent in batches this often, one at a time. */
+const SCROLL_BATCH_MS = 30;
+/** A reply that never came: send again after this long. */
+const SCROLL_LOST_MS = 1500;
 
 export interface SessionHooks {
   /** The session exists only as saved output; offer a restore. */
@@ -112,6 +130,14 @@ export class TerminalSession {
   private retryTimer = 0;
   private enc = new TextEncoder();
   private keybar: KeyBar;
+  /** The history is showing (tmux's copy-mode), this many lines up. Null: the live screen. */
+  private scrolled: { position: number } | null = null;
+  private scrollPending = 0;
+  private scrollTimer = 0;
+  /** When the scroll now awaiting its reply was sent; 0 when none is. */
+  private scrollSent = 0;
+  private flingFrame = 0;
+  private liveEl: HTMLButtonElement | null = null;
   private cleanup: () => void = () => {};
 
   constructor(
@@ -137,6 +163,7 @@ export class TerminalSession {
     this.term.attachCustomKeyEventHandler((e) => this.newlineKey(e));
     this.watchDrops();
     this.watchLongPress();
+    this.watchTouchScroll();
     this.term.onTitleChange((t) => this.hooks.onTitle(cleanTitle(t)));
     this.term.onBell(() => this.hooks.onBell());
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
@@ -199,8 +226,14 @@ export class TerminalSession {
     }
   }
 
-  /** Clipboard (OSC 52 writes), links, progress (OSC 9;4) and correct widths for emoji. */
+  /**
+   * Clipboard (OSC 52 writes), links, progress (OSC 9;4), pictures (Sixel and iTerm2 inline images,
+   * which is what `imgcat`, `chafa` and `timg` print) and correct widths for emoji.
+   */
   private loadAddons() {
+    // The cache is smaller than the addon's default: a tablet has little memory to spare, and an
+    // image that falls out of it is shown as a placeholder rather than lost from the output.
+    this.term.loadAddon(new ImageAddon({ storageLimit: 48 }));
     this.term.loadAddon(new ClipboardAddon(undefined, new WriteOnlyClipboard((t) => this.offerCopy(t))));
     this.term.loadAddon(new WebLinksAddon((_e, uri) => this.openLink(uri, uri)));
     this.term.loadAddon(new UnicodeGraphemesAddon());
@@ -476,7 +509,146 @@ export class TerminalSession {
 
   /** Raw bytes to the PTY (used by the keybar too). */
   sendInput(bytes: Uint8Array<ArrayBuffer>) {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(bytes);
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    if (this.scrolled) {
+      // Typing while the history shows must reach the agent, not tmux's history keys.
+      const { leave, forward } = inputWhileScrolled(bytes);
+      if (leave) this.leaveHistory();
+      if (!forward) return;
+    }
+    this.ws.send(bytes);
+  }
+
+  // ------------------------------------------------------------ touch scrolling
+
+  /**
+   * A finger dragged along the terminal scrolls its history. The terminal only draws the screen (tmux
+   * keeps the history, and xterm has no scrollback of its own), so the drag is sent to the server as
+   * lines, and tmux scrolls. A flick carries on a little after the finger lifts.
+   */
+  private watchTouchScroll() {
+    const carry = new LineCarry();
+    let id: number | null = null;
+    let startY = 0;
+    let lastY = 0;
+    let dragging = false;
+    let samples: Sample[] = [];
+    const lineHeight = () => {
+      const r = this.el.querySelector('.xterm-screen')?.getBoundingClientRect();
+      return r && this.term.rows > 0 ? r.height / this.term.rows : 0;
+    };
+    const stopFling = () => {
+      cancelAnimationFrame(this.flingFrame);
+      this.flingFrame = 0;
+    };
+    const fling = (v0: number) => {
+      let v = v0;
+      let prev = performance.now();
+      const tick = (now: number) => {
+        const dt = Math.min(now - prev, 50);
+        prev = now;
+        const lines = carry.add(v * dt, lineHeight());
+        if (lines !== 0) this.scrollBy(lines);
+        v = slow(v, dt);
+        // Moving down the history and already at the live screen: nothing more to do.
+        if (!keepGoing(v) || (v < 0 && !this.scrolled)) {
+          this.flingFrame = 0;
+          return;
+        }
+        this.flingFrame = requestAnimationFrame(tick);
+      };
+      this.flingFrame = requestAnimationFrame(tick);
+    };
+    this.el.addEventListener('pointerdown', (e) => {
+      stopFling();
+      if (e.pointerType !== 'touch' || !e.isPrimary) return;
+      id = e.pointerId;
+      startY = lastY = e.clientY;
+      dragging = false;
+      carry.reset();
+      samples = [{ y: e.clientY, t: performance.now() }];
+    });
+    this.el.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== id) return;
+      if (!dragging) {
+        if (Math.abs(e.clientY - startY) < SLOP_PX || document.querySelector('.sheet')) return;
+        dragging = true;
+        try {
+          this.el.setPointerCapture(e.pointerId);
+        } catch {
+          /* the finger is already gone */
+        }
+      }
+      const lines = carry.add(e.clientY - lastY, lineHeight());
+      lastY = e.clientY;
+      samples = addSample(samples, { y: e.clientY, t: performance.now() });
+      if (lines !== 0) this.scrollBy(lines);
+    });
+    const end = (e: PointerEvent) => {
+      if (e.pointerId !== id) return;
+      id = null;
+      if (!dragging) return;
+      dragging = false;
+      const v = e.type === 'pointerup' ? velocity(samples, performance.now()) : 0;
+      if (flings(v)) fling(v);
+    };
+    this.el.addEventListener('pointerup', end);
+    this.el.addEventListener('pointercancel', end);
+  }
+
+  /** Scroll by `lines` (positive: up the history). Batched, and one request at a time. */
+  private scrollBy(lines: number) {
+    this.scrollPending = clampLines(this.scrollPending + lines);
+    if (!this.scrollTimer) this.scrollTimer = window.setTimeout(() => this.flushScroll(), SCROLL_BATCH_MS);
+  }
+
+  private flushScroll() {
+    this.scrollTimer = 0;
+    if (this.scrollPending === 0) return;
+    // The reply to the one in flight sends the next, so they never pile up behind a slow link.
+    if (this.scrollSent && performance.now() - this.scrollSent < SCROLL_LOST_MS) return;
+    const lines = this.scrollPending;
+    this.scrollPending = 0;
+    this.scrollSent = performance.now();
+    this.sendCtl({ type: 'scroll', lines });
+  }
+
+  private onScrolled(active: boolean, position: number) {
+    this.scrollSent = 0;
+    this.setScrolled(active ? { position } : null);
+    if (this.scrollPending !== 0) this.flushScroll();
+  }
+
+  /** Show or hide the button that goes back to the live screen. */
+  private setScrolled(state: { position: number } | null) {
+    this.scrolled = state;
+    if (!state) {
+      this.liveEl?.remove();
+      this.liveEl = null;
+      return;
+    }
+    if (!this.liveEl) {
+      const b = el('button', 't-live');
+      b.type = 'button';
+      // Keep the focus where it is: a button that took it would eat the next Space.
+      b.addEventListener('pointerdown', (e) => e.preventDefault());
+      b.addEventListener('click', () => this.leaveHistory());
+      this.el.append(b);
+      this.liveEl = b;
+    }
+    this.liveEl.textContent = liveLabel(state.position);
+  }
+
+  /** Back to the live screen. */
+  private leaveHistory() {
+    // A fling still running would scroll straight back in.
+    cancelAnimationFrame(this.flingFrame);
+    this.flingFrame = 0;
+    this.scrollPending = 0;
+    window.clearTimeout(this.scrollTimer);
+    this.scrollTimer = 0;
+    this.sendCtl({ type: 'scroll_end' });
+    this.setScrolled(null);
   }
 
   focus() {
@@ -521,10 +693,19 @@ export class TerminalSession {
       // tmux redraws the whole screen on attach; start from a clean slate.
       this.term.reset();
       this.sendCtl({ type: 'resize', rows: this.term.rows, cols: this.term.cols });
+      this.scrollPending = 0;
+      this.scrollSent = 0;
+      this.setScrolled(null);
+      // The session may have been left showing its history by an earlier visit or another device.
+      this.sendCtl({ type: 'scroll', lines: 0 });
       window.clearInterval(this.pingTimer);
       this.pingTimer = window.setInterval(() => this.sendCtl({ type: 'ping' }), PING_MS);
       window.clearInterval(this.screenTimer);
-      this.screenTimer = window.setInterval(() => void this.pollScreen(), SCREEN_POLL_MS);
+      this.screenTimer = window.setInterval(() => {
+        void this.pollScreen();
+        // The history may have been left some other way (a search closed, `q` typed in tmux).
+        if (this.scrolled) this.sendCtl({ type: 'scroll', lines: 0 });
+      }, SCREEN_POLL_MS);
       void this.pollScreen();
     };
     ws.onmessage = (e) => {
@@ -545,6 +726,8 @@ export class TerminalSession {
       this.ended = true;
       this.hooks.onScreen(null, 0);
       this.onStatus(`session ended (${m.code})`);
+    } else if (m.type === 'scroll') {
+      this.onScrolled(m.active, m.position);
     } else if (m.type === 'error') {
       this.onStatus(m.message);
     } else if (m.type === 'stopped') {
@@ -621,6 +804,10 @@ export class TerminalSession {
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.screenTimer);
     window.clearTimeout(this.retryTimer);
+    window.clearTimeout(this.scrollTimer);
+    cancelAnimationFrame(this.flingFrame);
+    // A closed pane must not leave its session showing history, where the next keys would be lost.
+    if (this.scrolled) this.sendCtl({ type: 'scroll_end' });
     this.ws?.close();
     this.cleanup();
     this.term.dispose();

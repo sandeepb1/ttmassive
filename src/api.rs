@@ -72,6 +72,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/teamclaude/switch", post(teamclaude_switch))
         .route("/api/sessions/{id}/agents/{aid}/chat", get(session_agent_chat))
         .route("/api/uploads/{uid}/{file}", get(get_upload))
+        .route("/api/chat-images/{file}", get(get_chat_image))
         .route("/api/sessions/{id}/answer", post(session_answer))
         .route("/api/sessions/{id}/meta", post(session_meta))
         .route("/api/usage", get(get_usage))
@@ -1261,6 +1262,26 @@ async fn get_upload(State(st): State<Arc<AppState>>, Path((uid, file)): Path<(St
                 (header::CONTENT_TYPE, uploads::content_type(&ext)),
                 (header::CACHE_CONTROL, "private, max-age=86400"),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// A picture from a conversation, as `chatimg` saved it.
+async fn get_chat_image(State(st): State<Arc<AppState>>, Path(file): Path<String>) -> Response {
+    let Some(path) = st.chat.image_path(&file) else { return StatusCode::NOT_FOUND.into_response() };
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_owned();
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, uploads::content_type(&ext)),
+                // Named by its hash, so it never changes.
+                (header::CACHE_CONTROL, "private, max-age=604800, immutable"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CONTENT_SECURITY_POLICY, "default-src 'none'; sandbox"),
             ],
             bytes,
         )

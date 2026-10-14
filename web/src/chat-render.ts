@@ -1,7 +1,7 @@
 // Turns chat items into DOM. Everything the agent wrote goes in with `textContent` or a text
 // node, never `innerHTML`, so agent output cannot inject markup.
 
-import type { ChatItem, DiffData, Question } from './chat-model';
+import { pasteHint, pasteLabel, type ChatItem, type DiffData, type Paste, type Question } from './chat-model';
 import { initialForm, isComplete, isInstant, pickOption, toRequest, typeAnswer, type QuestionRequest } from './question-form';
 import { splitUploads } from './composer-text';
 import { lineDiff, trimContext } from './diff';
@@ -244,6 +244,7 @@ function renderTool(it: ChatItem & { kind: 'tool' }, agents?: AgentCtx): HTMLEle
   if (it.diff) body.append(renderDiff(it.diff));
   else if (it.input) body.append(pre('Input', it.input));
   if (it.output && !(it.diff && it.status !== 'error')) body.append(pre(it.status === 'error' ? 'Error' : 'Output', it.output));
+  if (it.pics?.length) body.append(picsRow(it.pics));
   if (body.childElementCount > 0) d.append(body);
   else d.classList.add('t-empty'); // nothing to expand
   return d;
@@ -400,6 +401,33 @@ function preview(text: string): string {
   return line.length > 80 ? line.slice(0, 79) + '…' : line;
 }
 
+/** Pictures from the conversation, each a link to the full size. */
+function picsRow(urls: string[]): HTMLElement {
+  const row = el('div', 'msg-pics');
+  for (const url of urls) {
+    const a = el('a', 'msg-pic');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    const img = el('img', 'msg-img');
+    img.src = url;
+    img.alt = 'Image from the conversation';
+    img.loading = 'lazy';
+    a.append(img);
+    row.append(a);
+  }
+  return row;
+}
+
+/** Text pasted into a message: collapsed, so a long log does not push the conversation away. */
+function renderPaste(p: Paste): HTMLElement {
+  const d = el('details', 'paste');
+  const sum = el('summary');
+  sum.append(icon('chevron', 'icon-svg chev'), el('span', 'paste-label', pasteLabel(p.text)), el('span', 'paste-hint', pasteHint(p.text)));
+  d.append(sum, el('pre', 'paste-body', p.text));
+  return d;
+}
+
 /** One chat item as DOM. Items are re-rendered whole whenever they change. */
 export function renderItem(it: ChatItem, ctx?: RenderCtx, agents?: AgentCtx): HTMLElement {
   switch (it.kind) {
@@ -414,8 +442,12 @@ export function renderItem(it: ChatItem, ctx?: RenderCtx, agents?: AgentCtx): HT
         img.loading = 'lazy';
         m.append(img);
       }
+      if (it.pics?.length) m.append(picsRow(it.pics));
+      for (const p of it.pastes ?? []) m.append(renderPaste(p));
       if (text) m.append(el('div', 'bubble', text));
-      if (it.images > 0) m.append(el('div', 'chip-img', `🖼 ${it.images} image${it.images === 1 ? '' : 's'}`));
+      // Pictures that could not be shown (their file is gone, or the log has only a link) are counted.
+      const unseen = it.images - (it.pics?.length ?? 0);
+      if (unseen > 0) m.append(el('div', 'chip-img', `🖼 ${unseen} image${unseen === 1 ? '' : 's'}`));
       if (it.ts !== null) {
         const t = el('time', 'msg-time', clock(it.ts));
         t.dateTime = new Date(it.ts * 1000).toISOString();

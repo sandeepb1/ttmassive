@@ -35,6 +35,8 @@ pub async fn serve(cfg: Config) -> Result<()> {
     let bind = cfg.bind;
     crate::uploads::cleanup(&data_dir, crate::uploads::KEEP);
     let (registry, subs) = sessions::load(&data_dir);
+    let chat_images = Arc::new(crate::chatimg::Store::new(&data_dir));
+    chat_images.cleanup(crate::chatimg::KEEP);
     let ttm_exe = std::env::current_exe().context("locating the ttm executable")?;
     let state = Arc::new(AppState {
         vapid_private: notify::load_or_create_vapid(&data_dir)?,
@@ -47,7 +49,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         stopping: std::sync::atomic::AtomicBool::new(false),
         sessions: registry,
         usage: crate::usage::Usage::new(),
-        chat: crate::chat::ChatCache::default(),
+        chat: crate::chat::ChatCache::with_images(chat_images.clone()),
         driver: tokio::sync::Mutex::new(()),
         tunnel: std::sync::Mutex::new(crate::tunnel::TunnelState {
             provider: cfg.tunnel,

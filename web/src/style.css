@@ -941,3 +941,24 @@ details.tc-other[open] > .tc-accounts { padding: 0 10px 10px; }
 .tc-switch { display: flex; flex-direction: column; gap: 12px; }
 .tc-switch p { margin: 0; }
 .tc-limits { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: 12px; }
+
+/* ---- pictures and pasted text in the chat ---- */
+.msg-pics { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 100%; }
+.msg-pic { display: block; line-height: 0; }
+.t-body .msg-pics { justify-content: flex-start; }
+.t-body .msg-img { max-width: 100%; max-height: 420px; object-fit: contain; background: var(--surface-2); }
+details.paste { align-self: flex-end; max-width: 88%; min-width: min(280px, 100%); background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: 14px; overflow: hidden; }
+details.paste > summary { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 12px; list-style: none; cursor: pointer; }
+details.paste > summary::-webkit-details-marker { display: none; }
+details.paste > summary:active { background: var(--surface-5); }
+.paste-label { flex: none; font: 600 var(--fs-xs) var(--font-ui); color: var(--fg-muted); text-transform: uppercase; letter-spacing: .05em; }
+.paste-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-xs) var(--font-mono); color: var(--fg-faint); }
+details[open].paste .paste-hint { display: none; }
+.paste-body { margin: 0; max-height: 320px; overflow: auto; padding: 4px 12px 12px; font: var(--fs-xs)/1.45 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---- touch scrolling of the terminal's history ---- */
+/* A drag along the terminal scrolls its history (term.ts), so the browser must not pan or zoom. */
+.xterm, .xterm .xterm-viewport, .xterm .xterm-screen { touch-action: none; }
+.t-live { position: absolute; right: 12px; bottom: 12px; z-index: 5; min-height: 44px; padding: 8px 16px; font: 600 var(--fs-sm) var(--font-ui); color: var(--on-accent);
+  background: var(--accent); border: 0; border-radius: 22px; box-shadow: 0 2px 10px rgba(0,0,0,.4); }
+.t-live:active { filter: brightness(.9); }

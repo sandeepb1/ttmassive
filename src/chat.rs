@@ -28,7 +28,7 @@ use crate::{
     config::Agent,
     modes, screen, sessions,
     subagents::{self, SubAgent},
-    usage,
+    chatimg, tags, usage,
 };
 
 /// Items kept per session; older ones are dropped (the client keeps what it already has).
@@ -116,7 +116,16 @@ pub struct Todo {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Body {
-    User { text: String, images: u32 },
+    /// `images` counts every picture attached; `pics` are the ones that can be shown (see
+    /// `chatimg`). `pastes` are blocks of text pasted into the message.
+    User {
+        text: String,
+        images: u32,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pics: Vec<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pastes: Vec<crate::tags::Paste>,
+    },
     Assistant { text: String },
     Thinking { text: String },
     /// A slash command you ran, such as `/compact`.
@@ -130,6 +139,9 @@ pub enum Body {
         output: Option<String>,
         status: ToolStatus,
         diff: Option<Diff>,
+        /// Pictures the tool returned (a screenshot, a viewed image), as URLs.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pics: Vec<String>,
     },
     Question { questions: Vec<Question>, state: QuestionState, answers: Vec<Answer> },
 }
@@ -198,29 +210,6 @@ fn text_of(v: &Value) -> String {
     }
 }
 
-/// The text between `open` and `close`, if both are present.
-fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
-    let start = s.find(open)? + open.len();
-    let end = s[start..].find(close)? + start;
-    Some(&s[start..end])
-}
-
-/// `s` without any `<tag>...</tag>` sections.
-fn strip_tagged(s: &str, tag: &str) -> String {
-    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(start) = rest.find(&open) {
-        out.push_str(&rest[..start]);
-        match rest[start..].find(&close) {
-            Some(end) => rest = &rest[start + end + close.len()..],
-            None => return out, // unterminated: drop the tail
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
 /// The last two path components, enough to recognise a file at a glance.
 fn short_path(p: &str) -> String {
     let parts: Vec<&str> = p.trim_end_matches('/').rsplit('/').take(2).collect();
@@ -283,6 +272,10 @@ pub struct ChatState {
     sidechain: bool,
     /// Helpers Codex started (Codex only).
     spawns: Vec<Spawn>,
+    /// The `!` command whose output has not arrived yet: its bubble is where the output goes.
+    pending_bash: Option<String>,
+    /// Where pictures in the log are kept so the browser can show them. Without it they are counted.
+    images: Option<Arc<chatimg::Store>>,
 }
 
 impl ChatState {
@@ -303,7 +296,14 @@ impl ChatState {
             plan: None,
             sidechain: false,
             spawns: Vec::new(),
+            pending_bash: None,
+            images: None,
         }
+    }
+
+    pub fn with_images(mut self, images: Option<Arc<chatimg::Store>>) -> Self {
+        self.images = images;
+        self
     }
 
     /// The state for a helper agent's own log file.
@@ -508,7 +508,7 @@ impl ChatState {
         self.add(
             id,
             ts,
-            Body::Tool { tool: name.to_owned(), summary, input: shown_input, output: None, status: ToolStatus::Running, diff },
+            Body::Tool { tool: name.to_owned(), summary, input: shown_input, output: None, status: ToolStatus::Running, diff, pics: Vec::new() },
         );
     }
 
@@ -523,29 +523,43 @@ impl ChatState {
         let content = &v["message"]["content"];
         let Some(blocks) = content.as_array() else {
             if let Some(t) = content.as_str() {
-                self.user_text(uuid.to_owned(), ts, t, 0);
+                self.user_text(uuid.to_owned(), ts, t, 0, Vec::new());
             }
             return;
         };
         let mut texts: Vec<&str> = Vec::new();
         let mut images = 0;
+        let mut pics = Vec::new();
         for b in blocks {
             match b["type"].as_str() {
                 Some("text") => texts.push(str_of(b, "text")),
-                Some("image") => images += 1,
+                Some("image") => {
+                    images += 1;
+                    pics.extend(self.claude_pic(b));
+                }
                 Some("tool_result") => self.claude_tool_result(b, v),
                 _ => {}
             }
         }
         if !texts.is_empty() || images > 0 {
-            self.user_text(uuid.to_owned(), ts, &texts.join("\n"), images);
+            self.user_text(uuid.to_owned(), ts, &texts.join("\n"), images, pics);
+        }
+    }
+
+    /// The URL of a Claude `image` block, once its base64 is saved.
+    fn claude_pic(&self, block: &Value) -> Option<String> {
+        let source = &block["source"];
+        match source["type"].as_str() {
+            Some("base64") => self.images.as_ref()?.save_base64(source["data"].as_str()?),
+            _ => None,
         }
     }
 
     fn claude_tool_result(&mut self, b: &Value, line: &Value) {
         let id = str_of(b, "tool_use_id");
         let is_error = b["is_error"].as_bool() == Some(true);
-        let output = text_of(&b["content"]);
+        let output = tags::clean_output(&text_of(&b["content"]));
+        let pics: Vec<String> = b["content"].as_array().into_iter().flatten().filter(|c| c["type"] == "image").filter_map(|c| self.claude_pic(c)).collect();
         // The question tool reports the answers in a structured form.
         let answers: Vec<Answer> = line["toolUseResult"]["answers"]
             .as_object()
@@ -556,9 +570,10 @@ impl ChatState {
             })
             .unwrap_or_default();
         self.modify(id, |body| match body {
-            Body::Tool { output: o, status, .. } => {
+            Body::Tool { output: o, status, pics: p, .. } => {
                 *o = Some(clip(output.trim(), PREVIEW_CHARS)).filter(|s| !s.is_empty());
                 *status = if is_error { ToolStatus::Error } else { ToolStatus::Ok };
+                *p = pics;
             }
             Body::Question { state, answers: a, .. } => {
                 if answers.is_empty() {
@@ -572,26 +587,42 @@ impl ChatState {
         });
     }
 
-    /// A message you typed, or one of the wrappers Claude puts around slash commands.
-    fn user_text(&mut self, id: String, ts: Option<i64>, text: &str, images: u32) {
-        let cleaned = strip_tagged(text, "system-reminder");
-        let t = cleaned.trim();
-        if let Some(name) = between(t, "<command-name>", "</command-name>") {
-            let args = between(t, "<command-args>", "</command-args>").unwrap_or("").trim();
-            let text = format!("{} {args}", name.trim()).trim().to_owned();
-            self.add(id, ts, Body::Command { text });
+    /// A message you typed, or one of the wrappers the agents put around slash commands, `!`
+    /// commands, finished background tasks and pasted text (see `tags`).
+    fn user_text(&mut self, id: String, ts: Option<i64>, text: &str, images: u32, pics: Vec<String>) {
+        let p = tags::parse(text);
+        if let Some((name, args)) = &p.command {
+            self.add(id, ts, Body::Command { text: format!("{name} {args}").trim().to_owned() });
             return;
         }
-        if let Some(out) = between(t, "<local-command-stdout>", "</local-command-stdout>") {
-            self.note_switch(out);
-            if !out.trim().is_empty() {
-                self.add(id, ts, Body::Notice { text: clip(out.trim(), PREVIEW_CHARS) });
+        if p.stdout.is_some() || p.stderr.is_some() {
+            if let Some(out) = &p.stdout {
+                self.note_switch(out);
+            }
+            let shown = [p.stdout.as_deref(), p.stderr.as_deref()].into_iter().flatten().map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+            if !shown.is_empty() {
+                self.add(id, ts, Body::Notice { text: clip(&shown, PREVIEW_CHARS) });
             }
             return;
         }
-        if t.starts_with("<local-command-") || t.starts_with("<command-message>") {
-            return; // the "caveat" Claude adds after local commands
+        if let Some(cmd) = &p.bash_input {
+            self.bash_started(id, ts, cmd);
+            return;
         }
+        if p.bash_stdout.is_some() || p.bash_stderr.is_some() {
+            self.bash_finished(id, ts, p.bash_stdout.as_deref().unwrap_or(""), p.bash_stderr.as_deref().unwrap_or(""));
+            return;
+        }
+        if let Some(task) = &p.task {
+            self.add(id, ts, Body::Notice { text: clip(&task.line(), PREVIEW_CHARS) });
+            return;
+        }
+        let said_nothing = p.text.is_empty() && p.pastes.is_empty() && images == 0;
+        if p.aborted && said_nothing {
+            self.add(id, ts, Body::Notice { text: "Interrupted".into() });
+            return;
+        }
+        let t = p.text.as_str();
         // Claude records an interruption as a line from "you"; it is a note, not something you typed.
         if t.starts_with("[Request interrupted by user") {
             self.add(id, ts, Body::Notice { text: "Interrupted".into() });
@@ -600,10 +631,53 @@ impl ChatState {
         // Claude describes an attached image in a text block of its own.
         let t = t.lines().filter(|l| !(l.starts_with("[Image") && l.ends_with(']'))).collect::<Vec<_>>().join("\n");
         let t = t.trim();
-        if t.is_empty() && images == 0 {
+        if t.is_empty() && images == 0 && p.pastes.is_empty() {
             return;
         }
-        self.add(id, ts, Body::User { text: clip(t, TEXT_CHARS), images });
+        let pastes = p.pastes.into_iter().map(|mut x| {
+            x.text = clip(&x.text, TEXT_CHARS);
+            x
+        });
+        self.add(id, ts, Body::User { text: clip(t, TEXT_CHARS), images, pics, pastes: pastes.collect() });
+    }
+
+    /// A `!` command you ran in Claude: shown like a Bash tool call, which its output fills in.
+    fn bash_started(&mut self, id: String, ts: Option<i64>, command: &str) {
+        self.pending_bash = Some(id.clone());
+        self.add(
+            id,
+            ts,
+            Body::Tool {
+                tool: "Bash".into(),
+                summary: clip(first_line(command), 120),
+                input: Some(clip(command, PREVIEW_CHARS)),
+                output: None,
+                status: ToolStatus::Ok,
+                diff: None,
+                pics: Vec::new(),
+            },
+        );
+    }
+
+    fn bash_finished(&mut self, id: String, ts: Option<i64>, stdout: &str, stderr: &str) {
+        let (out, err) = (stdout.trim(), stderr.trim());
+        let shown = [out, err].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+        if let Some(pending) = self.pending_bash.take() {
+            let failed = out.is_empty() && !err.is_empty();
+            let filled = self.modify(&pending, |body| {
+                if let Body::Tool { output, status, .. } = body {
+                    *output = Some(clip(&shown, PREVIEW_CHARS)).filter(|s| !s.is_empty());
+                    *status = if failed { ToolStatus::Error } else { ToolStatus::Ok };
+                }
+            });
+            if filled {
+                return;
+            }
+        }
+        // Its command is not in the log (it started mid-way): the output on its own.
+        if !shown.is_empty() {
+            self.add(id, ts, Body::Notice { text: clip(&shown, PREVIEW_CHARS) });
+        }
     }
 
     /// `/model` and `/effort` confirm themselves in the log: take the new setting from that line,
@@ -642,6 +716,16 @@ impl ChatState {
         }
     }
 
+    /// The URL of a Codex image block: a file it was given, or a data URL.
+    fn codex_pic(&self, block: &Value) -> Option<String> {
+        let store = self.images.as_ref()?;
+        if let Some(path) = block["path"].as_str() {
+            return store.save_file(path);
+        }
+        let url = block["image_url"].as_str().or_else(|| block["image_url"]["url"].as_str())?;
+        store.save_data_url(url)
+    }
+
     fn codex_item(&mut self, item: &Value, ts: Option<i64>) {
         let id = str_of(item, "id").to_owned();
         if id.is_empty() {
@@ -650,8 +734,10 @@ impl ChatState {
         match item["type"].as_str() {
             Some("UserMessage") => {
                 let t = text_of(&item["content"]);
-                if !t.trim().is_empty() {
-                    self.add(id, ts, Body::User { text: clip(t.trim(), TEXT_CHARS), images: 0 });
+                let shots: Vec<&Value> = item["content"].as_array().into_iter().flatten().filter(|b| matches!(b["type"].as_str(), Some("local_image" | "image" | "input_image"))).collect();
+                let pics: Vec<String> = shots.iter().filter_map(|b| self.codex_pic(b)).collect();
+                if !t.trim().is_empty() || !shots.is_empty() {
+                    self.user_text(id, ts, &t, shots.len() as u32, pics);
                 }
             }
             Some("AgentMessage") => {
@@ -690,6 +776,7 @@ impl ChatState {
                         output,
                         status: if failed { ToolStatus::Error } else { ToolStatus::Ok },
                         diff: None,
+                        pics: Vec::new(),
                     },
                 );
             }
@@ -710,6 +797,7 @@ impl ChatState {
                             output: None,
                             status: ToolStatus::Ok,
                             diff: None,
+                            pics: Vec::new(),
                         },
                     );
                 }
@@ -735,6 +823,7 @@ impl ChatState {
                         output: None,
                         status: ToolStatus::Ok,
                         diff: None,
+                        pics: Vec::new(),
                     },
                 );
             }
@@ -802,6 +891,7 @@ impl ChatState {
                         output: None,
                         status: ToolStatus::Running,
                         diff: None,
+                        pics: Vec::new(),
                     },
                 );
             }
@@ -844,6 +934,7 @@ impl ChatState {
                     output: output.clone(),
                     status: if failed { ToolStatus::Error } else { ToolStatus::Ok },
                     diff: Some(Diff { path: path.clone(), edits }),
+                    pics: Vec::new(),
                 },
             );
         }
@@ -954,6 +1045,18 @@ fn claude_tool_summary(name: &str, input: &Value) -> (String, Option<String>, Op
 #[derive(Clone, Default)]
 pub struct ChatCache {
     states: Arc<Mutex<HashMap<String, ChatState>>>,
+    images: Option<Arc<chatimg::Store>>,
+}
+
+impl ChatCache {
+    pub fn with_images(images: Arc<chatimg::Store>) -> Self {
+        Self { images: Some(images), ..Self::default() }
+    }
+
+    /// The saved picture a URL from this cache points at.
+    pub fn image_path(&self, name: &str) -> Option<PathBuf> {
+        self.images.as_ref()?.locate(name)
+    }
 }
 
 #[derive(Serialize)]
@@ -1042,13 +1145,14 @@ impl ChatCache {
     /// The parsed log for `session`, started afresh when it now belongs to another conversation.
     fn state_for<'a>(
         states: &'a mut HashMap<String, ChatState>,
+        images: &Option<Arc<chatimg::Store>>,
         session: &str,
         agent: Agent,
         conv_id: &str,
     ) -> &'a mut ChatState {
         let stale = states.get(session).is_none_or(|s| s.agent != agent || s.conv_id != conv_id);
         if stale {
-            states.insert(session.to_owned(), ChatState::new(agent, conv_id));
+            states.insert(session.to_owned(), ChatState::new(agent, conv_id).with_images(images.clone()));
         }
         let Some(state) = states.get_mut(session) else { unreachable!("inserted above") };
         state
@@ -1058,7 +1162,7 @@ impl ChatCache {
     /// new log lines. Blocking: reads the logs. Call from `spawn_blocking`.
     fn overview(&self, session: &str, agent: Agent, conv_id: &str) -> (Option<String>, u32) {
         let mut states = lock(&self.states);
-        let state = Self::state_for(&mut states, session, agent, conv_id);
+        let state = Self::state_for(&mut states, &self.images, session, agent, conv_id);
         if state.update().is_err() {
             return (None, 0);
         }
@@ -1071,7 +1175,7 @@ impl ChatCache {
     /// Every helper agent of the conversation. Blocking.
     fn agents(&self, session: &str, agent: Agent, conv_id: &str) -> Vec<SubAgent> {
         let mut states = lock(&self.states);
-        let state = Self::state_for(&mut states, session, agent, conv_id);
+        let state = Self::state_for(&mut states, &self.images, session, agent, conv_id);
         let _ = state.update();
         let (path, spawns) = (state.path.clone(), state.spawns.clone());
         subagents::collect(&mut states, session, agent, path.as_deref(), &spawns, codex_sessions().as_deref(), subagents::now_secs())
@@ -1081,7 +1185,7 @@ impl ChatCache {
     /// Blocking.
     fn agent_chat(&self, session: &str, agent: Agent, conv_id: &str, aid: &str, epoch: Option<u64>, after: u64) -> Option<ChatResponse> {
         let mut states = lock(&self.states);
-        let state = Self::state_for(&mut states, session, agent, conv_id);
+        let state = Self::state_for(&mut states, &self.images, session, agent, conv_id);
         let _ = state.update();
         let (path, spawns) = (state.path.clone(), state.spawns.clone());
         // This also makes sure the helper's own log has been read up to now.
@@ -1096,7 +1200,7 @@ impl ChatCache {
     /// Blocking: reads the log. Call from `spawn_blocking`.
     fn read(&self, session: &str, agent: Agent, conv_id: &str, epoch: Option<u64>, after: u64) -> (ChatResponse, bool) {
         let mut states = lock(&self.states);
-        let state = Self::state_for(&mut states, session, agent, conv_id);
+        let state = Self::state_for(&mut states, &self.images, session, agent, conv_id);
         let ready = state.update().unwrap_or_else(|e| {
             tracing::warn!("reading the {} log for {session}: {e}", conv_id);
             false
@@ -1281,7 +1385,7 @@ mod tests {
         assert_eq!(
             bodies(&s),
             vec![
-                &Body::User { text: "hello there".into(), images: 0 },
+                &Body::User { text: "hello there".into(), images: 0, pics: vec![], pastes: vec![] },
                 &Body::Thinking { text: "hmm".into() },
                 &Body::Assistant { text: "Hi!".into() },
             ]
@@ -1412,7 +1516,7 @@ mod tests {
             vec![
                 &Body::Command { text: "/grill-me the plan".into() },
                 &Body::Notice { text: "Set model to Sonnet 5 for this session only".into() },
-                &Body::User { text: "real question".into(), images: 0 },
+                &Body::User { text: "real question".into(), images: 0, pics: vec![], pastes: vec![] },
             ]
         );
     }
@@ -1455,9 +1559,219 @@ mod tests {
             vec![
                 &Body::Notice { text: "Interrupted".into() },
                 &Body::Notice { text: "Interrupted".into() },
-                &Body::User { text: "a real message that mentions [Request interrupted by user]".into(), images: 0 },
+                &Body::User { text: "a real message that mentions [Request interrupted by user]".into(), images: 0, pics: vec![], pastes: vec![] },
             ]
         );
+    }
+
+    fn tool(summary: &str, input: &str, output: Option<&str>, status: ToolStatus) -> Body {
+        Body::Tool { tool: "Bash".into(), summary: summary.into(), input: Some(input.into()), output: output.map(Into::into), status, diff: None, pics: vec![] }
+    }
+
+    #[test]
+    fn text_helpers() {
+        assert_eq!(short_path("/a/b/c.rs"), "b/c.rs");
+        assert_eq!(short_path("c.rs"), "c.rs");
+        assert_eq!(clip("héllo wörld", 5), "héllo…");
+        assert_eq!(clip("short", 50), "short");
+    }
+
+    #[test]
+    fn a_bang_command_and_its_output_become_one_bash_card() {
+        let mut s = claude();
+        feed(
+            &mut s,
+            &[
+                user_text("c1", "<local-command-caveat>The command below was run directly in Claude Code</local-command-caveat>"),
+                user_text("i1", "<bash-input> ls -1 | head -2 </bash-input>"),
+                user_text("o1", "<bash-stdout>a.txt\nb.txt</bash-stdout><bash-stderr></bash-stderr>"),
+                user_text("i2", "<bash-input>cat missing</bash-input>"),
+                user_text("o2", "<bash-stdout></bash-stdout><bash-stderr>cat: missing: No such file</bash-stderr>"),
+                user_text("i3", "<bash-input>true</bash-input>"),
+                user_text("o3", "<bash-stdout></bash-stdout><bash-stderr></bash-stderr>"),
+            ],
+        );
+        assert_eq!(
+            bodies(&s),
+            vec![
+                &tool("ls -1 | head -2", "ls -1 | head -2", Some("a.txt\nb.txt"), ToolStatus::Ok),
+                &tool("cat missing", "cat missing", Some("cat: missing: No such file"), ToolStatus::Error),
+                &tool("true", "true", None, ToolStatus::Ok),
+            ]
+        );
+    }
+
+    #[test]
+    fn bash_output_without_its_command_is_a_note() {
+        let mut s = claude();
+        feed(&mut s, &[user_text("o1", "<bash-stdout>left over</bash-stdout><bash-stderr></bash-stderr>"), user_text("o2", "<bash-stdout></bash-stdout>")]);
+        assert_eq!(bodies(&s), vec![&Body::Notice { text: "left over".into() }]);
+    }
+
+    #[test]
+    fn pasted_text_is_kept_apart_from_what_you_typed() {
+        let mut s = claude();
+        feed(
+            &mut s,
+            &[
+                user_text("p1", "\n\n<pasted_content id=\"6e14\">\n~/code main*\n❯ ls\n</pasted_content id=\"6e14\">\n"),
+                user_text("p2", "why?\n<pasted_content id=\"a1\">boom</pasted_content>"),
+            ],
+        );
+        let paste = |id: &str, text: &str| crate::tags::Paste { id: Some(id.into()), text: text.into() };
+        assert_eq!(
+            bodies(&s),
+            vec![
+                &Body::User { text: String::new(), images: 0, pics: vec![], pastes: vec![paste("6e14", "~/code main*\n❯ ls")] },
+                &Body::User { text: "why?".into(), images: 0, pics: vec![], pastes: vec![paste("a1", "boom")] },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_finished_background_task_is_a_notice() {
+        let mut s = claude();
+        feed(
+            &mut s,
+            &[user_text(
+                "t1",
+                "<task-notification>\n<task-id>b4y</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<output-file>/tmp/x</output-file>\n<status>completed</status>\n<summary>Background command \"Find it\" completed (exit code 0)</summary>\n</task-notification>",
+            )],
+        );
+        assert_eq!(bodies(&s), vec![&Body::Notice { text: "Background command \"Find it\" completed (exit code 0)".into() }]);
+    }
+
+    #[test]
+    fn a_slash_commands_error_output_is_shown_too() {
+        let mut s = claude();
+        feed(&mut s, &[user_text("e1", "<local-command-stdout></local-command-stdout><local-command-stderr>Unknown command</local-command-stderr>")]);
+        assert_eq!(bodies(&s), vec![&Body::Notice { text: "Unknown command".into() }]);
+    }
+
+    #[test]
+    fn tool_results_lose_claudes_wrappers_but_keep_file_contents() {
+        let mut s = claude();
+        feed(
+            &mut s,
+            &[
+                assistant("a1", json!({ "type": "tool_use", "id": "t1", "name": "Read", "input": { "file_path": "/x/a.rs" } })),
+                json!({ "type": "user", "uuid": "r1", "message": { "content": [
+                    { "type": "tool_result", "tool_use_id": "t1", "content": "let a = \"<system-reminder>x</system-reminder>\";\n\n<system-reminder>be careful</system-reminder>" } ] } }),
+                assistant("a2", json!({ "type": "tool_use", "id": "t2", "name": "Read", "input": { "file_path": "/x/b.rs" } })),
+                json!({ "type": "user", "uuid": "r2", "message": { "content": [
+                    { "type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": "<tool_use_error>File does not exist.</tool_use_error>" } ] } }),
+            ],
+        );
+        let outs: Vec<_> = s.items.iter().filter_map(|i| if let Body::Tool { output, .. } = &i.body { output.clone() } else { None }).collect();
+        assert_eq!(outs, vec!["let a = \"<system-reminder>x</system-reminder>\";".to_owned(), "File does not exist.".to_owned()]);
+    }
+
+    #[test]
+    fn codex_interruptions_and_review_prompts_are_tidied() {
+        let mut s = ChatState::new(Agent::Codex, "thread");
+        let done = |item: Value| json!({ "type": "event_msg", "payload": { "type": "item_completed", "item": item } });
+        let user = |id: &str, text: &str| done(json!({ "type": "UserMessage", "id": id, "content": [{ "type": "text", "text": text }] }));
+        feed(
+            &mut s,
+            &[
+                user("m1", "<turn_aborted>\nThe user interrupted the previous turn.\n</turn_aborted>"),
+                user("m2", "<task>\nRun a stop-gate review.\n</task>"),
+                user("m3", "<environment_context><cwd>/x</cwd></environment_context>"),
+                user("m4", "plain question about <b>html</b>"),
+            ],
+        );
+        assert_eq!(
+            bodies(&s),
+            vec![
+                &Body::Notice { text: "Interrupted".into() },
+                &Body::User { text: "Run a stop-gate review.".into(), images: 0, pics: vec![], pastes: vec![] },
+                &Body::User { text: "plain question about <b>html</b>".into(), images: 0, pics: vec![], pastes: vec![] },
+            ]
+        );
+    }
+
+    const PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H', b'D', b'R', 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1F, 0x15, 0xC4, 0x89,
+    ];
+
+    fn with_store(mut s: ChatState, name: &str) -> (ChatState, PathBuf) {
+        let d = std::env::temp_dir().join(format!("ttm-chat-img-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        s = s.with_images(Some(Arc::new(chatimg::Store::new(&d))));
+        (s, d)
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn a_picture_you_attach_is_saved_and_shown() {
+        let (mut s, d) = with_store(claude(), "user");
+        feed(
+            &mut s,
+            &[json!({ "type": "user", "uuid": "u1", "message": { "content": [
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64(PNG) } },
+                { "type": "image", "source": { "type": "url", "url": "https://example.com/x.png" } },
+                { "type": "text", "text": "what is this?" } ] } })],
+        );
+        let Body::User { images, pics, text, .. } = &s.items[0].body else { panic!("not a user message") };
+        assert_eq!((text.as_str(), *images), ("what is this?", 2), "both pictures are counted");
+        assert_eq!(pics.len(), 1, "the one that can be shown is shown");
+        assert!(pics[0].starts_with(chatimg::URL_PREFIX));
+        assert_eq!(std::fs::read_dir(d.join("chat-images")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_screenshot_a_tool_returns_is_shown_on_its_card() {
+        let (mut s, _d) = with_store(claude(), "tool");
+        feed(
+            &mut s,
+            &[
+                assistant("a1", json!({ "type": "tool_use", "id": "t1", "name": "mcp__browser__screenshot", "input": {} })),
+                json!({ "type": "user", "uuid": "r1", "message": { "content": [
+                    { "type": "tool_result", "tool_use_id": "t1", "content": [
+                        { "type": "text", "text": "Took a screenshot" },
+                        { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64(PNG) } } ] } ] } }),
+            ],
+        );
+        let Body::Tool { output, pics, .. } = &s.items[0].body else { panic!("not a tool") };
+        assert_eq!(output.as_deref(), Some("Took a screenshot"));
+        assert_eq!(pics.len(), 1);
+    }
+
+    #[test]
+    fn without_a_store_pictures_are_only_counted() {
+        let mut s = claude();
+        feed(
+            &mut s,
+            &[json!({ "type": "user", "uuid": "u1", "message": { "content": [
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": b64(PNG) } } ] } })],
+        );
+        assert_eq!(bodies(&s), vec![&Body::User { text: String::new(), images: 1, pics: vec![], pastes: vec![] }]);
+    }
+
+    #[test]
+    fn codex_pictures_come_from_a_file_or_a_data_url() {
+        let (mut s, d) = with_store(ChatState::new(Agent::Codex, "thread"), "codex");
+        let shot = d.join("Screenshot 1.png");
+        std::fs::write(&shot, PNG).unwrap();
+        let done = |item: Value| json!({ "type": "event_msg", "payload": { "type": "item_completed", "item": item } });
+        feed(
+            &mut s,
+            &[
+                done(json!({ "type": "UserMessage", "id": "m1", "content": [
+                    { "type": "local_image", "path": shot.to_str().unwrap() },
+                    { "type": "local_image", "path": "/gone/away.png" },
+                    { "type": "text", "text": "look" } ] })),
+                done(json!({ "type": "UserMessage", "id": "m2", "content": [
+                    { "type": "input_image", "image_url": format!("data:image/png;base64,{}", b64(PNG)) } ] })),
+            ],
+        );
+        let shown: Vec<(u32, usize)> = s.items.iter().filter_map(|i| if let Body::User { images, pics, .. } = &i.body { Some((*images, pics.len())) } else { None }).collect();
+        assert_eq!(shown, vec![(2, 1), (1, 1)]);
     }
 
     #[test]
@@ -1470,7 +1784,7 @@ mod tests {
                 { "type": "text", "text": "[Image: original 100x100, displayed at 100x100.]" },
                 { "type": "text", "text": "what is this?" } ] } })],
         );
-        assert_eq!(bodies(&s), vec![&Body::User { text: "what is this?".into(), images: 1 }]);
+        assert_eq!(bodies(&s), vec![&Body::User { text: "what is this?".into(), images: 1, pics: vec![], pastes: vec![] }]);
     }
 
     #[test]
@@ -1587,7 +1901,7 @@ mod tests {
             eprintln!("  {n:5}  {k}");
         }
         for i in s.items.iter().filter(|i| matches!(i.body, Body::User { .. })).take(3) {
-            if let Body::User { text, images } = &i.body {
+            if let Body::User { text, images, .. } = &i.body {
                 eprintln!("user> {} [{images} img]", clip(first_line(text), 90));
             }
         }
@@ -1605,18 +1919,6 @@ mod tests {
         assert_eq!(bare_command("zsh"), "zsh");
         assert_eq!(bare_command("zsh -lc"), "zsh -lc");
         assert_eq!(bare_command("python3 -c print(1)"), "python3 -c print(1)");
-    }
-
-    #[test]
-    fn text_helpers() {
-        assert_eq!(strip_tagged("a<x>b</x>c<x>d</x>e", "x"), "ace");
-        assert_eq!(strip_tagged("a<x>unterminated", "x"), "a");
-        assert_eq!(between("<a>hi</a>", "<a>", "</a>"), Some("hi"));
-        assert_eq!(between("<a>hi", "<a>", "</a>"), None);
-        assert_eq!(short_path("/a/b/c.rs"), "b/c.rs");
-        assert_eq!(short_path("c.rs"), "c.rs");
-        assert_eq!(clip("héllo wörld", 5), "héllo…");
-        assert_eq!(clip("short", 50), "short");
     }
 
     // ---------------------------------------------------- todos, plan, preview

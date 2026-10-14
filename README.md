@@ -262,6 +262,19 @@ A few things the browser would otherwise get wrong when you run Claude Code or C
 - **Copying on a touch screen.** The terminal is drawn on a canvas, so there is no text to
   long-press. Touch and hold it for half a second to open **Select text**: the screen and the last
   2,000 lines as real text, where your device's own selection handles and Copy menu work.
+- **Scrolling on a touch screen.** Drag a finger down the terminal to go back through its history
+  (tmux keeps the last 50,000 lines); a quick flick carries on after you let go. A **Back to live**
+  button shows how many lines up you are, and anything you type, or Escape, takes you back first, so
+  keys reach the agent rather than tmux's history keys (Escape alone is not sent on, so it will not
+  interrupt a running agent). Under a full-screen app such as `less` or `vim` you scroll the shell's
+  history behind it, the same as tmux's own mouse scrolling. This drives tmux's copy-mode, the same
+  as history search, and does not turn on tmux's `mouse` option, so selecting with a mouse on a
+  desktop is unchanged. A drag on a pane with no history above it does nothing.
+- **Pictures in the terminal.** Sixel images and iTerm2 inline images are drawn in place, so
+  `chafa`, `timg`, `viu`, `imgcat` and similar tools work, including inside tmux (ttm tells tmux the
+  browser can show Sixel). They live in a 48 MB cache on the device; an old one that falls out of it
+  is shown as a placeholder, and the output text is unaffected. Claude Code and Codex show images
+  in the chat, not the terminal.
 
 ### The command bar
 
@@ -434,6 +447,21 @@ interrupts the agent.
   browser, saved on the host under `uploads/` in the data directory (files older than 7 days are
   removed whenever the daemon starts) and referenced as `@/path/to/image.jpg`, which both Claude
   and Codex read. They show as thumbnails in the chat.
+- Pictures in the conversation: an image you pasted straight into Claude's terminal, a screenshot a
+  tool returned (a browser tool, `Read` on an image), and Codex's image attachments all show in the
+  chat, on your message or on the tool's card; tap one to open it at full size. They are read from
+  the agent's log, saved once under `chat-images/` in the data directory (owner-only, removed after
+  14 days; a conversation that is read again saves the ones it still shows) and served only to a
+  signed-in browser. Only PNG, JPEG, GIF and WebP are kept, judged by their bytes, never by name, so
+  an SVG or a renamed file is not served. A picture that cannot be shown (too large, or Codex's file
+  is gone) is counted as "N images".
+- Commands you ran yourself and what the agents record around them: a `!` command and its output
+  are one Bash card; a slash command shows as a command, with its output (or error) as a note; a
+  background task that finished is a note with its summary; text you pasted into a message is a
+  collapsed **Pasted text** block with its length, kept apart from what you typed; Codex's
+  "interrupted" is a note. The reminders and context the agents add to messages
+  (`<system-reminder>`, IDE and environment context) are left out. Other `<tags>` in your own words
+  are left exactly as typed.
 - Model and effort: the chip next to the composer shows the model and effort. Tap it to switch.
   The list is the agent's own `/model` menu, read live, and your choice applies to this session
   only. Codex asks for a reasoning level after the model, so its picker has a second step.

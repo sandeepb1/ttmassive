@@ -69,8 +69,9 @@ fn target(id: &str) -> String {
 /// (no `;`), because tmux treats trailing-`;` arguments as separators.
 ///
 /// The `terminal-features` line has to run *before* `new-session`: tmux reads it when the
-/// client attaches, so after is too late. It lets the browser terminal receive OSC 52 copies and
-/// OSC 8 links. `set-clipboard on` and `allow-passthrough on` forward the rest: OSC 52, and the
+/// client attaches, so after is too late. It lets the browser terminal receive OSC 52 copies,
+/// OSC 8 links and Sixel pictures (tmux passes pictures only to a client that says it shows them).
+/// `set-clipboard on` and `allow-passthrough on` forward the rest: OSC 52, and the
 /// DCS-wrapped OSC 9;4 progress that Claude Code sends when it sees tmux. Index 10 keeps the
 /// line from piling up a new entry on every attach. `focus-events` lets the agents see whether the
 /// pane is focused; `set-titles` hands the program's own window title (OSC 0/2) to the browser,
@@ -79,7 +80,7 @@ pub fn attach_args(id: &str) -> Vec<String> {
     let mut a: Vec<String> = ["-u", "-L", SOCKET].map(String::from).into();
     for opt in [
         "start-server",
-        ";", "set", "-s", "terminal-features[10]", "*:clipboard:hyperlinks",
+        ";", "set", "-s", "terminal-features[10]", "*:clipboard:hyperlinks:sixel",
         ";", "new-session", "-A", "-s", id,
         ";", "set", "-g", "window-size", "latest",
         ";", "set", "-g", "status", "off",
@@ -259,6 +260,60 @@ pub async fn search_jump(id: &str, pattern: &str, n: usize) -> Result<()> {
     Ok(())
 }
 
+/// Where a session's history view stands after a scroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Scrolled {
+    /// The pane is showing history (tmux's copy-mode), not the live screen.
+    pub active: bool,
+    /// How many lines above the live screen it is.
+    pub position: u32,
+}
+
+/// `#{pane_in_mode} #{scroll_position}` as `display-message` prints it; the position is empty
+/// outside a mode.
+fn parse_scrolled(out: &str) -> Scrolled {
+    let mut it = out.split_whitespace();
+    let active = it.next() == Some("1");
+    Scrolled { active, position: if active { it.next().and_then(|p| p.parse().ok()).unwrap_or(0) } else { 0 } }
+}
+
+/// Most lines one scroll moves.
+const MAX_SCROLL: i32 = 400;
+
+/// Scroll the session's history: positive `lines` go up (older), negative go down, zero only
+/// reports. Going up enters copy-mode, which `-e` leaves again by itself on reaching the bottom.
+/// A pane with nothing above it (a full-screen app) is left at once: copy-mode would otherwise take
+/// the next keystrokes meant for the app.
+pub async fn scroll(id: &str, lines: i32) -> Result<Scrolled> {
+    let t = target(id);
+    let n = lines.clamp(-MAX_SCROLL, MAX_SCROLL);
+    let state = ["display-message", "-p", "-t", &t, "#{pane_in_mode} #{scroll_position}"];
+    let mut cmd = base();
+    match n {
+        0 => {}
+        n if n > 0 => {
+            cmd.args(["copy-mode", "-e", "-t", &t, ";", "send-keys", "-X", "-N", &n.to_string(), "-t", &t, "scroll-up", ";"]);
+        }
+        n => {
+            cmd.args(["send-keys", "-X", "-N", &(-n).to_string(), "-t", &t, "scroll-down", ";"]);
+        }
+    }
+    cmd.args(state);
+    let out = cmd.output().await.context("running tmux scroll")?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        // Scrolling down when not in history is not an error.
+        anyhow::ensure!(err.contains("not in a mode"), "tmux: {}", err.trim());
+        return Ok(Scrolled { active: false, position: 0 });
+    }
+    let st = parse_scrolled(&String::from_utf8_lossy(&out.stdout));
+    if st.active && st.position == 0 && n > 0 {
+        search_close(id).await?;
+        return Ok(Scrolled { active: false, position: 0 });
+    }
+    Ok(st)
+}
+
 /// Leave copy-mode. Fine when the session is not in it (the user may have pressed `q` already).
 pub async fn search_close(id: &str) -> Result<()> {
     let out = base().args(["send-keys", "-X", "-t", &target(id), "cancel"]).output().await.context("running tmux send-keys")?;
@@ -364,6 +419,15 @@ mod tests {
     }
 
     #[test]
+    fn scroll_state_is_read_from_tmux() {
+        assert_eq!(parse_scrolled("1 42\n"), Scrolled { active: true, position: 42 });
+        assert_eq!(parse_scrolled("0 \n"), Scrolled { active: false, position: 0 });
+        assert_eq!(parse_scrolled("1 \n"), Scrolled { active: true, position: 0 });
+        assert_eq!(parse_scrolled(""), Scrolled { active: false, position: 0 });
+        assert_eq!(parse_scrolled("garbage"), Scrolled { active: false, position: 0 });
+    }
+
+    #[test]
     fn attach_sets_terminal_features_before_the_client_attaches() {
         let a = attach_args("work");
         let at = |needle: &str| a.iter().position(|x| x == needle).unwrap();
@@ -371,6 +435,10 @@ mod tests {
         assert_eq!(a[at("new-session") + 3], "work");
         assert!(a.windows(2).any(|w| w[0] == "allow-passthrough" && w[1] == "on"));
         assert!(a.windows(2).any(|w| w[0] == "set-clipboard" && w[1] == "on"));
+        let features = &a[at("terminal-features[10]") + 1];
+        for f in ["clipboard", "hyperlinks", "sixel"] {
+            assert!(features.split(':').any(|x| x == f), "{features} lacks {f}");
+        }
     }
 
     #[test]
