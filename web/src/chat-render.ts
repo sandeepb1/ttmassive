@@ -8,6 +8,9 @@ import { lineDiff, trimContext } from './diff';
 import { el } from './dom';
 import { agentForItem, elapsedSecs, fmtElapsed, isAgentTool, stateOf, workLine, type SubAgent } from './agents';
 import { icon, toolCategory, toolIconName } from './icons';
+import { button } from './ui/button';
+import { input as textInput } from './ui/input';
+import { row as listRow, setRowCurrent } from './ui/row';
 import { viewable } from './image-viewer';
 import { parseMarkdown, type Block, type Inline } from './markdown';
 
@@ -272,14 +275,12 @@ function liveQuestions(it: ChatItem & { kind: 'question' }, ctx: RenderCtx): HTM
   const card = el('div', 'qcard q-pending q-live');
   const optionButtons: HTMLButtonElement[][] = [];
   const inputs: (HTMLInputElement | null)[] = [];
-  const send = el('button', 'q-send', 'Send');
-  const dismiss = el('button', 'q-dismiss', 'Dismiss');
+  const send = button({ size: 'sm' }, 'Send');
+  const dismiss = button({ variant: 'secondary', size: 'sm' }, 'Dismiss');
   const msg = el('div', 'q-err');
-  send.type = 'button';
-  dismiss.type = 'button';
 
   const sync = () => {
-    optionButtons.forEach((row, i) => row.forEach((b, k) => b.classList.toggle('picked', state[i].choices.includes(k + 1))));
+    optionButtons.forEach((row, i) => row.forEach((b, k) => setRowCurrent(b, state[i].choices.includes(k + 1))));
     inputs.forEach((inp, i) => {
       if (inp && inp.value !== state[i].text) inp.value = state[i].text;
     });
@@ -312,10 +313,7 @@ function liveQuestions(it: ChatItem & { kind: 'question' }, ctx: RenderCtx): HTM
     const row: HTMLButtonElement[] = [];
     const opts = el('div', 'q-opts');
     q.options.forEach((o, k) => {
-      const b = el('button', 'q-opt q-opt-btn');
-      b.type = 'button';
-      b.append(el('span', 'q-label', o.label));
-      if (o.description) b.append(el('span', 'q-desc', o.description));
+      const b = listRow(o.label, { hint: o.description || undefined, cls: 'mt-1.5' });
       b.addEventListener('click', () => {
         if (busy) return;
         state = pickOption(qs, state, i, k + 1);
@@ -330,9 +328,7 @@ function liveQuestions(it: ChatItem & { kind: 'question' }, ctx: RenderCtx): HTM
     if (q.multi_select) {
       inputs.push(null); // typed answers are not available on multiple choice
     } else {
-      const input = el('input', 'q-other');
-      input.type = 'text';
-      input.placeholder = 'Or type your own answer';
+      const input = textInput({ placeholder: 'Or type your own answer', cls: 'mt-2' });
       input.enterKeyHint = 'send';
       input.addEventListener('input', () => {
         state = typeAnswer(state, i, input.value);

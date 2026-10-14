@@ -4,6 +4,7 @@
 @import 'tailwindcss/theme.css' layer(theme);
 @import 'tailwindcss/preflight.css' layer(base);
 @import '../style.css' layer(legacy);
+@import './chat.css';
 @import 'tailwindcss/utilities.css' layer(utilities);
 
 /* Semantic names (shadcn's vocabulary) over the vars theme.ts and style.css already derive from the active theme.
@@ -61,7 +62,7 @@
 }
 
 /* Direction D (soft / iOS): generous radii and 48px touch targets. rem, so the UI-scale setting applies. */
-@theme {
+@theme static {
   --radius-sm: 0.5rem;
   --radius-md: 0.75rem;
   --radius-lg: 1rem;
