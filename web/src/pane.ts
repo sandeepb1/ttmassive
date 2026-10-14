@@ -14,6 +14,7 @@ import type { ChatActions } from './rightbar';
 import { setAgentAccent } from './theme';
 import { playBell } from './bell';
 import { bell } from './haptics';
+import { SelectSheet } from './select-sheet';
 import { TerminalSession } from './term';
 import { bellRings } from './term-addons';
 import { ActivityChip } from './term-chip';
@@ -254,6 +255,7 @@ export class Pane {
           this.renderStatus();
         },
         onBell: () => this.ring(),
+        onSelectText: () => this.selectText(),
         onProgress: (kind) => {
           if ((this.el.dataset.progress ?? '') === (kind ?? '')) return;
           this.el.dataset.progress = kind ?? '';
@@ -354,6 +356,11 @@ export class Pane {
   openSearch() {
     if (this.view !== 'term' || this.isAgent || !this.term) return this.say('History search works in the terminal view.');
     this.historySearch.open();
+  }
+
+  /** Show the terminal's text as selectable text, for touch screens. */
+  selectText() {
+    if (this.name) void new SelectSheet(this.el, this.name, this.events.onUnauthorized).open();
   }
 
   /** The program rang the bell: mark a pane you are not looking at, and nudge. */

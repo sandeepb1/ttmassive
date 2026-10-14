@@ -829,3 +829,9 @@ details.acard > summary:active { background: var(--surface-3); }
   content: ''; display: inline-block; width: 8px; height: 8px; margin-left: 8px; border-radius: 50%;
   background: var(--warn); vertical-align: middle;
 }
+
+/* Select text sheet: real text, so the system's selection handles and Copy menu work. */
+.sel-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sel-text { margin: 0; flex: 1; min-height: 0; max-height: 62vh; overflow: auto; padding: 10px; border-radius: 8px;
+  background: var(--surface-1); color: var(--fg); font: var(--fs-sm) / 1.35 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }

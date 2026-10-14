@@ -37,6 +37,8 @@ export interface SessionHooks {
   onTitle: (title: string) => void;
   /** The program rang the bell. */
   onBell: () => void;
+  /** A long press on the terminal asked for its text as selectable text. */
+  onSelectText: () => void;
 }
 
 /** Copies text for a program that asked via OSC 52. Reading the clipboard is never allowed. */
@@ -134,6 +136,7 @@ export class TerminalSession {
     this.watchTaps();
     this.term.attachCustomKeyEventHandler((e) => this.newlineKey(e));
     this.watchDrops();
+    this.watchLongPress();
     this.term.onTitleChange((t) => this.hooks.onTitle(cleanTitle(t)));
     this.term.onBell(() => this.hooks.onBell());
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
@@ -328,6 +331,38 @@ export class TerminalSession {
         return (y > a.y || (y === a.y && col + 1 >= a.x)) && (y < b.y || (y === b.y && col + 1 <= b.x));
       });
       if (hit) this.openFile(hit.path, hit.line);
+    });
+  }
+
+  /**
+   * Touch and hold opens the text as selectable text. A finger that moves, a second finger, or a
+   * sheet already on screen cancels it; a mouse never starts one.
+   */
+  private watchLongPress() {
+    let timer = 0;
+    let from: { x: number; y: number } | null = null;
+    let fired = 0;
+    const cancel = () => {
+      clearTimeout(timer);
+      from = null;
+    };
+    this.el.addEventListener('pointerdown', (e) => {
+      cancel();
+      if (e.pointerType !== 'touch' || !e.isPrimary || document.querySelector('.sheet')) return;
+      from = { x: e.clientX, y: e.clientY };
+      timer = window.setTimeout(() => {
+        from = null;
+        fired = performance.now();
+        this.hooks.onSelectText();
+      }, 500);
+    });
+    this.el.addEventListener('pointermove', (e) => {
+      if (from && Math.hypot(e.clientX - from.x, e.clientY - from.y) > 8) cancel();
+    });
+    for (const type of ['pointerup', 'pointercancel'] as const) this.el.addEventListener(type, cancel);
+    // The browser's own long-press menu would land on top of the sheet.
+    this.el.addEventListener('contextmenu', (e) => {
+      if (performance.now() - fired < 1500) e.preventDefault();
     });
   }
 
