@@ -138,7 +138,7 @@ export function dragToDismiss(sheet: HTMLElement, handle: HTMLElement, dismiss: 
   let active = false;
 
   const set = (dy: number) => {
-    sheet.style.transform = `translateX(-50%) translateY(${dy}px)`;
+    sheet.style.transform = `translateY(${dy}px)`;
   };
 
   handle.addEventListener('pointerdown', (e) => {

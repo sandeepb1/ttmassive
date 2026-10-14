@@ -1,0 +1,218 @@
+@layer components {
+  /* ---- Design tokens ----
+     theme.ts sets the base palette on :root: --bg --fg --accent-base --ok --warn --danger --claude --codex
+     --on-accent --muted-pct. Everything below is derived from those, so every theme gets a matching ramp. */
+  :root {
+    --font-ui: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* Type scale (rem, so the root size scales the whole UI). */
+    --fs-2xs: .6875rem; --fs-xs: .75rem; --fs-sm: .8125rem; --fs-md: .875rem; --fs-base: 1rem; --fs-lg: 1.125rem;
+
+    /* Room above the page for the status bar. See #edge: an installed iOS app also needs the blur ramp. */
+    --safe-top: env(safe-area-inset-top);
+    /* The app's height when no keyboard is shrinking it. */
+    --app-h: 100dvh;
+
+    /* Fallbacks so the page is usable before theme.ts runs (Midnight). */
+    --bg: #0b0d10; --fg: #d7dae0; --accent-base: #7aa2f7; --ok: #9ece6a; --warn: #e0af68; --danger: #f7768e;
+    --claude: #e8a06b; --codex: #5ec4b6; --on-accent: #0b0d10;
+    --muted-pct: 80%; --soft-pct: 90%; --faint-pct: 60%; --accent-keep: 50%; --status-keep: 35%;
+
+    --accent: var(--accent-base);
+
+    --surface-1: color-mix(in srgb, var(--bg) 97%, var(--fg));
+    --surface-2: color-mix(in srgb, var(--bg) 95%, var(--fg));
+    --surface-3: color-mix(in srgb, var(--bg) 93.5%, var(--fg));
+    --surface-4: color-mix(in srgb, var(--bg) 90%, var(--fg));
+    --surface-5: color-mix(in srgb, var(--bg) 87%, var(--fg));
+    --surface-press: color-mix(in srgb, var(--bg) 82%, var(--fg));
+    --border-subtle: color-mix(in srgb, var(--bg) 89%, var(--fg));
+    --border: color-mix(in srgb, var(--bg) 84%, var(--fg));
+    --border-strong: color-mix(in srgb, var(--bg) 79%, var(--fg));
+
+    --fg-muted: color-mix(in srgb, var(--bg), var(--fg) var(--muted-pct));
+    --fg-soft: color-mix(in srgb, var(--bg), var(--fg) var(--soft-pct));
+    --fg-faint: color-mix(in srgb, var(--bg), var(--fg) var(--faint-pct));
+    /* Small coloured text: the colour pulled toward the foreground until it reads (theme.test.ts checks 4.5:1). */
+    --accent-text: color-mix(in srgb, var(--accent) var(--accent-keep), var(--fg));
+    --ok-text: color-mix(in srgb, var(--ok) var(--status-keep), var(--fg));
+    --warn-text: color-mix(in srgb, var(--warn) var(--status-keep), var(--fg));
+    --danger-text: color-mix(in srgb, var(--danger) var(--status-keep), var(--fg));
+
+    --accent-bg: color-mix(in srgb, var(--bg) 88%, var(--accent));
+    --accent-border: color-mix(in srgb, var(--bg) 60%, var(--accent));
+    --user-bubble: color-mix(in srgb, var(--bg) 80%, var(--accent));
+    --ok-bg: color-mix(in srgb, var(--bg) 88%, var(--ok));
+    --ok-border: color-mix(in srgb, var(--bg) 60%, var(--ok));
+    --warn-bg: color-mix(in srgb, var(--bg) 86%, var(--warn));
+    --warn-border: color-mix(in srgb, var(--bg) 60%, var(--warn));
+    --danger-bg: color-mix(in srgb, var(--bg) 86%, var(--danger));
+    --danger-border: color-mix(in srgb, var(--bg) 60%, var(--danger));
+    --danger-solid: color-mix(in srgb, var(--danger) 78%, black);
+    --on-danger: #fff;
+
+    --scrim: rgb(0 0 0 / .6);
+    --shadow: rgb(0 0 0 / .4);
+    color-scheme: dark;
+  }
+  /* iOS 26 blurs and fades the top ~90pt of an installed app: the status-bar inset plus a ramp. Leaving the ramp
+     empty (painted by #edge in the usage strip's colour) keeps the blur off the strip text. */
+  @supports (-webkit-touch-callout: none) {
+    @media (display-mode: standalone) {
+      :root { --safe-top: calc(env(safe-area-inset-top) + 32px); }
+      /* An installed iOS app draws from the very top, under the status bar, but reports dvh (and innerHeight) short by
+         the top inset (894 of 956 on a 16 Pro Max), which left the composer floating above the bottom. 100vh is the
+         whole screen there. */
+      :root { --app-h: 100vh; }
+    }
+  }
+  /* The open session's agent decides the accent. */
+  [data-agent='claude'] { --accent: var(--claude); }
+  [data-agent='codex'] { --accent: var(--codex); }
+  [data-agent] {
+    --accent-text: color-mix(in srgb, var(--accent) var(--accent-keep), var(--fg));
+    --accent-bg: color-mix(in srgb, var(--bg) 88%, var(--accent));
+    --accent-border: color-mix(in srgb, var(--bg) 60%, var(--accent));
+    --user-bubble: color-mix(in srgb, var(--bg) 80%, var(--accent));
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 1rem var(--font-ui); overscroll-behavior: none; }
+  [hidden] { display: none !important; }
+  /* The area above the page, in the usage strip's colour so the strip continues up under the status bar. It is also
+     the opaque fixed box that asks iOS 26 not to blur the top of an installed app. Height 0 where there is no inset. */
+  #edge { position: fixed; top: 0; left: 0; right: 0; height: var(--safe-top); background: var(--surface-1); z-index: 40; }
+  #app { display: flex; height: var(--vvh, var(--app-h)); position: relative; overflow: hidden;
+    padding: var(--safe-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  /* OSC 9;4 progress: a thin bar along the top edge of the terminal. */
+  @keyframes t-sweep { from { transform: translateX(0); } to { transform: translateX(185%); } }
+  @media (prefers-reduced-motion: reduce) { .t-progress[data-kind="indeterminate"] { animation: none; width: 100%; opacity: .5; } }
+  /* File viewer. */
+  /* The chat is a layer over the terminal. What belongs to the terminal alone must not show through it. */
+  /* What the agent is doing, in the corner of the pane (over the chat too). Taps go through it. */
+  /* A helper agent's transcript has its own status. */
+  @media (prefers-reduced-motion: reduce) { .t-chip-dot { animation: none; } .t-chip { transition: none; } }
+
+  /* A bar beside each row of the terminal that is one of your messages. */
+  /* History search, over the top of the terminal. */
+  /* Shown when the browser refuses an OSC 52 copy outside a tap. */
+  #login { display: grid; place-items: center; height: 100dvh; }
+  #login-form { display: grid; gap: 12px; width: min(320px, 90vw); }
+  #login-form h1 { margin: 0; font-weight: 600; }
+  #login-form input, #login-form button { font: inherit; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); color: var(--fg); }
+  #login-form button { background: var(--accent); color: var(--on-accent); border: 0; font-weight: 600; }
+  #login-err { color: var(--danger-text); min-height: 1.2em; margin: 0; }
+
+  /* The bars sit above the terminal even while xterm is still refitting after they appear. */
+  /* ---- Plan usage: a strip above the terminal and a panel that opens from it ---- */
+  #app { --strip-h: 26px; }
+  #usage { flex: none; height: var(--strip-h); display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 8px;
+    font: 600 0.75rem var(--font-ui); color: var(--fg-muted); background: var(--surface-1); border: 0; border-bottom: 1px solid var(--surface-4);
+    white-space: nowrap; overflow: hidden; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  #usage:active { background: var(--surface-3); }
+  /* ---- Chat view: a conversation as messages, over the terminal ---- */
+  @keyframes ttm-pulse { 50% { opacity: .35; } }
+
+  /* Interactive question card: tap an option, or type your own answer */
+  /* Composer: suggestions, attachments */
+  /* Model picker sheet */
+  /* Mode chip, More button, and the toggle sheets */
+  /* Claude's suggested reply */
+
+  /* Resume picker */
+  /* ---- Theme picker ---- */
+  /* ---- Typography and chat items ----
+     Each kind of item has its own shape, so the conversation can be scanned at a glance:
+     you = tinted bubble, agent = open prose, thinking = quiet italic, tools = icon rows,
+     questions = framed in the accent, system lines = ruled, small caps. */
+  html { -webkit-tap-highlight-color: transparent; }
+  body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; font-optical-sizing: auto; }
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  }
+
+  /* ---- Shell: left sidebar | main | right sidebar ----
+     layout.ts puts l-/r- classes on #app: pinned (a column), collapsed (pinned but hidden), open (an
+     overlay that is on screen). Overlays slide over the conversation and are dragged by gestures.ts. */
+  #app { --sb-w: 300px; --sb-right-w: 320px; --topbar-h: 48px; --ease: cubic-bezier(.2, .9, .3, 1); }
+  #main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+
+  /* !important: these hide kit buttons, whose display utility is in a later layer and would otherwise win. */
+  #app.l-pinned:not(.l-collapsed) .p-menu, #app.r-pinned:not(.r-collapsed) .p-panel { display: none !important; }
+  .sidebar { flex: none; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--surface-1); }
+  #left { width: var(--sb-w); border-right: 1px solid var(--border-subtle); }
+  #right { width: var(--sb-right-w); border-left: 1px solid var(--border-subtle); }
+  #app.l-collapsed #left, #app.r-collapsed #right { display: none; }
+
+  /* Overlay mode: out of the layout, off screen until opened. */
+  #app:not(.l-pinned) #left, #app:not(.r-pinned) #right { position: absolute; top: 0; bottom: 0; z-index: 30; visibility: hidden;
+    padding-top: var(--safe-top); box-shadow: 0 0 40px var(--shadow);
+    transition: transform .28s var(--ease), visibility 0s .28s; }
+  #app:not(.l-pinned) #left { left: 0; width: min(var(--sb-w), 88%); transform: translateX(-104%); border-right: 1px solid var(--border); }
+  #app:not(.r-pinned) #right { right: 0; width: min(var(--sb-right-w), 92%); transform: translateX(104%); border-left: 1px solid var(--border); }
+  #app.l-open #left, #app.r-open #right { transform: none; visibility: visible; transition: transform .28s var(--ease), visibility 0s; }
+  #scrim { position: absolute; inset: 0; z-index: 25; background: var(--scrim); opacity: 0; visibility: hidden;
+    transition: opacity .25s ease, visibility 0s .25s; }
+  #app.l-open #scrim, #app.r-open #scrim { opacity: 1; visibility: visible; transition: opacity .25s ease, visibility 0s; }
+  #app.dragging #left, #app.dragging #right, #app.dragging #scrim { transition: none; }
+
+  /* ---- Native feel ---- */
+  button { font-family: inherit; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  .srow-main:active { transform: scale(.98); }
+  @keyframes ttm-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+  /* Session rows: the name gets the width; pin / edit / remove sit behind ⋯ */
+  /* A message found by search flashes once so you can see where you landed */
+  @keyframes ttm-flash { 0%, 55% { background: var(--accent-bg); box-shadow: 0 0 0 6px var(--accent-bg); } 100% { background: transparent; box-shadow: 0 0 0 6px transparent; } }
+
+  /* ---- Session list: sections, previews, status ---- */
+  /* A program in this session is reporting progress (OSC 9;4). */
+  /* ---- Details panel: search, tabs, files, plan, images ---- */
+  /* ---- Panes: one session, or two side by side ---- */
+  /* The panes sit in a grid whose 1px gaps show the border colour. Extra panes hide behind tabs. */
+  #app:not(.can-add) .p-split, #app:not(.many) .p-close, #app:not(.can-split) .p-layout { display: none !important; }
+
+  /* Drag handles over the gaps between tiles. */
+  /* Layout sheet. */
+  /* Settings: pane preferences. */
+  /* In split view the focused pane underlines its header in its own agent's colour. */
+  #app.is-split .p-head { box-shadow: inset 0 -2px 0 transparent; transition: box-shadow .15s ease; }
+  #app.is-split .pane.focused .p-head { box-shadow: inset 0 -2px 0 var(--accent); }
+  #app.is-split .pane:not(.focused) .p-name { color: var(--fg-muted); }
+
+  /* Split view turns the session list into a rail of buttons. */
+  .sb-rail { display: none; }
+  #app.is-split.l-pinned:not(.rail-open) #left { width: 64px; }
+  #app.is-split.l-pinned:not(.rail-open) #left > :not(.sb-rail) { display: none; }
+  #app.is-split.l-pinned:not(.rail-open) .sb-rail { display: flex; flex-direction: column; align-items: center; gap: 8px; height: 100%;
+    padding: 6px 0 calc(6px + env(safe-area-inset-bottom)); }
+  #app:not(.can-split) .srow-split { display: none; }
+  /* ---- Helper agents: cards in the chat, their transcript, and the list under a session ---- */
+  /* A helper's transcript fills a pane or a tall sheet. */
+  /* Fingers: the small controls get a hit area worth tapping (measured on a real tablet). */
+  @media (pointer: coarse) {
+    #app { --strip-h: 36px; }
+    .p-viewtoggle button { min-height: 34px; padding: 0 14px; }
+  }
+
+  /* A pane (or its drawer row) whose program rang the bell while you were looking elsewhere. */
+  /* Select text sheet: real text, so the system's selection handles and Copy menu work. */
+  /* Command bar (Cmd/Ctrl+K). */
+  /* ---- sidebar: Memory and Team Claude tabs ---- */
+  /* Six tabs share the sidebar's width: less padding and gap keep "Overview" and "Memory" whole. */
+  /* ---- pictures and pasted text in the chat ---- */
+  /* ---- touch scrolling of the terminal's history ---- */
+  /* A drag along the terminal scrolls its history (term.ts), so the browser must not pan or zoom. */
+  /* ---- the image viewer ---- */
+  /* Always a dark room, whatever the theme: a picture reads best against black. */
+  @media (max-width: 600px) { .iv-nav { width: 40px; height: 64px; } }
+
+
+  /* ---- Projects in the sidebar, the row menu, and the new-session sheet ---- */
+  /* Compat for Tailwind's preflight, which strips browser defaults these surfaces still lean on.
+     Delete each rule when its surface moves to the kit. */
+  #login-form h1 { font-size: 2em; }
+  img, svg, video, canvas { display: inline; vertical-align: baseline; }
+
+}

@@ -6,6 +6,9 @@ import { getJson, sessionUrl } from './api-json';
 import { el } from './dom';
 import { icon } from './icons';
 import { Sheet } from './sheet';
+import { button } from './ui/button';
+import { chip, chipClass } from './ui/chip';
+import { sheetHint, sheetMsg } from './ui/sheet-parts';
 import {
   STATE_LABEL,
   accountState,
@@ -272,10 +275,7 @@ export class TeamClaudeTab {
       if (recent.length > 0) card.append(el('div', 'mem-facts faint', recent.join(' · ')));
     }
     if (canAct && canSwitchTo(s, provider, a.name) && state !== 'disabled') {
-      const b = el('button', 'chip', 'Use this account');
-      b.type = 'button';
-      b.addEventListener('click', () => this.confirmSwitch(a, s, provider));
-      card.append(b);
+      card.append(button({ variant: 'secondary', size: 'sm', onClick: () => this.confirmSwitch(a, s, provider) }, 'Use this account'));
     }
     return card;
   }
@@ -292,11 +292,7 @@ export class TeamClaudeTab {
     head.append(el('div', 'drawer-label', 'Requests'));
     const toggle = el('div', 'tc-toggle');
     for (const [label, all] of [['This pane', false], ['All', true]] as const) {
-      const b = el('button', `chip${this.showAll === all ? ' on' : ''}`, label);
-      b.type = 'button';
-      b.setAttribute('aria-pressed', String(this.showAll === all));
-      b.addEventListener('click', () => this.setShowAll(all));
-      toggle.append(b);
+      toggle.append(chip({ on: this.showAll === all, onClick: () => this.setShowAll(all) }, label));
     }
     head.append(toggle);
     const parts: HTMLElement[] = [head];
@@ -350,7 +346,7 @@ export class TeamClaudeTab {
       this.draw(this.foot, [], 'none');
       return;
     }
-    const a = el('a', 'chip', 'Open Team Claude’s dashboard');
+    const a = el('a', chipClass(), 'Open Team Claude’s dashboard');
     a.href = r.dashboard ?? '#';
     a.target = '_blank';
     a.rel = 'noopener';
@@ -393,20 +389,14 @@ class SwitchSheet extends Sheet {
     const body = el('div', 'tc-switch');
     body.append(el('p', undefined, `Send ${name}’s requests to ${this.target.name}?`));
     body.append(
-      el(
-        'p',
-        'sheet-hint',
+      sheetHint(
         'This changes Team Claude for every session that uses it, not just this one. It takes effect on the next request, and Team Claude may move on by itself when an account runs low.',
       ),
     );
     body.append(this.limits('Switch to', this.target));
     if (this.current) body.append(this.limits('Currently', this.current));
-    const go = el('button', 'chip chip-go', 'Switch');
-    go.type = 'button';
-    go.addEventListener('click', () => void this.switch(go));
-    const cancel = el('button', 'chip', 'Cancel');
-    cancel.type = 'button';
-    cancel.addEventListener('click', () => this.close());
+    const go = button({ size: 'sm', onClick: () => void this.switch(go) }, 'Switch');
+    const cancel = button({ variant: 'secondary', size: 'sm', onClick: () => this.close() }, 'Cancel');
     const row = el('div', 'mem-actions');
     row.append(cancel, go);
     body.append(row);
@@ -420,7 +410,7 @@ class SwitchSheet extends Sheet {
     const meters = [quotaMeter('5 hours', a.quota?.unified5h, a.quota?.unified5hReset), quotaMeter('7 days', a.quota?.unified7d, a.quota?.unified7dReset)].filter(
       (m): m is HTMLElement => m !== null,
     );
-    if (meters.length === 0) box.append(el('div', 'sheet-hint', 'No limits reported yet.'));
+    if (meters.length === 0) box.append(sheetHint('No limits reported yet.'));
     else box.append(...meters);
     return box;
   }
@@ -435,7 +425,7 @@ class SwitchSheet extends Sheet {
     if (!r.ok) {
       button.disabled = false;
       button.textContent = 'Try again';
-      this.body.append(el('div', 'sheet-msg err', r.error));
+      this.body.append(sheetMsg(r.error, true));
       return;
     }
     this.done();

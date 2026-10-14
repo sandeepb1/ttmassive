@@ -3,6 +3,12 @@
 // shown together. Escape, the close button or a tap outside the picture leaves it.
 
 import { el } from './dom';
+import { icon } from './icons';
+import { button, buttonStyles } from './ui/button';
+import { cn } from './ui/cn';
+
+/** The viewer sits on a fixed dark overlay in every theme, so its buttons are white on translucent. */
+const OVERLAY_BTN = 'bg-white/15 text-white active:bg-white/25';
 import { countLabel, fileName, isPlainClick, step, swipeDir } from './image-viewer-model';
 
 let current: { close: () => void } | null = null;
@@ -20,13 +26,11 @@ export function openImageViewer(urls: string[], start = 0): void {
   root.setAttribute('aria-label', 'Image');
 
   const count = el('span', 'iv-count');
-  const save = el('a', 'iv-btn', 'Save');
-  const open = el('a', 'iv-btn', 'Open in new tab');
+  const save = el('a', cn('iv-btn', buttonStyles({ variant: 'secondary', size: 'sm' }), OVERLAY_BTN), 'Save');
+  const open = el('a', cn('iv-btn', buttonStyles({ variant: 'secondary', size: 'sm' }), OVERLAY_BTN), 'Open in new tab');
   open.target = '_blank';
   open.rel = 'noopener';
-  const close = el('button', 'iv-btn iv-close', '×');
-  close.type = 'button';
-  close.setAttribute('aria-label', 'Close');
+  const close = button({ variant: 'secondary', size: 'icon-sm', label: 'Close', cls: cn('iv-btn iv-close', OVERLAY_BTN) }, icon('close'));
   const bar = el('div', 'iv-bar');
   bar.append(count, el('span', 'iv-spacer'), save, open, close);
 

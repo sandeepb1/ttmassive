@@ -36,7 +36,7 @@ test('the defaults exist, with the right scheme', () => {
   assert.ok(THEMES.some((t) => t.scheme === 'light') && THEMES.some((t) => t.scheme === 'dark'));
 });
 
-// The surfaces style.css derives, as a share of the foreground mixed into the background.
+// The surfaces ui/app.css derives, as a share of the foreground mixed into the background.
 const surfaces = (t: { bg: string; fg: string }) => [t.bg, ...[3, 5, 6.5, 10, 13].map((p) => mix(t.bg, t.fg, p))];
 
 test('body text and accents stay readable on every background', () => {

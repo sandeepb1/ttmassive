@@ -2,6 +2,7 @@
 // follows the system light/dark setting with one theme for each.
 
 import { el } from './dom';
+import { chip } from './ui/chip';
 import { currentPref, setPref, THEMES, type Theme } from './theme';
 
 export class ThemePicker {
@@ -15,13 +16,10 @@ export class ThemePicker {
     const pref = currentPref();
     const label = el('div', 'drawer-label', 'Theme');
 
-    const auto = el('button', 'chip', pref.auto ? 'Auto: follows system ✓' : 'Auto: follow system');
-    auto.type = 'button';
-    auto.setAttribute('aria-pressed', String(pref.auto));
-    auto.addEventListener('click', () => {
+    const auto = chip({ on: pref.auto, cls: 'self-start', onClick: () => {
       setPref({ auto: !pref.auto });
       this.render();
-    });
+    } }, pref.auto ? 'Auto: follows system ✓' : 'Auto: follow system');
 
     const body = el('div', 'theme-sections');
     if (pref.auto) {

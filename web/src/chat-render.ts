@@ -8,12 +8,16 @@ import { lineDiff, trimContext } from './diff';
 import { el } from './dom';
 import { agentForItem, elapsedSecs, fmtElapsed, isAgentTool, stateOf, workLine, type SubAgent } from './agents';
 import { icon, toolCategory, toolIconName } from './icons';
+import { button } from './ui/button';
+import { input as textInput } from './ui/input';
+import { row as listRow, setRowCurrent } from './ui/row';
 import { viewable } from './image-viewer';
 import { parseMarkdown, type Block, type Inline } from './markdown';
 
 // ----------------------------------------------------------------- markdown
 
-function inline(nodes: Inline[]): Node[] {
+/** DOM nodes for inline Markdown. */
+export function renderInline(nodes: Inline[]): Node[] {
   return nodes.map((n): Node => {
     switch (n.t) {
       case 'text':
@@ -22,17 +26,17 @@ function inline(nodes: Inline[]): Node[] {
         return el('code', 'md-code', n.v);
       case 'strong': {
         const e = el('strong');
-        e.append(...inline(n.c));
+        e.append(...renderInline(n.c));
         return e;
       }
       case 'em': {
         const e = el('em');
-        e.append(...inline(n.c));
+        e.append(...renderInline(n.c));
         return e;
       }
       case 'del': {
         const e = el('del');
-        e.append(...inline(n.c));
+        e.append(...renderInline(n.c));
         return e;
       }
       case 'link': {
@@ -40,7 +44,7 @@ function inline(nodes: Inline[]): Node[] {
         a.href = n.href; // the parser only lets http(s) and mailto through
         a.target = '_blank';
         a.rel = 'noopener noreferrer';
-        a.append(...inline(n.c));
+        a.append(...renderInline(n.c));
         return a;
       }
       case 'br':
@@ -77,12 +81,12 @@ function blocks(bs: Block[]): HTMLElement[] {
     switch (b.t) {
       case 'p': {
         const p = el('p');
-        p.append(...inline(b.c));
+        p.append(...renderInline(b.c));
         return p;
       }
       case 'h': {
         const h = el(`h${b.level}` as 'h1');
-        h.append(...inline(b.c));
+        h.append(...renderInline(b.c));
         return h;
       }
       case 'code':
@@ -100,7 +104,7 @@ function blocks(bs: Block[]): HTMLElement[] {
         for (const item of b.items) {
           const li = el('li');
           // A one-paragraph item reads better without the paragraph's margins.
-          if (item.length === 1 && item[0].t === 'p') li.append(...inline(item[0].c));
+          if (item.length === 1 && item[0].t === 'p') li.append(...renderInline(item[0].c));
           else li.append(...blocks(item));
           list.append(li);
         }
@@ -112,7 +116,7 @@ function blocks(bs: Block[]): HTMLElement[] {
         const tr = el('tr');
         for (const c of b.head) {
           const th = el('th');
-          th.append(...inline(c));
+          th.append(...renderInline(c));
           tr.append(th);
         }
         const thead = el('thead');
@@ -123,7 +127,7 @@ function blocks(bs: Block[]): HTMLElement[] {
           const row = el('tr');
           for (const c of r) {
             const td = el('td');
-            td.append(...inline(c));
+            td.append(...renderInline(c));
             row.append(td);
           }
           body.append(row);
@@ -272,14 +276,12 @@ function liveQuestions(it: ChatItem & { kind: 'question' }, ctx: RenderCtx): HTM
   const card = el('div', 'qcard q-pending q-live');
   const optionButtons: HTMLButtonElement[][] = [];
   const inputs: (HTMLInputElement | null)[] = [];
-  const send = el('button', 'q-send', 'Send');
-  const dismiss = el('button', 'q-dismiss', 'Dismiss');
+  const send = button({ size: 'sm' }, 'Send');
+  const dismiss = button({ variant: 'secondary', size: 'sm' }, 'Dismiss');
   const msg = el('div', 'q-err');
-  send.type = 'button';
-  dismiss.type = 'button';
 
   const sync = () => {
-    optionButtons.forEach((row, i) => row.forEach((b, k) => b.classList.toggle('picked', state[i].choices.includes(k + 1))));
+    optionButtons.forEach((row, i) => row.forEach((b, k) => setRowCurrent(b, state[i].choices.includes(k + 1))));
     inputs.forEach((inp, i) => {
       if (inp && inp.value !== state[i].text) inp.value = state[i].text;
     });
@@ -312,10 +314,7 @@ function liveQuestions(it: ChatItem & { kind: 'question' }, ctx: RenderCtx): HTM
     const row: HTMLButtonElement[] = [];
     const opts = el('div', 'q-opts');
     q.options.forEach((o, k) => {
-      const b = el('button', 'q-opt q-opt-btn');
-      b.type = 'button';
-      b.append(el('span', 'q-label', o.label));
-      if (o.description) b.append(el('span', 'q-desc', o.description));
+      const b = listRow(o.label, { hint: o.description || undefined, cls: 'mt-1.5' });
       b.addEventListener('click', () => {
         if (busy) return;
         state = pickOption(qs, state, i, k + 1);
@@ -330,9 +329,7 @@ function liveQuestions(it: ChatItem & { kind: 'question' }, ctx: RenderCtx): HTM
     if (q.multi_select) {
       inputs.push(null); // typed answers are not available on multiple choice
     } else {
-      const input = el('input', 'q-other');
-      input.type = 'text';
-      input.placeholder = 'Or type your own answer';
+      const input = textInput({ placeholder: 'Or type your own answer', cls: 'mt-2' });
       input.enterKeyHint = 'send';
       input.addEventListener('input', () => {
         state = typeAnswer(state, i, input.value);

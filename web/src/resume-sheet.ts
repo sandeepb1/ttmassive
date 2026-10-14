@@ -3,6 +3,9 @@
 
 import { el } from './dom';
 import { Sheet, row } from './sheet';
+import { button } from './ui/button';
+import { input as textInput } from './ui/input';
+import { sheetHint, sheetList, sheetMsg } from './ui/sheet-parts';
 
 interface ResumeRow {
   title: string;
@@ -62,17 +65,13 @@ export class ResumeSheet extends Sheet {
     const l = this.list;
     if (!l) return;
     const parts: HTMLElement[] = [];
-    if (this.note) parts.push(el('div', 'sheet-msg err', this.note));
+    if (this.note) parts.push(sheetMsg(this.note, true));
 
     // Search
-    const form = el('form', 'resume-search');
-    const input = el('input', 'resume-input');
-    input.type = 'search';
-    input.placeholder = 'Search conversations';
-    input.value = l.query;
+    const form = el('form', 'flex gap-2');
+    const input = textInput({ type: 'search', placeholder: 'Search conversations', value: l.query, label: 'Search conversations', cls: 'flex-1' });
     input.enterKeyHint = 'search';
-    input.setAttribute('aria-label', 'Search conversations');
-    const go = el('button', 'resume-go', 'Search');
+    const go = button({ variant: 'secondary' }, 'Search');
     go.type = 'submit';
     form.append(input, go);
     form.addEventListener('submit', (e) => {
@@ -82,17 +81,14 @@ export class ResumeSheet extends Sheet {
     parts.push(form);
 
     if (l.can_scope) {
-      const all = el('button', 'confirm-no', 'Switch between this project and all projects');
-      all.type = 'button';
-      all.addEventListener('click', () => void this.run(() => this.call<ResumeList>('resume/scope')));
-      parts.push(all);
+      parts.push(button({ variant: 'secondary', onClick: () => void this.run(() => this.call<ResumeList>('resume/scope')) }, 'Switch between this project and all projects'));
     }
 
     // The sessions
     if (l.rows.length === 0) {
-      parts.push(el('div', 'sheet-hint', l.query ? 'Nothing matches that search.' : 'No earlier conversations here.'));
+      parts.push(sheetHint(l.query ? 'Nothing matches that search.' : 'No earlier conversations here.'));
     }
-    const rows = el('div', 'sheet-list');
+    const rows = sheetList();
     l.rows.forEach((r, i) => {
       const b = row(r.title, { hint: r.meta, mark: r.open_elsewhere ? 'open elsewhere' : undefined });
       b.addEventListener('click', () => void this.pick(r, i));
@@ -102,15 +98,14 @@ export class ResumeSheet extends Sheet {
 
     // Paging
     const where = l.position && l.total ? `${l.position} of ${l.total}` : '';
-    const pager = el('div', 'resume-pager');
-    const newer = el('button', 'confirm-no', 'Newer');
-    const older = el('button', 'confirm-no', 'Older');
-    for (const b of [newer, older]) b.type = 'button';
+    const pager = el('div', 'flex items-center justify-between gap-2');
+    const newer = button({ variant: 'secondary' }, 'Newer');
+    const older = button({ variant: 'secondary' }, 'Older');
     newer.disabled = !l.more_above && (l.position ?? 1) <= 1;
     older.disabled = !l.more_below;
     newer.addEventListener('click', () => void this.run(() => this.call<ResumeList>('resume/page', { down: false })));
     older.addEventListener('click', () => void this.run(() => this.call<ResumeList>('resume/page', { down: true })));
-    pager.append(newer, el('span', 'resume-where', where), older);
+    pager.append(newer, el('span', 'text-xs text-muted-foreground', where), older);
     parts.push(pager);
     this.body.replaceChildren(...parts);
   }

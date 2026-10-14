@@ -6,7 +6,12 @@ import { warn } from './haptics';
 import { getBellSound, getOptionMeta, setBellSound, setOptionMeta } from './prefs';
 import { disablePush, enablePush, pushState, sendTest, type PushState } from './push';
 import { getUiScale, SCALE_MAX, SCALE_MIN, SCALE_STEP, setUiScale } from './scale';
-import { Sheet } from './sheet';
+import { Sheet, row } from './sheet';
+import { button } from './ui/button';
+import { chip, chipClass, setChipOn } from './ui/chip';
+import { select } from './ui/input';
+import { sheetBlock, sheetHint, sheetLabel } from './ui/sheet-parts';
+import { stepper } from './ui/stepper';
 import { PRESETS, type PresetId } from './tiling';
 import { MAX_PANES_LIMIT, type LayoutSettings } from './workspace';
 import { ThemePicker } from './theme-picker';
@@ -26,55 +31,42 @@ export interface SettingsHooks {
 }
 
 /** A label with a minus button, a value and a plus button. */
-function stepper(label: string, value: () => string, step: (dir: -1 | 1) => void, canStep: (dir: -1 | 1) => boolean): HTMLElement {
-  const box = el('div', 'more-block');
-  box.append(el('div', 'sheet-label', label));
-  const wrap = el('div', 'stepper');
-  const out = el('div', 'step-value');
-  const minus = el('button', 'step-btn', '−');
-  const plus = el('button', 'step-btn', '+');
-  minus.type = plus.type = 'button';
-  minus.setAttribute('aria-label', `Smaller ${label.toLowerCase()}`);
-  plus.setAttribute('aria-label', `Larger ${label.toLowerCase()}`);
+function stepControl(label: string, value: () => string, step: (dir: -1 | 1) => void, canStep: (dir: -1 | 1) => boolean): HTMLElement {
+  const steps = stepper({ less: `Smaller ${label.toLowerCase()}`, more: `Larger ${label.toLowerCase()}` }, (dir) => {
+    step(dir);
+    sync();
+  });
   const sync = () => {
-    out.textContent = value();
-    minus.disabled = !canStep(-1);
-    plus.disabled = !canStep(1);
+    steps.out.textContent = value();
+    steps.minus.disabled = !canStep(-1);
+    steps.plus.disabled = !canStep(1);
   };
-  for (const [b, dir] of [[minus, -1], [plus, 1]] as const) {
-    b.addEventListener('click', () => {
-      step(dir);
-      sync();
-    });
-  }
   sync();
-  wrap.append(minus, out, plus);
-  box.append(wrap);
-  return box;
+  return sheetBlock(sheetLabel(label), steps.el);
 }
+
+/** A setting's name on the left and its control on the right. */
+const settingRow = (label: string, control: HTMLElement): HTMLElement => {
+  const r = el('div', 'flex items-center justify-between gap-3');
+  r.append(el('span', 'text-md', label), control);
+  return r;
+};
 
 /** A labelled pick-list of grids for a second pane to start from. */
 function gridSelect(label: string, value: PresetId, pick: (id: PresetId) => void, disabled: boolean): HTMLElement {
-  const row = el('label', 'ps-row');
-  row.append(el('span', 'ps-label', label));
-  const sel = el('select', 'sheet-select');
+  const sel = select(
+    PRESETS.filter((p) => p.id !== 'single').map((p) => ({ value: p.id, label: p.label })),
+    { value, label, cls: 'w-auto' },
+  );
   sel.disabled = disabled;
-  for (const p of PRESETS) {
-    if (p.id === 'single') continue;
-    const o = el('option', undefined, p.label);
-    o.value = p.id;
-    sel.append(o);
-  }
-  sel.value = value;
   sel.addEventListener('change', () => pick(sel.value as PresetId));
-  row.append(sel);
-  return row;
+  return settingRow(label, sel);
 }
 
 export class SettingsSheet extends Sheet {
-  private note = el('div', 'sheet-hint');
-  private notif = el('div', 'more-block');
-  private tunnel = el('div', 'more-block');
+  private note = sheetHint('');
+  private notif = sheetBlock();
+  private tunnel = sheetBlock();
 
   constructor(
     host: HTMLElement,
@@ -84,11 +76,10 @@ export class SettingsSheet extends Sheet {
   }
 
   open() {
-    const appearance = el('div', 'more-block');
-    appearance.append(new ThemePicker().root);
+    const appearance = sheetBlock(new ThemePicker().root);
 
     let scale = getUiScale();
-    const text = stepper(
+    const text = stepControl(
       'Interface text',
       () => `${scale}%`,
       (dir) => {
@@ -103,7 +94,7 @@ export class SettingsSheet extends Sheet {
     if (term) {
       let size = term.size;
       blocks.push(
-        stepper(
+        stepControl(
           'Terminal text',
           () => `${size} px`,
           (dir) => {
@@ -117,17 +108,13 @@ export class SettingsSheet extends Sheet {
 
     blocks.push(this.keyboardBlock(), this.panesBlock());
 
-    const account = el('div', 'more-block');
-    account.append(el('div', 'sheet-label', 'Account'));
-    const out = el('button', 'sheet-row sheet-danger');
-    out.type = 'button';
-    out.append(el('span', 'sr-label', 'Sign out'));
+    const out = row('Sign out', { danger: true });
     out.addEventListener('click', () => {
       warn();
       this.close();
       this.hooks.logout();
     });
-    account.append(out);
+    const account = sheetBlock(sheetLabel('Account'), out);
 
     this.body.replaceChildren(...blocks, this.tunnel, this.notif, this.note, account);
     void this.renderNotif();
@@ -137,48 +124,37 @@ export class SettingsSheet extends Sheet {
 
   /** Hardware-keyboard and bell behaviour; kept per device because layouts and keyboards differ. */
   private keyboardBlock(): HTMLElement {
-    const box = el('div', 'more-block');
     const toggle = (label: string, get: () => boolean, set: (on: boolean) => void) => {
-      const row = el('div', 'ps-row');
-      row.append(el('span', 'ps-label', label));
-      const b = el('button', 'chip', get() ? 'On' : 'Off');
-      b.type = 'button';
-      b.setAttribute('aria-pressed', String(get()));
+      const b = chip({ on: get() }, get() ? 'On' : 'Off');
       b.addEventListener('click', () => {
         set(!get());
         b.textContent = get() ? 'On' : 'Off';
-        b.setAttribute('aria-pressed', String(get()));
+        setChipOn(b, get());
       });
-      row.append(b);
-      return row;
+      return settingRow(label, b);
     };
-    box.append(
-      el('div', 'sheet-label', 'Keyboard'),
+    return sheetBlock(
+      sheetLabel('Keyboard'),
       toggle('Option key as Meta', getOptionMeta, setOptionMeta),
-      el('div', 'sheet-hint', 'Option+B/F jump by word and Option+Enter adds a new line. Turn off to type characters like é with Option.'),
+      sheetHint('Option+B/F jump by word and Option+Enter adds a new line. Turn off to type characters like é with Option.'),
       toggle('Bell sound', getBellSound, setBellSound),
     );
-    return box;
   }
 
   /** Several panes at once: on or off, how many, and which grid to start from. */
   private panesBlock(): HTMLElement {
-    const box = el('div', 'more-block');
+    const box = sheetBlock();
     const cur: LayoutSettings = { ...this.hooks.layoutSettings() };
     const commit = () => this.hooks.setLayoutSettings({ ...cur });
     const render = () => {
-      const head = el('div', 'ps-row');
-      head.append(el('span', 'ps-label', 'Show several sessions at once'));
-      const toggle = el('button', 'chip', cur.multi ? 'On' : 'Off');
-      toggle.type = 'button';
-      toggle.setAttribute('aria-pressed', String(cur.multi));
+      const toggle = chip({ on: cur.multi }, cur.multi ? 'On' : 'Off');
       toggle.addEventListener('click', () => {
         cur.multi = !cur.multi;
         commit();
         render();
       });
-      head.append(toggle);
-      const count = stepper(
+      const head = settingRow('Show several sessions at once', toggle);
+      const count = stepControl(
         'Most panes',
         () => String(cur.maxPanes),
         (dir) => {
@@ -188,12 +164,12 @@ export class SettingsSheet extends Sheet {
         (dir) => cur.multi && (dir < 0 ? cur.maxPanes > 1 : cur.maxPanes < MAX_PANES_LIMIT),
       );
       box.replaceChildren(
-        el('div', 'sheet-label', 'Panes'),
+        sheetLabel('Panes'),
         head,
         count,
         gridSelect('Starting grid, big screen', cur.desktop, (id) => ((cur.desktop = id), commit()), !cur.multi),
         gridSelect('Starting grid, tablet', cur.tablet, (id) => ((cur.tablet = id), commit()), !cur.multi),
-        el('div', 'sheet-hint', 'Tiles that do not fit your screen become tabs. Ctrl+Alt+arrows move between tiles.'),
+        sheetHint('Tiles that do not fit your screen become tabs. Ctrl+Alt+arrows move between tiles.'),
       );
     };
     render();
@@ -208,44 +184,40 @@ export class SettingsSheet extends Sheet {
   private async renderTunnel() {
     const t = await fetchTunnel();
     if (!t) return this.tunnel.replaceChildren();
-    const row = el('div', 'drawer-chips');
-    row.append(el('span', 'notif-state', tunnelStatus(t)));
+    const row = el('div', 'flex flex-wrap items-center gap-2');
+    row.append(el('span', 'text-sm text-muted-foreground', tunnelStatus(t)));
     if (t.url) {
       const url = t.url;
-      const open = el('a', 'chip', url.replace('https://', ''));
+      const open = el('a', chipClass(), url.replace('https://', ''));
       open.href = url;
       open.target = '_blank';
       open.rel = 'noopener';
-      const copy = el('button', 'chip', 'Copy');
-      copy.type = 'button';
-      copy.addEventListener('click', async () => {
+      const copy = button({ variant: 'secondary', size: 'sm', onClick: async () => {
         try {
           await navigator.clipboard.writeText(url);
           this.say('Address copied');
         } catch {
           this.say(url);
         }
-      });
+      } }, 'Copy');
       row.append(open, copy);
     }
-    this.tunnel.replaceChildren(el('div', 'sheet-label', 'Public address'), row);
+    this.tunnel.replaceChildren(sheetLabel('Public address'), row);
   }
 
   private async renderNotif() {
     const state: PushState = await pushState().catch(() => 'unsupported');
-    const label = el('div', 'sheet-label', 'Notifications');
-    const row = el('div', 'drawer-chips');
+    const label = sheetLabel('Notifications');
+    const row = el('div', 'flex flex-wrap items-center gap-2');
     const text: Record<PushState, string> = {
       unsupported: 'Not supported here (needs HTTPS or localhost)',
       denied: 'Blocked in browser settings',
       off: 'Off',
       on: 'On: you will be alerted when an agent needs you',
     };
-    row.append(el('span', 'notif-state', text[state]));
+    row.append(el('span', 'text-sm text-muted-foreground', text[state]));
     if (state === 'off' || state === 'on') {
-      const toggle = el('button', 'chip', state === 'on' ? 'Turn off' : 'Turn on');
-      toggle.type = 'button';
-      toggle.addEventListener('click', async () => {
+      row.append(button({ variant: 'secondary', size: 'sm', onClick: async () => {
         try {
           if (state === 'on') await disablePush();
           else await enablePush();
@@ -254,21 +226,17 @@ export class SettingsSheet extends Sheet {
           this.say(e instanceof Error ? e.message : 'Failed');
         }
         await this.renderNotif();
-      });
-      row.append(toggle);
+      } }, state === 'on' ? 'Turn off' : 'Turn on'));
     }
     if (state === 'on') {
-      const test = el('button', 'chip', 'Send test');
-      test.type = 'button';
-      test.addEventListener('click', async () => {
+      row.append(button({ variant: 'secondary', size: 'sm', onClick: async () => {
         try {
           const n = await sendTest(this.hooks.currentSession());
           this.say(n === 0 ? 'No devices subscribed' : `Test sent to ${n} device${n === 1 ? '' : 's'}`);
         } catch (e) {
           this.say(e instanceof Error ? e.message : 'Failed');
         }
-      });
-      row.append(test);
+      } }, 'Send test'));
     }
     this.notif.replaceChildren(label, row);
   }

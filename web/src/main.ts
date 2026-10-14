@@ -1,6 +1,6 @@
 import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/jetbrains-mono/wght.css';
-import './style.css';
+import './ui/tailwind.css';
 import { initTheme, setAgentAccent } from './theme';
 import { initUiScale } from './scale';
 import { SessionSidebar, type SessionView } from './sessions';
@@ -26,6 +26,8 @@ import { AgentSheet } from './agent-sheet';
 import { fetchPresets, launchSession, mainAgents, type PresetInfo } from './dirs';
 import { openMenu, type MenuItem } from './menu';
 import { NewSessionSheet } from './new-session-sheet';
+import { chip } from './ui/chip';
+import { SHEET_SELECTOR } from './ui/sheet';
 import type { SubAgent } from './agents';
 
 initTheme();
@@ -389,10 +391,7 @@ function renderEmpty(empty: string[]) {
       if (!box.isConnected) continue;
       const row = el('div', 'te-chips');
       for (const s of free) {
-        const chip = el('button', 'chip', s.id);
-        chip.type = 'button';
-        chip.addEventListener('click', () => addPane(s.id));
-        row.append(chip);
+        row.append(chip({ onClick: () => addPane(s.id) }, s.id));
       }
       box.append(row.childElementCount ? row : el('div', 'te-hint', 'No other sessions. Start one from the list.'));
     }
@@ -487,7 +486,7 @@ async function startHere(preset: string | undefined, dir: string) {
 
 /** The new-session sheet: the focused pane's project is filled in unless the caller names a folder. */
 async function newSession(dir?: string) {
-  if (document.querySelector('.sheet')) return;
+  if (document.querySelector(SHEET_SELECTOR)) return;
   layout.dismissOverlays();
   const from = dir ?? (await projectOf(focused)) ?? undefined;
   void new NewSessionSheet($('app'), showLogin, {
@@ -556,7 +555,7 @@ const commandBar = new CommandBar($('app'), {
 });
 
 function openCommandBar() {
-  if ($('app').hidden || document.querySelector('.sheet')) return;
+  if ($('app').hidden || document.querySelector(SHEET_SELECTOR)) return;
   layout.dismissOverlays();
   commandBar.open(rootStep(commandCtx));
 }
@@ -567,7 +566,7 @@ document.addEventListener(
   'keydown',
   (e) => {
     if (e.code !== 'KeyK' || e.altKey || e.shiftKey || e.metaKey === e.ctrlKey || $('app').hidden) return;
-    if (!commandBar.isOpen && document.querySelector('.sheet')) return;
+    if (!commandBar.isOpen && document.querySelector(SHEET_SELECTOR)) return;
     e.preventDefault();
     e.stopPropagation();
     if (!commandBar.isOpen) return openCommandBar();
@@ -581,7 +580,7 @@ document.addEventListener(
 document.addEventListener(
   'keydown',
   (e) => {
-    if (!e.ctrlKey || !e.altKey || e.metaKey || e.shiftKey || $('app').hidden || document.querySelector('.sheet')) return;
+    if (!e.ctrlKey || !e.altKey || e.metaKey || e.shiftKey || $('app').hidden || document.querySelector(SHEET_SELECTOR)) return;
     if (e.code === 'KeyF') {
       e.preventDefault();
       e.stopPropagation();
@@ -889,14 +888,14 @@ $('usage').addEventListener('pointerdown', (e) => e.preventDefault());
 $('usage').addEventListener('click', () => layout.set('right', true));
 $('scrim').addEventListener('click', () => layout.dismissOverlays());
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !document.querySelector('.sheet')) layout.dismissOverlays();
+  if (e.key === 'Escape' && !document.querySelector(SHEET_SELECTOR)) layout.dismissOverlays();
 });
 edgeSwipe({
   app: $('app'),
   layout,
   panels: { left: $('left'), right: $('right') },
   scrim: $('scrim'),
-  blocked: () => !!$('app').hidden || document.querySelector('.sheet, .img-viewer') !== null,
+  blocked: () => !!$('app').hidden || document.querySelector(`${SHEET_SELECTOR}, .img-viewer`) !== null,
 });
 
 // iOS Safari ignores interactive-widget: size the app to the *visual* viewport so the
@@ -904,7 +903,10 @@ edgeSwipe({
 const vv = window.visualViewport;
 if (vv) {
   const sync = () => {
-    document.documentElement.style.setProperty('--vvh', `${vv.height}px`);
+    // Follow the visual viewport only while something (the keyboard, a pinch) has really shrunk it. With none, the
+    // layout height is right, and an installed iOS app can report a visual height a few dozen points short.
+    if (window.innerHeight - vv.height > 120) document.documentElement.style.setProperty('--vvh', `${vv.height}px`);
+    else document.documentElement.style.removeProperty('--vvh');
     window.scrollTo(0, 0);
   };
   vv.addEventListener('resize', sync);

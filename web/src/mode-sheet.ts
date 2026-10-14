@@ -4,6 +4,8 @@
 import type { ModeId, ModeInfo } from './chat-model';
 import { el } from './dom';
 import { Sheet, row } from './sheet';
+import { button } from './ui/button';
+import { sheetLabel, sheetList } from './ui/sheet-parts';
 
 export interface ModeState {
   mode: ModeId | null;
@@ -32,26 +34,23 @@ export class ModeSheet extends Sheet {
     if (!this.gone) return;
     this.show();
     const plan = state.modes.find((m) => m.id === 'plan');
-    const pair = el('div', 'mode-pair');
+    const pair = el('div', 'grid grid-cols-2 gap-2.5');
     if (plan) pair.append(this.big(plan, 'Plan', state));
     if (state.build) pair.append(this.big(state.build, `Build · ${state.build.label}`, state));
 
-    const rows = el('div', 'sheet-list');
+    const rows = sheetList();
     for (const m of state.modes) {
-      const b = row(m.label, { hint: m.hint, mark: m.id === state.mode ? '✓ now' : undefined, cls: m.id === 'bypass' ? 'sheet-danger' : m.id === state.mode ? 'current' : '' });
+      const b = row(m.label, { hint: m.hint, mark: m.id === state.mode ? '✓ now' : undefined, danger: m.id === 'bypass', current: m.id === state.mode });
       b.addEventListener('click', () => void this.choose(m, state));
       rows.append(b);
     }
-    this.body.replaceChildren(pair, el('div', 'sheet-label', 'All modes'), rows);
+    this.body.replaceChildren(pair, sheetLabel('All modes'), rows);
   }
 
   private big(m: ModeInfo, text: string, state: ModeState): HTMLButtonElement {
     // "Plan" is on when you are in plan; "Build" is on in any other mode.
     const on = m.id === 'plan' ? state.mode === 'plan' : state.mode !== 'plan' && state.mode !== null;
-    const b = el('button', on ? 'mode-big on' : 'mode-big', text);
-    b.type = 'button';
-    b.addEventListener('click', () => void this.choose(m, state));
-    return b;
+    return button({ variant: on ? 'default' : 'secondary', cls: 'h-auto py-4 text-base font-bold', onClick: () => void this.choose(m, state) }, text);
   }
 
   private async choose(m: ModeInfo, state: ModeState) {
