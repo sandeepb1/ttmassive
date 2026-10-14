@@ -42,8 +42,8 @@ for (const [sname, viewport] of Object.entries(sizes)) {
       await page.click('.sb-settings', { timeout: 5000 });
       await page.waitForTimeout(500);
       await page.screenshot({ path: `${out}/${tag}-5-settings.png` });
-      await page.click('.sheet-x', { timeout: 5000 });
-      await page.waitForSelector('.sheet-backdrop', { state: 'detached', timeout: 5000 });
+      await page.click('[data-sheet] [aria-label="Close"]', { timeout: 5000 });
+      await page.waitForSelector('[data-sheet]', { state: 'detached', timeout: 5000 });
       await page.click('.sb-new', { timeout: 5000 });
       await page.waitForTimeout(500);
       await page.screenshot({ path: `${out}/${tag}-4-new-session.png` });

@@ -32,6 +32,7 @@ import {
 import { filesOf, pathsToPaste } from './term-drop';
 import { UnauthorizedError, uploadFile } from './term-upload';
 import { getOptionMeta, onPrefsChange } from './prefs';
+import { SHEET_SELECTOR } from './ui/sheet';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
@@ -393,7 +394,7 @@ export class TerminalSession {
     };
     this.el.addEventListener('pointerdown', (e) => {
       cancel();
-      if (e.pointerType !== 'touch' || !e.isPrimary || document.querySelector('.sheet')) return;
+      if (e.pointerType !== 'touch' || !e.isPrimary || document.querySelector(SHEET_SELECTOR)) return;
       from = { x: e.clientX, y: e.clientY };
       timer = window.setTimeout(() => {
         from = null;
@@ -583,7 +584,7 @@ export class TerminalSession {
     this.el.addEventListener('pointermove', (e) => {
       if (e.pointerId !== id) return;
       if (!dragging) {
-        if (Math.abs(e.clientY - startY) < SLOP_PX || document.querySelector('.sheet')) return;
+        if (Math.abs(e.clientY - startY) < SLOP_PX || document.querySelector(SHEET_SELECTOR)) return;
         dragging = true;
         try {
           this.el.setPointerCapture(e.pointerId);

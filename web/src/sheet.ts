@@ -2,14 +2,13 @@
 // show a message in it, and call the session's API.
 
 import { el } from './dom';
-import { dragToDismiss } from './gestures';
+import { sheetShell, type SheetShell } from './ui/sheet';
 
 export type CallResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
 export abstract class Sheet {
-  private backdrop = el('div', 'sheet-backdrop');
-  private sheet = el('div', 'sheet');
-  protected body = el('div', 'sheet-body');
+  private shell: SheetShell;
+  protected body: HTMLElement;
   protected gone = true;
   protected busy = false;
 
@@ -19,47 +18,30 @@ export abstract class Sheet {
     title: string,
     private onUnauthorized: () => void,
   ) {
-    this.backdrop.addEventListener('click', () => this.close());
-    // A tap on a button must not take focus from the message box: that would drop the on-screen
-    // keyboard and make the sheet jump under the next tap.
-    this.sheet.addEventListener('pointerdown', (e) => {
-      if (e.target instanceof Element && e.target.closest('button')) e.preventDefault();
-    });
-    const head = el('div', 'sheet-head');
-    head.append(el('strong', undefined, title));
-    const x = el('button', 'sheet-x', '×');
-    x.type = 'button';
-    x.setAttribute('aria-label', 'Close');
-    x.addEventListener('click', () => this.close());
-    head.append(x);
-    this.sheet.append(head, this.body);
-    dragToDismiss(this.sheet, head, () => {
-      this.sheet.style.transform = '';
-      this.close();
-    });
+    this.shell = sheetShell(title, () => this.close());
+    this.body = this.shell.body;
   }
 
   /** Make the sheet nearly full height, for content that scrolls on its own. */
   protected tall() {
-    this.sheet.classList.add('tall');
+    this.shell.tall();
   }
 
   /** Let the sheet use the width of a desktop screen, for content that is wide, like code. */
   protected wide() {
-    this.sheet.classList.add('wide');
+    this.shell.wide();
   }
 
   /** Put the sheet on screen. */
   protected show() {
     this.gone = false;
-    this.host.append(this.backdrop, this.sheet);
+    this.shell.open(this.host);
   }
 
   close() {
     if (this.gone) return;
     this.gone = true;
-    this.backdrop.remove();
-    this.sheet.remove();
+    this.shell.remove();
     this.onClose();
   }
 

@@ -80,3 +80,10 @@
 
   --shadow-pop: 0 8px 28px var(--shadow);
 }
+
+@keyframes kit-sheet-in {
+  from { transform: translateY(100%); }
+}
+@keyframes kit-fade-in {
+  from { opacity: 0; }
+}
