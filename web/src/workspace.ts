@@ -25,6 +25,8 @@ export interface Workspace {
 export interface Layouts {
   settings: LayoutSettings;
   workspaces: Workspace[];
+  /** Project folders kept in the session list even with no session in them. */
+  pinnedProjects: string[];
 }
 
 export const MAX_PANES_LIMIT = 6;
@@ -33,6 +35,7 @@ const SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
 export const defaultLayouts = (): Layouts => ({
   settings: { multi: true, maxPanes: 4, desktop: DEFAULT_PRESET, tablet: DEFAULT_PRESET },
   workspaces: [],
+  pinnedProjects: [],
 });
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -59,6 +62,11 @@ export function parseLayouts(raw: unknown): Layouts {
         ? w.tiles.filter((t): t is string => typeof t === 'string' && (t === '' || SESSION_ID.test(t))).slice(0, MAX_PANES_LIMIT)
         : [];
       out.workspaces.push({ name: w.name, preset: w.preset, cols: sizes.cols, rows: sizes.rows, tiles });
+    }
+  }
+  if (Array.isArray(raw.pinnedProjects)) {
+    for (const p of raw.pinnedProjects) {
+      if (typeof p === 'string' && p.trim() && !/[\u0000-\u001f]/.test(p) && !out.pinnedProjects.includes(p)) out.pinnedProjects.push(p);
     }
   }
   return out;

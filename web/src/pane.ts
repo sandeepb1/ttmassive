@@ -27,7 +27,9 @@ export interface PaneEvents {
   /** Something the sidebars show changed. */
   onChange: (pane: Pane, what: 'name' | 'status' | 'info' | 'data' | 'agent' | 'progress' | 'attention') => void;
   onSplit: (pane: Pane) => void;
-  /** Open the layout sheet: presets and saved workspaces. */
+  /** Open the menu that starts Claude, Codex or a shell in this pane's project, beside `anchor`. */
+  onLaunch: (pane: Pane, anchor: HTMLElement) => void;
+  /** Open the layout sheet: pane grids and saved layouts. */
   onLayout: () => void;
   /** A file path in `session`'s terminal was tapped. */
   onOpenFile: (session: string, path: string, line: number | null) => void;
@@ -58,14 +60,14 @@ function savedView(name: string): string | null {
 }
 
 /** A header button that does not take focus from the terminal (that would drop the soft keyboard). */
-function headButton(cls: string, label: string, glyph: Parameters<typeof icon>[0], onClick: () => void): HTMLButtonElement {
+function headButton(cls: string, label: string, glyph: Parameters<typeof icon>[0], onClick: (b: HTMLButtonElement) => void): HTMLButtonElement {
   const b = el('button', `tb-btn ${cls}`);
   b.type = 'button';
   b.setAttribute('aria-label', label);
   b.title = label;
   b.append(icon(glyph));
   b.addEventListener('pointerdown', (e) => e.preventDefault());
-  b.addEventListener('click', onClick);
+  b.addEventListener('click', () => onClick(b));
   return b;
 }
 
@@ -145,8 +147,9 @@ export class Pane {
       title,
       this.toggle,
       headButton('p-cmd', 'Commands (Cmd/Ctrl+K)', 'command', () => events.onCommand()),
+      headButton('p-new', 'New session in this folder: Claude, Codex or a shell', 'plus', (b) => events.onLaunch(this, b)),
       headButton('p-split', 'Open another session in a new pane', 'columns', () => events.onSplit(this)),
-      headButton('p-layout', 'Pane layout and workspaces', 'grid', () => events.onLayout()),
+      headButton('p-layout', 'Pane layouts', 'grid', () => events.onLayout()),
       headButton('p-close', 'Close this pane', 'close', () => events.onClose(this)),
       headButton('p-panel', 'Session details', 'panel-right', () => events.onPanel()),
     );
@@ -258,6 +261,7 @@ export class Pane {
           this.renderStatus();
         },
         onBell: () => this.ring(),
+        onLaunch: (anchor) => this.events.onLaunch(this, anchor),
         onSelectText: () => this.selectText(),
         onProgress: (kind) => {
           if ((this.el.dataset.progress ?? '') === (kind ?? '')) return;

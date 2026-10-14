@@ -12,6 +12,8 @@ const FILE: &str = "layouts.json";
 const MAX_WORKSPACES: usize = 24;
 const MAX_TILES: usize = 6;
 const MAX_NAME: usize = 40;
+const MAX_PINNED_PROJECTS: usize = 24;
+const MAX_PATH: usize = 1024;
 const PRESETS: [&str; 7] = ["single", "cols2", "rows2", "cols3", "main-side", "grid2x2", "grid3x2"];
 
 /// Serialises writes so two saves cannot interleave their temp files.
@@ -51,6 +53,9 @@ pub struct Workspace {
 pub struct Layouts {
     pub settings: Settings,
     pub workspaces: Vec<Workspace>,
+    /// Project folders kept in the sidebar even when no session is running in them.
+    #[serde(rename = "pinnedProjects")]
+    pub pinned_projects: Vec<String>,
 }
 
 fn sizes_ok(v: &[f64]) -> bool {
@@ -68,6 +73,17 @@ pub fn validate(l: &Layouts) -> Result<(), &'static str> {
     }
     if l.workspaces.len() > MAX_WORKSPACES {
         return Err("too many workspaces");
+    }
+    if l.pinned_projects.len() > MAX_PINNED_PROJECTS {
+        return Err("too many pinned projects");
+    }
+    for (i, p) in l.pinned_projects.iter().enumerate() {
+        if p.trim().is_empty() || p.len() > MAX_PATH || p.chars().any(char::is_control) {
+            return Err("bad pinned project");
+        }
+        if l.pinned_projects[..i].contains(p) {
+            return Err("duplicate pinned project");
+        }
     }
     for (i, w) in l.workspaces.iter().enumerate() {
         let name = w.name.trim();
@@ -175,6 +191,20 @@ mod tests {
     }
 
     #[test]
+    fn pinned_projects_are_checked() {
+        let mut l = Layouts { pinned_projects: vec!["~/code/app".into(), "/srv/x".into()], ..Default::default() };
+        assert_eq!(validate(&l), Ok(()));
+        l.pinned_projects.push("~/code/app".into());
+        assert!(validate(&l).is_err(), "no duplicates");
+        l.pinned_projects = vec!["".into()];
+        assert!(validate(&l).is_err());
+        l.pinned_projects = vec!["a\nb".into()];
+        assert!(validate(&l).is_err());
+        l.pinned_projects = (0..25).map(|i| format!("/p{i}")).collect();
+        assert!(validate(&l).is_err());
+    }
+
+    #[test]
     fn missing_fields_fall_back_to_defaults() {
         let l: Layouts = serde_json::from_str("{}").unwrap();
         assert_eq!(l, Layouts::default());
@@ -187,7 +217,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ttm-layouts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(load(&dir).await, Layouts::default());
-        let l = Layouts { workspaces: vec![ws("w")], ..Default::default() };
+        let l = Layouts { workspaces: vec![ws("w")], pinned_projects: vec!["~/code".into()], ..Default::default() };
         save(&dir, &l).await.unwrap();
         assert_eq!(load(&dir).await, l);
         std::fs::write(dir.join(FILE), b"not json").unwrap();

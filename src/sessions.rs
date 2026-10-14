@@ -110,6 +110,10 @@ pub struct SessionMeta {
     pub pinned: bool,
     #[serde(default)]
     pub created: u64,
+    /// The folder the session was started in. It decides which project the web list files the session
+    /// under, and unlike `spec.dir` it does not follow a shell that `cd`s elsewhere.
+    #[serde(default)]
+    pub project: Option<PathBuf>,
     #[serde(default)]
     pub last_exit: Option<u32>,
     #[serde(skip)]
@@ -256,6 +260,8 @@ pub struct SessionView {
     pub yolo: bool,
     /// The working folder: where the pane is now while it runs, where it was started otherwise.
     pub cwd: Option<String>,
+    /// The folder it was started in: its project in the web list. `None` for sessions not seen running yet.
+    pub project: Option<String>,
     /// The git branch checked out in `cwd`.
     pub branch: Option<String>,
     /// What a running Claude or Codex session is doing. Filled in by `enrich`, for the web list.
@@ -271,6 +277,7 @@ pub struct SessionView {
 pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
     let now = now_secs();
     let live = tmux::list().await?;
+    let home = crate::agentlog::home();
     let mut out: Vec<SessionView> = Vec::new();
     for s in &live {
         let meta = st.sessions.get(&s.id);
@@ -298,6 +305,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             pinned: m.is_some_and(|m| m.pinned),
             yolo: m.is_some_and(|m| m.spec.yolo),
             cwd: Some(s.cwd.clone()).filter(|c| !c.is_empty()),
+            project: m.and_then(|m| m.project.as_deref()).map(|d| expand_home(d, home.as_deref()).display().to_string()),
             branch: None,
             activity: None,
             preview: None,
@@ -313,7 +321,6 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
         .filter(|e| !live.iter().any(|s| &s.id == e.key()))
         .map(|e| (e.key().clone(), e.value().clone()))
         .collect();
-    let home = crate::agentlog::home();
     for (id, m) in stopped {
         let saved = scrollback::modified(st, &m.uid).await;
         out.push(SessionView {
@@ -337,6 +344,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             pinned: m.pinned,
             yolo: m.spec.yolo,
             cwd: m.spec.dir.as_deref().map(|d| expand_home(d, home.as_deref()).display().to_string()),
+            project: m.project.as_deref().map(|d| expand_home(d, home.as_deref()).display().to_string()),
             branch: None,
             activity: None,
             preview: None,
@@ -610,11 +618,13 @@ pub async fn create(st: &AppState, req: NewSession<'_>) -> Result<String> {
         spec.dir = Some(d);
     }
     launch(st, &id, &uid, &spec, preset, None).await?;
+    let project = spec.dir.clone();
     st.sessions.insert(
         id.clone(),
         SessionMeta {
             preset: preset.map(|p| p.name.clone()),
             uid,
+            project,
             spec,
             group: req.group.map(str::to_owned),
             created: now_secs(),
@@ -772,6 +782,13 @@ async fn reconcile_once(st: &Arc<AppState>, live: &[tmux::SessionInfo], first: b
     for s in live {
         let Some(mut meta) = st.sessions.get_mut(&s.id) else { continue };
         meta.seen_live = true;
+
+        // A session nobody filed under a project yet (started by hand, or before projects existed)
+        // belongs to the folder it is in now. It stays there after that.
+        if meta.project.is_none() && !s.cwd.is_empty() {
+            meta.project = Some(PathBuf::from(&s.cwd));
+            dirty = true;
+        }
 
         // Remember where a plain shell wandered to, so a restore lands in the same place.
         if meta.spec.command.is_none() && !s.cwd.is_empty() && meta.spec.dir.as_deref() != Some(Path::new(&s.cwd)) {

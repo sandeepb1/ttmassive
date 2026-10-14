@@ -16,6 +16,7 @@ interface Btn {
   text?: string; // literal text, still subject to armed modifiers
   repeat?: boolean;
   glyph?: boolean; // symbol label: render larger
+  launch?: boolean; // opens the menu that starts a session, instead of sending anything
 }
 
 const ROW1: Btn[] = [
@@ -30,6 +31,7 @@ const ROW1: Btn[] = [
 ];
 
 const ROW2: Btn[] = [
+  { label: 'New', aria: 'Start a session in this folder', launch: true },
   { label: '^C', text: '\x03' },
   { label: '⇧Tab', aria: 'Shift Tab', key: 'ShiftTab' },
   { label: '|', text: '|' },
@@ -56,6 +58,7 @@ export class KeyBar {
     private send: (bytes: Uint8Array<ArrayBuffer>) => void,
     private appCursor: () => boolean,
     private refocus: () => void,
+    private launch: (anchor: HTMLElement) => void,
   ) {
     root.replaceChildren(this.row(ROW1), this.row(ROW2));
   }
@@ -123,6 +126,7 @@ export class KeyBar {
       stop();
       if (!tapped) return;
       if (b.mod) this.tapModifier(b.mod);
+      else if (b.launch) this.launch(el);
       else this.fire(b);
     });
     for (const ev of ['pointercancel', 'pointerleave'] as const) el.addEventListener(ev, stop);

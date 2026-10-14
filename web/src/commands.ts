@@ -4,23 +4,10 @@
 import type { Item, Step } from './command-model';
 import type { Pane } from './pane';
 import { getBellSound, getOptionMeta, setBellSound, setOptionMeta } from './prefs';
+import type { PresetInfo } from './dirs';
 import type { SessionView } from './sessions';
 
-export interface PresetInfo {
-  name: string;
-}
-
-export interface BrowseResult {
-  dir: string;
-  path: string;
-  entries: { name: string; path: string; short: string }[];
-}
-
-export interface RecentDir {
-  path: string;
-  name: string;
-  short: string;
-}
+export type { PresetInfo } from './dirs';
 
 /** What the command bar needs from the app. */
 export interface Ctx {
@@ -30,12 +17,12 @@ export interface Ctx {
   paneLimit: () => number;
   sessions: () => Promise<SessionView[]>;
   presets: () => Promise<PresetInfo[]>;
-  recentDirs: () => Promise<RecentDir[]>;
-  browse: (typed: string) => Promise<BrowseResult>;
   focusPane: (p: Pane) => void;
   switchTo: (session: string) => void;
-  /** Start a session (a shell when `preset` is undefined) and show it in the next free tile. */
-  start: (preset: string | undefined, dir?: string) => Promise<void>;
+  /** Start a session (a shell when `preset` is undefined) in `dir` and show it in the focused pane. */
+  startHere: (preset: string | undefined, dir: string) => Promise<void>;
+  /** Open the new-session sheet, with `dir` (a project's folder) filled in when there is one. */
+  newSession: (dir?: string) => void;
   showAnother: () => void;
   closePane: (p: Pane) => void;
   openLayout: () => void;
@@ -57,35 +44,32 @@ async function buildItems(ctx: Ctx): Promise<Item[]> {
   const [sessions, presets] = await Promise.all([ctx.sessions().catch(() => []), ctx.presets().catch(() => [])]);
   const pane = ctx.focused();
   const here = pane ? sessions.find((s) => s.id === pane.name) : undefined;
-  const cwd = here?.cwd ?? null;
+  const project = here?.project ?? here?.cwd ?? null;
   const items: Item[] = [];
   const add = (it: Item) => items.push(it);
   const panes = ctx.panes();
 
   // ---- Start something
-  const starters = [{ name: 'shell' }, ...presets];
-  if (cwd) {
-    for (const p of starters) {
+  add({ id: 'start:new', label: 'New session…', hint: 'Pick a folder, then Claude, Codex or a shell', group: 'Start', keywords: 'launch open folder directory project', run: () => ctx.newSession(project ?? undefined) });
+  if (project) {
+    for (const p of [{ name: 'shell' }, ...presets]) {
       add({
         id: `start:${p.name}`,
-        label: `New ${presetLabel(p.name)} here`,
-        hint: `in ${cwd}`,
+        label: `${presetLabel(p.name)} here`,
+        hint: `new session in ${project}`,
         group: 'Start',
-        keywords: `launch open ${p.name} ${base(cwd)}`,
-        run: () => void ctx.start(p.name === 'shell' ? undefined : p.name, cwd),
+        keywords: `launch open new ${p.name} ${base(project)}`,
+        run: () => void ctx.startHere(p.name === 'shell' ? undefined : p.name, project),
       });
     }
-  } else {
-    add({ id: 'start:shell', label: 'New Shell', group: 'Start', keywords: 'launch terminal', run: () => void ctx.start(undefined) });
   }
-  add({ id: 'open-folder', label: 'Open folder…', hint: 'Pick a folder, then start a shell, Claude or Codex in it', group: 'Start', keywords: 'directory cd project', step: () => folderStep(ctx, presets) });
 
   // ---- Panes
   if (ctx.canSplit() && panes.length < ctx.paneLimit()) {
     add({ id: 'pane:another', label: 'Show another session in a new pane', group: 'Panes', keywords: 'split tile', run: ctx.showAnother });
   }
   if (panes.length > 1 && pane) add({ id: 'pane:close', label: 'Close this pane', group: 'Panes', keywords: 'remove tile', run: () => ctx.closePane(pane) });
-  if (ctx.canSplit()) add({ id: 'pane:layout', label: 'Pane layouts and workspaces…', group: 'Panes', keywords: 'grid tiles arrange', run: ctx.openLayout });
+  if (ctx.canSplit()) add({ id: 'pane:layout', label: 'Pane layouts…', group: 'Panes', keywords: 'grid tiles arrange', run: ctx.openLayout });
   if (panes.length > 1) {
     panes.forEach((p, i) => {
       if (p === pane) return;
@@ -150,47 +134,6 @@ async function buildItems(ctx: Ctx): Promise<Item[]> {
     });
   }
   return items;
-}
-
-/** Second screen of "Open folder…": type a path, get the folders that fit; Tab completes. */
-function folderStep(ctx: Ctx, presets: PresetInfo[]): Step {
-  const launch = (path: string, short: string): Step => ({
-    placeholder: `Start in ${short}`,
-    items: () =>
-      [{ name: 'shell' }, ...presets].map((p) => ({
-        id: `start:${p.name}:in`,
-        label: presetLabel(p.name),
-        hint: short,
-        run: () => void ctx.start(p.name === 'shell' ? undefined : p.name, path),
-      })),
-  });
-  return {
-    placeholder: 'Folder, like ~/code (Tab completes)',
-    filtered: true,
-    items: async (typed) => {
-      if (!typed.trim()) {
-        const recent = await ctx.recentDirs().catch(() => []);
-        return recent.map((d) => ({
-          id: `dir:${d.path}`,
-          label: d.name,
-          hint: d.short,
-          group: 'Recent',
-          complete: `${d.short}/`,
-          step: () => launch(d.path, d.short),
-        }));
-      }
-      const l = await ctx.browse(typed);
-      const out: Item[] = [];
-      // Once a folder's own path is typed (it ends in a slash), offer to use it.
-      if (l.path && (typed.trim().endsWith('/') || typed.trim() === '~')) {
-        out.push({ id: `dir:${l.path}`, label: `Use ${l.dir}`, group: 'Here', step: () => launch(l.path, l.dir) });
-      }
-      for (const e of l.entries) {
-        out.push({ id: `dir:${e.path}`, label: e.name, hint: e.short, complete: `${e.short}/`, step: () => launch(e.path, e.short) });
-      }
-      return out;
-    },
-  };
 }
 
 /** Second screen of "Open file…": the path you type is the one command. */

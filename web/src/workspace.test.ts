@@ -41,3 +41,9 @@ test('the pane limit is one when multi-pane is off', () => {
   assert.equal(paneLimit({ multi: false, maxPanes: 5, desktop: 'cols2', tablet: 'cols2' }), 1);
   assert.equal(paneLimit({ multi: true, maxPanes: 5, desktop: 'cols2', tablet: 'cols2' }), 5);
 });
+
+test('pinned projects keep what is usable', () => {
+  const l = parseLayouts({ pinnedProjects: ['/w/app', '/w/app', '', 3, 'a\nb', '~/code'] });
+  assert.deepEqual(l.pinnedProjects, ['/w/app', '~/code']);
+  assert.deepEqual(parseLayouts({}).pinnedProjects, []);
+});

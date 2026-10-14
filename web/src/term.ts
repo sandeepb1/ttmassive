@@ -55,6 +55,8 @@ export interface SessionHooks {
   onTitle: (title: string) => void;
   /** The program rang the bell. */
   onBell: () => void;
+  /** The key bar's New button was tapped: offer to start a session beside `anchor`. */
+  onLaunch: (anchor: HTMLElement) => void;
   /** A long press on the terminal asked for its text as selectable text. */
   onSelectText: () => void;
 }
@@ -154,6 +156,7 @@ export class TerminalSession {
       (b) => this.sendInput(b),
       () => this.term.modes.applicationCursorKeysMode,
       () => this.term.focus(),
+      (anchor) => this.hooks.onLaunch(anchor),
     );
     this.term.loadAddon(this.fit);
     this.term.open(el);

@@ -1,4 +1,4 @@
-// The layout sheet: pick a pane grid, and save, open or delete workspaces (a grid plus the
+// The layout sheet: pick a pane grid, and save, open or delete saved layouts (a grid plus the
 // session in each tile). Opened from the grid button in a pane's header.
 
 import { el } from './dom';
@@ -78,7 +78,7 @@ export class LayoutSheet extends Sheet {
     name.type = 'text';
     name.maxLength = 40;
     name.placeholder = 'Name this layout, e.g. Claude + Codex';
-    name.setAttribute('aria-label', 'Workspace name');
+    name.setAttribute('aria-label', 'Layout name');
     const go = el('button', 'chip chip-go', 'Save');
     go.type = 'submit';
     save.append(name, go);
@@ -88,7 +88,7 @@ export class LayoutSheet extends Sheet {
     });
 
     const ws = el('div', 'more-block');
-    ws.append(el('div', 'sheet-label', 'Workspaces'), save, this.list);
+    ws.append(el('div', 'sheet-label', 'Saved layouts'), save, this.list);
     this.renderList();
     this.body.replaceChildren(presets, ws, this.note);
     this.show();
@@ -101,7 +101,7 @@ export class LayoutSheet extends Sheet {
       ...l,
       workspaces: [...l.workspaces.filter((x) => x.name !== name), w],
     }));
-    if (!next) return this.say('Could not save (too many workspaces, or the server refused)');
+    if (!next) return this.say('Could not save (too many saved layouts, or the server refused)');
     this.hooks.saved(next);
     input.value = '';
     this.say(`Saved “${name}”`);

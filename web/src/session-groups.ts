@@ -1,4 +1,5 @@
-// How the session list is organised: pinned sessions first, then one section per working folder.
+// How the session list is organised: pinned sessions first, then one section per project (the
+// folder a session was started in), then the sessions that have no folder.
 // Pure, so node can test it.
 
 import { splitPath } from './chat-insights.ts';
@@ -8,6 +9,8 @@ export interface Groupable {
   id: string;
   pinned: boolean;
   cwd: string | null;
+  /** The folder it was started in. Older servers do not send it; the live folder stands in. */
+  project?: string | null;
   status: 'running' | 'exited' | 'stopped';
   idle_secs: number;
   activity: 'working' | 'waiting' | 'idle' | 'unknown' | null;
@@ -19,6 +22,10 @@ export interface Section<T> {
   title: string;
   /** The folder's parent, to tell two folders of the same name apart. */
   sub: string;
+  /** The project's folder, when the section is one (a place to start a session in). */
+  path: string | null;
+  /** The project is kept in the list even with no session in it. */
+  kept: boolean;
   items: T[];
 }
 
@@ -26,26 +33,38 @@ export const PINNED_KEY = '__pinned';
 export const NO_FOLDER_KEY = '__none';
 
 /**
- * Sections for the list: Pinned, then folders in the order their newest session appears (the list
- * arrives newest first). Sessions with no known folder share one section.
+ * Sections for the list: Pinned sessions, then the pinned projects (shown even when empty), then the
+ * other projects in the order their newest session appears (the list arrives newest first), then one
+ * section for sessions with no known folder.
  */
-export function groupSessions<T extends Groupable>(sessions: T[]): Section<T>[] {
+export function groupSessions<T extends Groupable>(sessions: T[], pinnedProjects: string[] = []): Section<T>[] {
   const pinned = sessions.filter((s) => s.pinned);
   const out: Section<T>[] = [];
-  if (pinned.length > 0) out.push({ key: PINNED_KEY, title: 'Pinned', sub: '', items: pinned });
+  if (pinned.length > 0) out.push({ key: PINNED_KEY, title: 'Pinned', sub: '', path: null, kept: false, items: pinned });
   const byFolder = new Map<string, Section<T>>();
-  for (const s of sessions) {
-    if (s.pinned) continue;
-    const key = s.cwd ?? NO_FOLDER_KEY;
-    let sec = byFolder.get(key);
+  const section = (path: string, kept: boolean): Section<T> => {
+    let sec = byFolder.get(path);
     if (!sec) {
-      const { name, dir } = s.cwd ? splitPath(s.cwd) : { name: 'No folder', dir: '' };
-      sec = { key, title: name, sub: dir, items: [] };
-      byFolder.set(key, sec);
+      const { name, dir } = splitPath(path);
+      sec = { key: path, title: name, sub: dir, path, kept, items: [] };
+      byFolder.set(path, sec);
       out.push(sec);
     }
-    sec.items.push(s);
+    return sec;
+  };
+  for (const p of pinnedProjects) section(p, true);
+  let other: Section<T> | null = null;
+  for (const s of sessions) {
+    if (s.pinned) continue;
+    const folder = s.project ?? s.cwd;
+    if (folder) {
+      section(folder, false).items.push(s);
+    } else {
+      other ??= { key: NO_FOLDER_KEY, title: 'Other', sub: '', path: null, kept: false, items: [] };
+      other.items.push(s);
+    }
   }
+  if (other) out.push(other);
   return out;
 }
 

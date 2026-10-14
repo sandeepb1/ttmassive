@@ -23,6 +23,9 @@ import {
 } from './tiling';
 import { defaultLayouts, fetchLayouts, MAX_PANES_LIMIT, paneLimit, updateLayouts, type Layouts, type Workspace } from './workspace';
 import { AgentSheet } from './agent-sheet';
+import { fetchPresets, launchSession, mainAgents, type PresetInfo } from './dirs';
+import { openMenu, type MenuItem } from './menu';
+import { NewSessionSheet } from './new-session-sheet';
 import type { SubAgent } from './agents';
 
 initTheme();
@@ -124,6 +127,7 @@ const paneEvents: PaneEvents = {
   },
   onSplit: () => void split(),
   onLayout: () => openLayout(),
+  onLaunch: (p, anchor) => void launchMenu(p, anchor),
   onOpenFile: (session, path, line) => {
     layout.dismissOverlays();
     void new FileViewer($('app'), session, path, line, showLogin).open();
@@ -459,7 +463,67 @@ async function getJson<T>(url: string, fallback: T): Promise<T> {
   return r?.ok ? ((await r.json()) as T) : fallback;
 }
 
-let presetCache: Promise<{ name: string }[]> | null = null;
+let presetCache: Promise<PresetInfo[]> | null = null;
+const presets = () => (presetCache ??= fetchPresets());
+
+/** The folder a pane's session belongs to: where it was started, else where it is. */
+async function projectOf(pane: Pane | null): Promise<string | null> {
+  if (!pane) return null;
+  const mine = (await sessionList().catch(() => [])).find((s) => s.id === pane.name);
+  return mine?.project ?? mine?.cwd ?? null;
+}
+
+/** Start a session in `dir` and show it in the focused pane. */
+async function startHere(preset: string | undefined, dir: string) {
+  const r = await launchSession({ preset, yolo: false, dir });
+  if (!r.ok) {
+    if (r.signedOut) return showLogin();
+    return focused?.say(r.error);
+  }
+  sidebar?.reload();
+  layout.dismissOverlays();
+  openSession(r.id);
+}
+
+/** The new-session sheet: the focused pane's project is filled in unless the caller names a folder. */
+async function newSession(dir?: string) {
+  if (document.querySelector('.sheet')) return;
+  layout.dismissOverlays();
+  const from = dir ?? (await projectOf(focused)) ?? undefined;
+  void new NewSessionSheet($('app'), showLogin, {
+    opened: (id) => {
+      sidebar?.reload();
+      layout.dismissOverlays();
+      openSession(id);
+    },
+    pinned: () => layouts.pinnedProjects,
+  }).open(from);
+}
+
+/** The pane header's and the key bar's New button: Claude, Codex or a shell in this pane's project. */
+async function launchMenu(pane: Pane, anchor: HTMLElement) {
+  const dir = await projectOf(pane);
+  if (!dir) return void newSession();
+  const { claude, codex, more } = mainAgents(await presets());
+  const name = dir.split('/').filter(Boolean).pop() ?? dir;
+  const go = (p?: PresetInfo) => () => void startHere(p?.name, dir);
+  const items: MenuItem[] = [];
+  if (claude) items.push({ label: 'Claude', hint: `in ${name}`, run: go(claude) });
+  if (codex) items.push({ label: 'Codex', hint: `in ${name}`, run: go(codex) });
+  items.push({ label: 'Shell', hint: `in ${name}`, run: go() });
+  for (const p of more) items.push({ label: p.name, hint: `in ${name}`, run: go(p) });
+  items.push({ label: 'More options…', hint: 'skip permissions, other folder', run: () => void newSession(dir) });
+  openMenu(anchor, items, `New session in ${name}`);
+}
+
+/** Keep a project in the sidebar when nothing runs in it, or stop. Stored with the layouts, so every device sees it. */
+async function togglePinProject(path: string) {
+  const next = await updateLayouts((l) => ({
+    ...l,
+    pinnedProjects: l.pinnedProjects.includes(path) ? l.pinnedProjects.filter((p) => p !== path) : [...l.pinnedProjects, path],
+  }));
+  if (next) layouts = next;
+}
 
 const commandCtx: Ctx = {
   focused: () => focused,
@@ -467,24 +531,11 @@ const commandCtx: Ctx = {
   canSplit: () => canSplit,
   paneLimit: limit,
   sessions: sessionList,
-  presets: () => (presetCache ??= getJson('/api/presets', [])),
-  recentDirs: () => getJson('/api/dirs', []),
-  browse: (typed) => getJson(`/api/browse?path=${encodeURIComponent(typed)}`, { dir: '', path: '', entries: [] }),
+  presets: presets,
   focusPane: focus,
   switchTo: openSession,
-  start: async (preset, dir) => {
-    const r = await fetch('/api/sessions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ preset, yolo: false, dir }),
-    }).catch(() => null);
-    if (r?.status === 401) return showLogin();
-    if (!r?.ok) return focused?.say(r ? await r.text() : 'Server unreachable');
-    const { id } = (await r.json()) as { id: string };
-    sidebar?.reload();
-    layout.dismissOverlays();
-    openInSplit(id); // the next free tile, or in place of the next pane when they are all taken
-  },
+  startHere: (preset, dir) => startHere(preset, dir),
+  newSession: (dir) => void newSession(dir),
   showAnother: () => void split(),
   closePane,
   openLayout,
@@ -724,6 +775,9 @@ async function showApp() {
       },
       collapse: () => toggleList(),
       openSettings,
+      newSession: (dir) => void newSession(dir),
+      pinnedProjects: () => layouts.pinnedProjects,
+      togglePinProject,
       openInSplit,
       openAgent,
       shown: () => panes.map((p) => p.name),

@@ -1,10 +1,12 @@
-// The left sidebar: list sessions, create from presets, rename, kill, switch.
+// The left sidebar: your sessions grouped by project, a way to start new ones, rename, kill, switch.
 
+import { fetchPresets, launchSession, mainAgents, type PresetInfo } from './dirs';
 import { el } from './dom';
 import { asTree, elapsedSecs, fmtElapsed, stateOf, type SubAgent } from './agents';
 import { warn } from './haptics';
 import { icon } from './icons';
-import { DOT_LABEL, dotState, groupSessions, railLabel } from './session-groups';
+import { openMenu, type MenuItem } from './menu';
+import { DOT_LABEL, dotState, groupSessions, PINNED_KEY, railLabel } from './session-groups';
 
 export interface SessionView {
   id: string;
@@ -26,8 +28,10 @@ export interface SessionView {
   pinned: boolean;
   /** Started with permission checks skipped. */
   yolo: boolean;
-  /** The working folder. */
+  /** The working folder now. */
   cwd: string | null;
+  /** The folder it was started in: the project it is listed under. */
+  project?: string | null;
   /** The git branch checked out there. */
   branch: string | null;
   /** What a running Claude or Codex session is doing right now. */
@@ -39,23 +43,6 @@ export interface SessionView {
   /** The proxy the session's agent goes through, when it does. */
   routed_via?: 'teamclaude' | null;
 }
-
-interface Group {
-  name: string;
-  presets: string[];
-}
-
-interface Preset {
-  name: string;
-  command: string;
-  restart: 'never' | 'on_failure';
-  /** Only Claude and Codex presets can skip permission checks. */
-  agent?: 'claude' | 'codex' | 'other';
-  /** Always started with permissions skipped (set in the config). */
-  yolo?: boolean;
-}
-
-const canSkip = (p: Preset) => p.agent === 'claude' || p.agent === 'codex';
 
 const POLL_MS = 3000;
 const ACTIVE_SECS = 5;
@@ -86,19 +73,18 @@ async function api(path: string, init?: RequestInit): Promise<Response> {
   return r;
 }
 
-/** A folder you have been working in, from `/api/dirs`. */
-interface RecentDir {
-  path: string;
-  name: string;
-  short: string;
-}
-
 export interface SidebarHooks {
   /** A session was chosen or started: let an overlay sidebar get out of the way. */
   navigated: () => void;
   /** The header's hide button. */
   collapse: () => void;
   openSettings: () => void;
+  /** Open the new-session sheet, with a project's folder filled in when there is one. */
+  newSession: (dir?: string) => void;
+  /** Project folders kept in the list even with no session in them. */
+  pinnedProjects: () => string[];
+  /** Keep a project in the list, or stop keeping it. */
+  togglePinProject: (path: string) => Promise<void>;
   /** Show a session in the pane beside the one you are in (wide screens). */
   openInSplit: (id: string) => void;
   /** Open a helper agent's transcript. */
@@ -117,19 +103,11 @@ export class SessionSidebar {
   /** The narrow strip of session buttons shown instead of the list in split view. */
   private rail = el('div', 'sb-rail');
   private railList = el('div');
-  private presets = el('div', 'drawer-presets');
   private msg = el('div', 'drawer-msg');
   private timer = 0;
   private active = false;
-  private presetsLoaded = false;
-  /** The "skip permissions" switch. Off to start with, and off again after every launch. */
-  private skip = false;
-  private presetList: Preset[] = [];
-  private dirs: RecentDir[] = [];
-  private groupList: Group[] = [];
-  /** Rows whose pin / edit / remove buttons are showing. Kept across the list's refreshes. */
-  private expanded = new Set<string>();
-  /** Folder sections the user folded away. Remembered. */
+  private presetList: PresetInfo[] | null = null;
+  /** Project sections the user folded away. Remembered. */
   private collapsed = loadCollapsed();
   private lastSessions: SessionView[] = [];
   /** Sessions whose helper agents are listed under their row, and the latest lists fetched. */
@@ -147,14 +125,13 @@ export class SessionSidebar {
   ) {
     this.root.classList.add('sidebar', 'sidebar-left');
     this.root.setAttribute('aria-label', 'Sessions');
-    this.presets.hidden = true;
 
     const head = el('div', 'sb-head');
     const add = el('button', 'icon sb-new');
     add.type = 'button';
     add.setAttribute('aria-label', 'New session');
     add.append(icon('plus'));
-    add.addEventListener('click', () => (this.presets.hidden = !this.presets.hidden));
+    add.addEventListener('click', () => this.hooks.newSession());
     const collapse = el('button', 'icon sb-collapse');
     collapse.type = 'button';
     collapse.setAttribute('aria-label', 'Hide sessions');
@@ -183,7 +160,7 @@ export class SessionSidebar {
     railSettings.addEventListener('click', () => this.hooks.openSettings());
     this.rail.append(railOpen, this.railList, railSettings);
 
-    this.root.append(head, this.presets, this.msg, this.list, foot, this.rail);
+    this.root.append(head, this.msg, this.list, foot, this.rail);
   }
 
   /** Poll the session list while the sidebar is on screen. */
@@ -218,21 +195,6 @@ export class SessionSidebar {
 
   private async refresh() {
     await this.guard(async () => {
-      if (!this.presetsLoaded) {
-        const [p, g] = await Promise.all([api('/api/presets'), api('/api/groups')]);
-        if (p.ok) {
-          this.renderPresets((await p.json()) as Preset[], g.ok ? ((await g.json()) as Group[]) : []);
-          this.presetsLoaded = true;
-        }
-      }
-      const d = await api('/api/dirs');
-      if (d.ok) {
-        const dirs = (await d.json()) as RecentDir[];
-        if (JSON.stringify(dirs) !== JSON.stringify(this.dirs)) {
-          this.dirs = dirs;
-          this.renderPresets(this.presetList, this.groupList);
-        }
-      }
       const r = await api('/api/sessions');
       if (!r.ok) return this.say(await r.text());
       this.say('');
@@ -241,121 +203,70 @@ export class SessionSidebar {
     });
   }
 
-  private renderPresets(presets: Preset[], groups: Group[]) {
-    this.presetList = presets;
-    this.groupList = groups;
-    this.presets.replaceChildren(el('div', 'drawer-label', 'New session'));
-    // Only offered when there is a Claude or Codex preset to apply it to.
-    if (presets.some(canSkip)) {
-      const t = el('button', this.skip ? 'skip-toggle on' : 'skip-toggle');
-      t.type = 'button';
-      t.setAttribute('aria-pressed', String(this.skip));
-      t.append(el('span', 'skip-dot'), el('span', 'skip-text', 'Skip permissions'));
-      t.title = 'Claude: IS_SANDBOX=1 and --dangerously-skip-permissions. Codex: --yolo. Applies to the next session you start.';
-      t.addEventListener('click', () => {
-        this.skip = !this.skip;
-        this.renderPresets(this.presetList, this.groupList);
-      });
-      this.presets.append(t);
-    }
-    const row = el('div', 'drawer-chips');
-    for (const p of [{ name: 'shell' } as Preset, ...presets]) {
-      const risky = canSkip(p) && (this.skip || p.yolo === true);
-      const b = el('button', risky ? 'chip chip-yolo' : 'chip', risky ? `⚡ ${p.name}` : p.name);
-      b.type = 'button';
-      if (p.command) b.title = p.command;
-      b.addEventListener('click', () => void this.create(p.command ? p.name : undefined, canSkip(p) && this.skip));
-      row.append(b);
-    }
-    for (const g of groups) {
-      const b = el('button', 'chip chip-group', `▶ ${g.name}`);
-      b.type = 'button';
-      b.title = `Start together: ${g.presets.join(', ')}`;
-      b.addEventListener('click', () => void this.startGroup(g.name));
-      row.append(b);
-    }
-    this.presets.append(row);
-    this.renderDirs(presets.filter(canSkip));
+  /** The presets a project's `+` offers. Fetched once; they only change with the config. */
+  private async presets(): Promise<PresetInfo[]> {
+    return (this.presetList ??= await fetchPresets());
   }
 
-  /** Folders you have used in tmux, each with a button per agent to start it there. */
-  private renderDirs(agents: Preset[]) {
-    if (this.dirs.length === 0 || agents.length === 0) return;
-    this.presets.append(el('div', 'drawer-label', 'Start in a folder'));
-    const list = el('div', 'dir-list');
-    for (const d of this.dirs) {
-      const item = el('div', 'dir-row');
-      const text = el('div', 'dir-text');
-      text.append(el('span', 'dir-name', d.name), el('span', 'dir-path', d.short));
-      text.title = d.path;
-      const btns = el('div', 'dir-btns');
-      for (const p of agents) {
-        const risky = this.skip || p.yolo === true;
-        const b = el('button', risky ? 'chip chip-yolo' : 'chip', risky ? `⚡ ${p.name}` : p.name);
-        b.type = 'button';
-        b.title = `${p.name} in ${d.short}`;
-        b.addEventListener('click', () => void this.create(p.name, this.skip, d.path));
-        btns.append(b);
+  /** Start Claude, Codex, a shell or another preset in a project's folder, and open it. */
+  private async startIn(dir: string, preset?: PresetInfo) {
+    await this.guard(async () => {
+      const r = await launchSession({ preset: preset?.name, yolo: false, dir });
+      if (!r.ok) {
+        if (r.signedOut) throw new Error('unauthorized');
+        return this.say(r.error);
       }
-      item.append(text, btns);
-      list.append(item);
-    }
-    this.presets.append(list);
-  }
-
-  private async startGroup(name: string) {
-    await this.guard(async () => {
-      const r = await api(`/api/groups/${encodeURIComponent(name)}/start`, { method: 'POST' });
-      if (!r.ok) return this.say(await r.text());
-      const { ids } = (await r.json()) as { ids: string[] };
       this.hooks.navigated();
-      if (ids[0]) this.open(ids[0]);
+      this.open(r.id);
     });
   }
 
-  private async create(preset?: string, yolo = false, dir?: string) {
-    // One launch at a time: the switch goes back off whatever happens.
-    this.skip = false;
-    this.presets.hidden = true;
-    this.renderPresets(this.presetList, this.groupList);
-    await this.guard(async () => {
-      const r = await api('/api/sessions', { method: 'POST', body: JSON.stringify({ preset, yolo, dir }) });
-      if (!r.ok) return this.say(await r.text());
-      const { id } = (await r.json()) as { id: string };
-      this.hooks.navigated();
-      this.open(id);
-    });
+  /** The `+` beside a project: one tap for each of Claude, Codex and a shell there, and the full sheet. */
+  private async projectMenu(anchor: HTMLElement, sec: { title: string; path: string }) {
+    const presets = await this.presets();
+    const { claude, codex, more } = mainAgents(presets);
+    const items: MenuItem[] = [];
+    if (claude) items.push({ label: 'Claude', hint: `in ${sec.title}`, run: () => void this.startIn(sec.path, claude) });
+    if (codex) items.push({ label: 'Codex', hint: `in ${sec.title}`, run: () => void this.startIn(sec.path, codex) });
+    items.push({ label: 'Shell', hint: `in ${sec.title}`, run: () => void this.startIn(sec.path) });
+    for (const p of more) items.push({ label: p.name, hint: `in ${sec.title}`, run: () => void this.startIn(sec.path, p) });
+    items.push({ label: 'More options…', hint: 'skip permissions, other folder', run: () => this.hooks.newSession(sec.path) });
+    openMenu(anchor, items, `Start in ${sec.title}`);
   }
 
   private renderList(sessions: SessionView[]) {
     this.lastSessions = sessions;
     this.renderRail(sessions);
-    if (sessions.length === 0) {
-      this.list.replaceChildren(el('div', 'drawer-empty', 'No sessions yet'));
-      this.presets.hidden = false;
+    const sections = groupSessions(sessions, this.hooks.pinnedProjects());
+    if (sections.length === 0) {
+      const start = el('button', 'drawer-start');
+      start.type = 'button';
+      start.append(icon('plus'), el('span', undefined, 'New session'));
+      start.addEventListener('click', () => this.hooks.newSession());
+      this.list.replaceChildren(el('div', 'drawer-empty', 'No sessions yet'), start);
       return;
     }
-    const sections = groupSessions(sessions);
-    // One folder (or none) needs no headings: they would only repeat what every row says.
-    if (sections.length < 2) {
-      this.list.replaceChildren(...sessions.map((s) => this.row(s)));
+    // Sessions with no project at all need no heading: it would only say "Other".
+    if (sections.length === 1 && sections[0]!.path === null && sections[0]!.key !== PINNED_KEY) {
+      this.list.replaceChildren(...sections[0]!.items.map((s) => this.row(s)));
       return;
     }
     const out: HTMLElement[] = [];
     for (const sec of sections) {
       const folded = this.collapsed.has(sec.key);
-      const head = el('button', 'sg-head');
-      head.type = 'button';
-      head.setAttribute('aria-expanded', String(!folded));
+      const head = el('div', 'sg-head');
+      const fold = el('button', 'sg-fold');
+      fold.type = 'button';
+      fold.setAttribute('aria-expanded', String(!folded));
       const waiting = sec.items.some((s) => dotState(s) === 'waiting');
-      head.append(icon('chevron', `icon-svg chev${folded ? '' : ' open'}`), icon(sec.key === '__pinned' ? 'panel-left' : 'folder'));
-      head.append(el('span', 'sg-title', sec.title));
-      if (sec.sub) head.append(el('span', 'sg-sub', sec.sub));
-      head.append(el('span', 'sg-spacer'));
+      fold.append(icon('chevron', `icon-svg chev${folded ? '' : ' open'}`), icon(sec.key === PINNED_KEY ? 'panel-left' : 'folder'));
+      fold.append(el('span', 'sg-title', sec.title));
+      if (sec.sub) fold.append(el('span', 'sg-sub', sec.sub));
+      fold.append(el('span', 'sg-spacer'));
       // A fold hides the rows, so say if something behind it needs you.
-      if (folded && waiting) head.append(el('span', 'dot waiting'));
-      head.append(el('span', 'sg-count', String(sec.items.length)));
-      head.addEventListener('click', () => {
+      if (folded && waiting) fold.append(el('span', 'dot waiting'));
+      if (sec.items.length > 0) fold.append(el('span', 'sg-count', String(sec.items.length)));
+      fold.addEventListener('click', () => {
         if (folded) this.collapsed.delete(sec.key);
         else this.collapsed.add(sec.key);
         try {
@@ -365,10 +276,34 @@ export class SessionSidebar {
         }
         this.renderList(this.lastSessions);
       });
+      head.append(fold);
+      const path = sec.path;
+      if (path) {
+        const branch = this.branchOf(sec.items);
+        if (branch) head.append(el('span', 'sg-branch', branch));
+        const pin = el('button', sec.kept ? 'icon sg-act on' : 'icon sg-act', sec.kept ? '★' : '☆');
+        pin.type = 'button';
+        pin.setAttribute('aria-label', sec.kept ? `Stop keeping ${sec.title} in the list` : `Keep ${sec.title} in the list`);
+        pin.title = sec.kept ? 'Kept in the list' : 'Keep in the list when nothing runs in it';
+        pin.addEventListener('click', () => void this.hooks.togglePinProject(path).then(() => this.renderList(this.lastSessions)));
+        const add = el('button', 'icon sg-act');
+        add.type = 'button';
+        add.setAttribute('aria-label', `Start a session in ${sec.title}`);
+        add.setAttribute('aria-haspopup', 'menu');
+        add.setAttribute('aria-expanded', 'false');
+        add.append(icon('plus'));
+        add.addEventListener('click', () => void this.projectMenu(add, { title: sec.title, path }));
+        head.append(pin, add);
+      }
       out.push(head);
       if (!folded) out.push(...sec.items.map((s) => this.row(s)));
     }
     this.list.replaceChildren(...out);
+  }
+
+  /** The branch most of a project's running sessions are on, for its heading. */
+  private branchOf(items: SessionView[]): string | null {
+    return items.find((s) => s.status === 'running' && s.branch)?.branch ?? null;
   }
 
   /** Fetch a session's helper agents, and redraw the list if they changed. */
@@ -446,23 +381,31 @@ export class SessionSidebar {
     const main = el('button', 'srow-main');
     main.type = 'button';
     const name = el('span', 'srow-name');
-    name.append(document.createTextNode(`${s.pinned ? '★ ' : ''}${s.id}`));
+    const kind = el('span', `srow-kind${s.agent === 'claude' || s.agent === 'codex' ? ` ${s.agent}` : ''}`);
+    kind.title = s.agent && s.agent !== 'other' ? s.agent : s.preset ?? 'shell';
+    kind.append(icon(s.agent ? 'agent' : 'shell'));
+    name.append(kind, document.createTextNode(`${s.pinned ? '★ ' : ''}${s.id}`));
+    if (s.yolo) {
+      const bolt = el('span', 'srow-yolo', '⚡');
+      bolt.title = 'Started with permission checks skipped';
+      bolt.setAttribute('aria-label', 'Permission checks skipped');
+      name.append(bolt);
+    }
     if (state === 'waiting') name.append(el('span', 'srow-flag', 'Needs you'));
     main.append(name);
     if (s.preview) main.append(el('span', 'srow-preview', s.preview));
-    if (s.branch) {
+    // Where the shell has wandered to since the session started, when that is not the project itself.
+    const drift = this.drift(s);
+    if (drift) {
       const where = el('span', 'srow-where');
-      where.append(icon('branch'), el('span', undefined, s.branch));
+      where.append(icon('folder'), el('span', undefined, drift));
       main.append(where);
     }
     const bits: string[] = [];
-    if (s.agent) bits.push(s.agent);
-    else if (s.preset) bits.push(s.preset);
     if (s.status === 'stopped') bits.push(s.resumable ? 'stopped · can resume' : 'stopped');
     else if (s.status === 'exited') bits.push(`exited${s.exit_code !== null ? ` (${s.exit_code})` : ''}`);
     else bits.push(state === 'working' ? 'working' : `idle ${ago(s.idle_secs)}`);
     if (s.routed_via === 'teamclaude') bits.push('via Team Claude');
-    if (s.yolo) bits.push('⚡ permissions skipped');
     if (s.attached > 0) bits.push(`${s.attached} attached`);
     if (s.restarts > 0) bits.push(`${s.restarts}× restarted`);
     if (s.restart_in_secs !== null) bits.push(`restarting in ${s.restart_in_secs}s`);
@@ -482,57 +425,22 @@ export class SessionSidebar {
     });
 
     const inline: HTMLElement[] = [];
-    const tools: HTMLElement[] = [];
     if (s.status !== 'running') {
-      const label = s.resumable ? 'Resume' : 'Restore';
-      const b = el('button', 'chip chip-go', label);
+      const b = el('button', 'chip chip-go', s.resumable ? 'Resume' : 'Restore');
       b.type = 'button';
       b.addEventListener('click', () => void this.restore(s.id, false));
       inline.push(b);
     }
-    const pin = el('button', 'icon', s.pinned ? '★' : '☆');
-    pin.type = 'button';
-    pin.setAttribute('aria-label', s.pinned ? `Unpin ${s.id}` : `Pin ${s.id}`);
-    pin.addEventListener('click', () => void this.patchMeta(s.id, { pinned: !s.pinned }));
-    tools.push(pin);
 
-    const split = el('button', 'icon srow-split');
-    split.type = 'button';
-    split.setAttribute('aria-label', `Open ${s.id} in a split`);
-    split.title = 'Open beside the current session';
-    split.append(icon('columns'));
-    split.addEventListener('click', () => {
-      this.hooks.openInSplit(s.id);
-      this.hooks.navigated();
-    });
-    tools.push(split);
-
-    const edit = el('button', 'icon', '✎');
-    edit.type = 'button';
-    edit.setAttribute('aria-label', `Edit ${s.id}`);
-    edit.addEventListener('click', () => void this.edit(s));
-    tools.push(edit);
-
-    const kill = el('button', 'icon danger', '✕');
-    kill.type = 'button';
-    kill.setAttribute('aria-label', `Remove ${s.id}`);
-    kill.addEventListener('click', () => void this.kill(s));
-    tools.push(kill);
-
+    // Pin, split, rename and remove live in one menu: the `⋯`, or a long press on the row.
     const more = el('button', 'icon srow-more', '⋯');
     more.type = 'button';
     more.setAttribute('aria-label', `Actions for ${s.id}`);
-    more.setAttribute('aria-expanded', String(this.expanded.has(s.id)));
-    more.addEventListener('click', () => {
-      const open = !this.expanded.has(s.id);
-      if (open) this.expanded.add(s.id);
-      else this.expanded.delete(s.id);
-      row.classList.toggle('expanded', open);
-      more.setAttribute('aria-expanded', String(open));
-    });
-    const toolRow = el('div', 'srow-tools');
-    toolRow.append(...tools);
-    if (this.expanded.has(s.id)) row.classList.add('expanded');
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
+    const menu = () => openMenu(more, this.rowMenu(s), `Actions for ${s.id}`);
+    more.addEventListener('click', menu);
+    this.onLongPress(main, menu);
 
     // Helper agents: a count while any run, and a tap to list them under the row.
     const running = s.running_subagents ?? 0;
@@ -554,9 +462,67 @@ export class SessionSidebar {
       inline.push(chip);
     }
 
-    row.append(dot, main, ...inline, more, toolRow);
+    row.append(dot, main, ...inline, more);
     if (open) row.append(this.agentList(s));
     return row;
+  }
+
+  /** Where a session's shell is now, relative to its project, when it is somewhere else. */
+  private drift(s: SessionView): string | null {
+    if (!s.project || !s.cwd || s.cwd === s.project) return null;
+    return s.cwd.startsWith(`${s.project}/`) ? s.cwd.slice(s.project.length + 1) : s.cwd;
+  }
+
+  private rowMenu(s: SessionView): MenuItem[] {
+    const items: MenuItem[] = [
+      { label: s.pinned ? 'Unpin' : 'Pin to top', run: () => void this.patchMeta(s.id, { pinned: !s.pinned }) },
+      {
+        label: 'Open in a split',
+        hint: 'beside the current session',
+        run: () => {
+          this.hooks.openInSplit(s.id);
+          this.hooks.navigated();
+        },
+      },
+      { label: 'Rename, note, tags…', run: () => void this.edit(s) },
+      { label: s.status === 'stopped' ? 'Remove' : 'Kill', danger: true, run: () => void this.kill(s) },
+    ];
+    return items;
+  }
+
+  /** Call `fn` when the pointer stays down on `target` for a moment without moving (a touch long-press). */
+  private onLongPress(target: HTMLElement, fn: () => void) {
+    let timer = 0;
+    let x = 0;
+    let y = 0;
+    let fired = false;
+    const cancel = () => window.clearTimeout(timer);
+    target.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return;
+      fired = false;
+      x = e.clientX;
+      y = e.clientY;
+      timer = window.setTimeout(() => {
+        fired = true;
+        fn();
+      }, 500);
+    });
+    target.addEventListener('pointermove', (e) => {
+      if (Math.abs(e.clientX - x) > 8 || Math.abs(e.clientY - y) > 8) cancel();
+    });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave'] as const) target.addEventListener(ev, cancel);
+    // The press that opened the menu must not also open the session when the finger lifts.
+    target.addEventListener(
+      'click',
+      (e) => {
+        if (!fired) return;
+        fired = false;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      },
+      true,
+    );
+    target.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   private async restore(id: string, fresh: boolean) {

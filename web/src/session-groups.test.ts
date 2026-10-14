@@ -27,7 +27,7 @@ test('sessions without a folder share one section', () => {
   const secs = groupSessions([s('a'), s('b')]);
   assert.equal(secs.length, 1);
   assert.equal(secs[0]!.key, NO_FOLDER_KEY);
-  assert.equal(secs[0]!.title, 'No folder');
+  assert.equal(secs[0]!.title, 'Other');
   assert.equal(secs[0]!.items.length, 2);
 });
 
@@ -60,4 +60,16 @@ test('rail labels are two characters: initials of a hyphenated name, else the fi
   assert.equal(railLabel('docs'), 'Do');
   assert.equal(railLabel('x'), 'X');
   assert.equal(railLabel('-odd-'), 'Od');
+});
+
+test('a session stays in the project it was started in while its shell wanders', () => {
+  const secs = groupSessions([s('a', { project: '/w/app', cwd: '/w/app/src/deep' })]);
+  assert.deepEqual(secs.map((x) => x.key), ['/w/app']);
+});
+
+test('pinned projects are listed first, empty or not, and the no-folder section comes last', () => {
+  const secs = groupSessions([s('a'), s('b', { cwd: '/w/api' }), s('c', { cwd: '/w/app' })], ['/w/app', '/w/empty']);
+  assert.deepEqual(secs.map((x) => x.key), ['/w/app', '/w/empty', '/w/api', NO_FOLDER_KEY]);
+  assert.deepEqual(secs.map((x) => x.items.length), [1, 0, 1, 1]);
+  assert.deepEqual(secs.map((x) => x.kept), [true, true, false, false]);
 });
