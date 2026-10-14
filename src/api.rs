@@ -12,7 +12,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 
 use crate::{
-    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, layouts, modelmenu, modes, notify, ops, resume, search, sessions, suggest, tmux, uploads, usage,
+    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, files, layouts, modelmenu, modes, notify, ops, resume, search, sessions, suggest, tmux, uploads, usage,
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -29,6 +29,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/rename", post(rename_session))
         .route("/api/sessions/{id}/restore", post(restore_session))
         .route("/api/sessions/{id}/output", get(session_output))
+        .route("/api/sessions/{id}/file", get(session_file))
         .route("/api/sessions/{id}/search", get(session_search))
         .route("/api/sessions/{id}/search/jump", post(session_search_jump))
         .route("/api/sessions/{id}/search/close", post(session_search_close))
@@ -478,6 +479,44 @@ async fn session_output(
         Ok(text) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], text)
             .into_response(),
         Err(e) => server_error(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    /// A path as the terminal printed it: absolute, `~/…`, or relative to the session's folder.
+    path: String,
+}
+
+/// A file for the read-only viewer, from inside the folder the session works in.
+async fn session_file(State(st): State<Arc<AppState>>, Path(id): Path<String>, Query(q): Query<FileQuery>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(cwd) = ops::session_dir(&st, &id).await else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    let home = crate::agentlog::home();
+    // ttm's own config (it can hold the password) and data (cookie key, push keys) are never shown.
+    let secrets: Vec<std::path::PathBuf> =
+        std::iter::once(st.data_dir.clone()).chain(st.cfg.source.clone()).filter_map(|p| p.canonicalize().ok()).collect();
+    let done = tokio::task::spawn_blocking(move || {
+        let root = files::project_root(&cwd, home.as_deref());
+        let path = files::resolve(&root, &cwd, home.as_deref(), &q.path, &secrets)?;
+        files::read(&path, &root)
+    })
+    .await;
+    match done {
+        Ok(Ok(view)) => ([(header::CACHE_CONTROL, "no-store")], Json(view)).into_response(),
+        Ok(Err(why)) => {
+            let status = match why {
+                files::Refused::NotFound => StatusCode::NOT_FOUND,
+                files::Refused::Outside | files::Refused::Secret => StatusCode::FORBIDDEN,
+                files::Refused::NotAFile | files::Refused::Binary => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            };
+            (status, why.message()).into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 

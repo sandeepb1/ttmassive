@@ -11,6 +11,7 @@ import { RightBar } from './rightbar';
 import { SettingsSheet } from './settings';
 import { Pane, type PaneEvents } from './pane';
 import { el } from './dom';
+import { FileViewer } from './file-viewer';
 import { LayoutSheet } from './layout-sheet';
 import {
   corners, dividers, dragSizes, effectivePreset, isPresetId, neighbor, preset, presetClass, presetForCount, sanitizeSizes, span,
@@ -118,6 +119,10 @@ const paneEvents: PaneEvents = {
   },
   onSplit: () => void split(),
   onLayout: () => openLayout(),
+  onOpenFile: (session, path, line) => {
+    layout.dismissOverlays();
+    void new FileViewer($('app'), session, path, line, showLogin).open();
+  },
   onClose: (p) => closePane(p),
   onMenu: () => toggleList(),
   onPanel: () => layout.toggle('right'),

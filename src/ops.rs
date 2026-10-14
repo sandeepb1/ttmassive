@@ -30,6 +30,21 @@ pub async fn output(st: &AppState, id: &str, lines: usize) -> Result<String> {
     scrollback::read_tail(st, &uid, lines).await.with_context(|| format!("{id} is stopped and has no saved output"))
 }
 
+/// The folder a session works in: where its shell is now, or where it was started if it has stopped.
+pub async fn session_dir(st: &AppState, id: &str) -> Option<std::path::PathBuf> {
+    if let Ok(list) = tmux::list().await
+        && let Some(s) = list.iter().find(|s| s.id == id)
+        && !s.cwd.is_empty()
+    {
+        return Some(std::path::PathBuf::from(&s.cwd));
+    }
+    let dir = st.sessions.get(id)?.spec.dir.clone()?;
+    Some(match (dir.strip_prefix("~"), crate::agentlog::home()) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => dir,
+    })
+}
+
 /// What the session is doing and any question it is asking (live sessions only).
 pub async fn screen(id: &str) -> Result<Analysis> {
     Ok(screen::analyze(&tmux::capture(id, 60).await?))

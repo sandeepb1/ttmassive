@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod control;
 mod daemon;
+mod files;
 mod gitinfo;
 mod layouts;
 mod limits;

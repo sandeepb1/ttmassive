@@ -51,6 +51,10 @@ line](#command-line) · [Configuration](#configuration) · [How it works](#how-i
   data directory), so only your user can drive it that way.
 - Saved scrollback can contain anything an agent printed, including secrets. It sits in the data
   directory with owner-only permissions.
+- The file viewer only serves files inside the folder a session works in (its git repository, or the
+  folder itself), after following symlinks, and never ttm's own config or data directory or a
+  `.ssh`, `.gnupg`, `.aws` or `.kube` folder. That is a seatbelt against a stray path in some
+  output, not a sandbox: anyone logged in can already read these files through the terminal.
 
 ## Requirements
 
@@ -252,6 +256,25 @@ terminal. Closing the tab after a jump also leaves copy-mode.
 Matching is literal, not a regular expression. Case is ignored unless the search has a capital
 letter, as in tmux. Up to 1000 matches are counted and 200 are listed. It searches running
 sessions only; a stopped session keeps just its saved output (see `ttm output`).
+
+### Opening files from the terminal
+
+A file path in the terminal output becomes tappable: `src/main.rs:42:7` from a compiler,
+`./lib/a.ts(12,3)`, `/etc/hosts`, `~/notes.md`. Tap it to open a read-only viewer with line numbers
+and light syntax colours, scrolled to the line the path named, which is marked. **Copy path** copies
+the real path. The viewer shows the file as it is now, so it reflects what an agent just wrote.
+
+- Paths are looked up from the folder the session is in, then from the root of its git repository,
+  so a path printed relative to the repository root works from a subfolder.
+- Only files inside that folder open. A path that leaves it, directly or through a symlink, is
+  refused with a reason, as are ttm's own files, credentials folders, directories and binary files.
+- A file over 1 MB is cut at 1 MB on a whole line and says so. Colours need no setup and cover Rust,
+  TypeScript and JavaScript, Python, Go, shell, JSON, TOML, YAML, CSS, C-family languages and
+  Java/Kotlin; other files are shown plain.
+- Text is recognised as a path only when it looks like one: a folder and a file name, an explicit
+  `./`, `../`, `~/` or `/` location, or a name with a code extension. URLs, version numbers,
+  `and/or`, and slash commands such as `/model` are left alone. A bare `node.js` in prose does
+  look like a file, and opens "no such file" if tapped.
 
 ### When an agent exits
 
@@ -732,6 +755,10 @@ settings are `bind`, `password_hash`, `trust_proxy`, `tunnel`, `tunnel_token`, `
   runs `ttm statusline`, which prints the footer and posts to `/api/internal/usage` the same
   loopback way. Token totals come from Claude's transcript and Codex's session log, found by the
   conversation id the hooks reported, and are read incrementally.
+- Files: `GET /api/sessions/{id}/file?path=` returns `{path, rel, name, size, truncated, lines,
+  text}` for a file inside the session's project folder (404 not found, 403 outside it or private,
+  415 a directory or binary file). `path` is absolute, `~/…`, or relative to the session's folder,
+  then to its repository root. Text over 1 MB is cut on a line.
 - Search: `GET /api/sessions/{id}/search?q=` reads the whole tmux history and returns
   `{total, capped, hits: [{n, up, text, at, len}]}`, newest first, where `n` counts matches from the
   newest. `POST /api/sessions/{id}/search/jump` with `{q, n, text?}` puts the session in tmux's

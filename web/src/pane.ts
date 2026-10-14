@@ -24,6 +24,8 @@ export interface PaneEvents {
   onSplit: (pane: Pane) => void;
   /** Open the layout sheet: presets and saved workspaces. */
   onLayout: () => void;
+  /** A file path in `session`'s terminal was tapped. */
+  onOpenFile: (session: string, path: string, line: number | null) => void;
   onClose: (pane: Pane) => void;
   onMenu: () => void;
   onPanel: () => void;
@@ -228,6 +230,7 @@ export class Pane {
           this.activityMsg = a ? ACTIVITY[a.activity] : '';
           this.renderStatus();
         },
+        onOpenFile: (path, line) => this.events.onOpenFile(this.name, path, line),
         onProgress: (kind) => {
           if ((this.el.dataset.progress ?? '') === (kind ?? '')) return;
           this.el.dataset.progress = kind ?? '';

@@ -35,6 +35,9 @@ pub struct Config {
     pub socket: Option<PathBuf>,
     pub presets: Vec<Preset>,
     pub groups: Vec<Group>,
+    /// The file this was read from. The file viewer refuses it: it can hold the password.
+    #[serde(skip)]
+    pub source: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
@@ -151,6 +154,7 @@ impl Default for Config {
             socket: None,
             presets: Vec::new(),
             groups: Vec::new(),
+            source: None,
         }
     }
 }
@@ -176,6 +180,7 @@ impl Config {
             }
             None => Self::default(),
         };
+        cfg.source = path.filter(|p| p.exists());
         if let Ok(pw) = std::env::var("TTM_PASSWORD") {
             cfg.password = Some(pw);
         }

@@ -74,6 +74,22 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .t-progress[data-kind="indeterminate"] { animation: t-sweep 1.2s ease-in-out infinite alternate; }
 @keyframes t-sweep { from { transform: translateX(0); } to { transform: translateX(185%); } }
 @media (prefers-reduced-motion: reduce) { .t-progress[data-kind="indeterminate"] { animation: none; width: 100%; opacity: .5; } }
+/* File viewer. */
+.sheet.wide { width: min(100%, 1100px); }
+.fv { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
+.fv-head { display: flex; align-items: center; gap: 10px; }
+.fv-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font: var(--fs-sm) var(--font-mono); }
+.fv-meta { flex: none; font-size: var(--fs-xs); color: var(--fg-muted); }
+.fv-note { font-size: var(--fs-xs); color: var(--warn-text); }
+.fv-scroll { --fv-lh: 20px; flex: 1; min-height: 0; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.fv-inner { position: relative; display: flex; min-width: 100%; width: max-content; padding: 8px 0; }
+.fv-gutter { position: sticky; left: 0; z-index: 1; margin: 0; padding: 0 10px; text-align: right; user-select: none; color: var(--fg-faint);
+  background: var(--surface-2); border-right: 1px solid var(--border-subtle); font: 12.5px/var(--fv-lh) var(--font-mono); }
+.fv-code { position: relative; z-index: 1; margin: 0; padding: 0 16px 0 12px; white-space: pre; tab-size: 4; font: 12.5px/var(--fv-lh) var(--font-mono); }
+.fv-mark { position: absolute; z-index: 0; left: 0; right: 0; height: var(--fv-lh); background: var(--accent-bg); border-left: 3px solid var(--accent); pointer-events: none; }
+.tk-kw { color: var(--accent-text); } .tk-str { color: var(--ok-text); } .tk-com { color: var(--fg-faint); font-style: italic; } .tk-num { color: var(--warn-text); }
+
 /* History search, over the top of the terminal. */
 .ts-btn { display: inline-grid; place-items: center; flex: none; width: 40px; height: 40px; color: var(--fg-muted);
   background: var(--surface-4); border: 1px solid var(--border); border-radius: 10px; touch-action: manipulation; }

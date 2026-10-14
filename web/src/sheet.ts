@@ -44,6 +44,11 @@ export abstract class Sheet {
     this.sheet.classList.add('tall');
   }
 
+  /** Let the sheet use the width of a desktop screen, for content that is wide, like code. */
+  protected wide() {
+    this.sheet.classList.add('wide');
+  }
+
   /** Put the sheet on screen. */
   protected show() {
     this.gone = false;

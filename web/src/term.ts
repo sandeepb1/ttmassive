@@ -1,4 +1,4 @@
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type ILink } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { ClipboardAddon, type IClipboardProvider } from '@xterm/addon-clipboard';
@@ -11,6 +11,7 @@ import { KeyBar } from './keybar';
 import type { Analysis, ClientMsg, ServerMsg } from './protocol';
 import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
 import { linkAction, progressView, type Progress } from './term-addons';
+import { findPaths } from './paths';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
@@ -22,6 +23,8 @@ export interface SessionHooks {
   onScreen: (a: Analysis | null) => void;
   /** The program reported progress (OSC 9;4). `kind` is null when it cleared it. */
   onProgress: (kind: 'normal' | 'error' | 'indeterminate' | 'paused' | null) => void;
+  /** A file path in the output was tapped. */
+  onOpenFile: (path: string, line: number | null) => void;
 }
 
 /** Copies text for a program that asked via OSC 52. Reading the clipboard is never allowed. */
@@ -112,6 +115,7 @@ export class TerminalSession {
     this.term.open(el);
     this.setGpu(gpu);
     this.loadAddons();
+    this.watchTaps();
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
     this.term.onResize(({ rows, cols }) => this.sendCtl({ type: 'resize', rows, cols }));
@@ -171,6 +175,7 @@ export class TerminalSession {
     this.term.loadAddon(new ClipboardAddon(undefined, new WriteOnlyClipboard((t) => this.offerCopy(t))));
     this.term.loadAddon(new WebLinksAddon((_e, uri) => this.openLink(uri, uri)));
     this.term.loadAddon(new UnicodeGraphemesAddon());
+    this.term.registerLinkProvider({ provideLinks: (y, done) => done(this.pathLinks(y)) });
 
     const progress = new ProgressAddon();
     this.term.loadAddon(progress);
@@ -178,6 +183,76 @@ export class TerminalSession {
       const v = progressView(p);
       this.drawProgress(v);
       this.hooks.onProgress(v ? v.kind : null);
+    });
+  }
+
+  /**
+   * File paths on terminal line `y` (1-based), with where they are. A line the terminal wrapped is
+   * read whole, so a long path split across rows still links. (Wide characters shift the columns
+   * a little.)
+   */
+  private pathsOnLine(y: number): { range: ILink['range']; text: string; path: string; line: number | null }[] {
+    const buf = this.term.buffer.active;
+    const cols = this.term.cols;
+    let first = y - 1;
+    while (first > 0 && buf.getLine(first)?.isWrapped) first--;
+    let last = y - 1;
+    while (buf.getLine(last + 1)?.isWrapped) last++;
+    let text = '';
+    for (let r = first; r <= last; r++) text += buf.getLine(r)?.translateToString(r === last) ?? '';
+    const found = [];
+    for (const m of findPaths(text)) {
+      const from = { row: first + Math.floor(m.start / cols), col: m.start % cols };
+      const to = { row: first + Math.floor((m.end - 1) / cols), col: (m.end - 1) % cols };
+      if (y - 1 < from.row || y - 1 > to.row) continue;
+      const range = { start: { x: from.col + 1, y: from.row + 1 }, end: { x: to.col + 1, y: to.row + 1 } };
+      found.push({ range, text: text.slice(m.start, m.end), path: m.path, line: m.line });
+    }
+    return found;
+  }
+
+  /** Underline and pointer on hover. xterm asks again when the pointer changes row. */
+  private pathLinks(y: number): ILink[] | undefined {
+    const links = this.pathsOnLine(y).map((f) => ({
+      range: f.range,
+      text: f.text,
+      activate: () => this.openFile(f.path, f.line),
+    }));
+    return links.length ? links : undefined;
+  }
+
+  private lastOpened = 0;
+
+  private openFile(path: string, line: number | null) {
+    this.lastOpened = performance.now();
+    this.hooks.onOpenFile(path, line);
+  }
+
+  /**
+   * A tap or click on a path. xterm keeps the links it found for a row while the pointer stays on
+   * it, so after the text there changes (an agent redraws rows all the time) it can miss a path
+   * that is there now, or open one that is gone. This reads the row fresh instead.
+   */
+  private watchTaps() {
+    let down: { x: number; y: number } | null = null;
+    this.el.addEventListener('pointerdown', (e) => (down = { x: e.clientX, y: e.clientY }), true);
+    this.el.addEventListener('click', (e) => {
+      const start = down;
+      down = null;
+      if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6 || this.term.hasSelection()) return;
+      if (performance.now() - this.lastOpened < 600) return; // xterm's own link already opened it
+      const screen = this.el.querySelector('.xterm-screen');
+      if (!screen) return;
+      const r = screen.getBoundingClientRect();
+      const col = Math.floor((e.clientX - r.left) / (r.width / this.term.cols));
+      const row = Math.floor((e.clientY - r.top) / (r.height / this.term.rows));
+      if (col < 0 || row < 0 || col >= this.term.cols || row >= this.term.rows) return;
+      const y = this.term.buffer.active.viewportY + row + 1;
+      const hit = this.pathsOnLine(y).find((f) => {
+        const { start: a, end: b } = f.range;
+        return (y > a.y || (y === a.y && col + 1 >= a.x)) && (y < b.y || (y === b.y && col + 1 <= b.x));
+      });
+      if (hit) this.openFile(hit.path, hit.line);
     });
   }
 
