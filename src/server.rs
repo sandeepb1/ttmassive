@@ -58,6 +58,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         statusline: dashmap::DashMap::new(),
         memory: crate::memory::Memory::new(),
         teamclaude: crate::teamclaude::Probes::new(),
+        branches: crate::gitinfo::Branches::new(),
         data_dir,
         cfg,
         auth,

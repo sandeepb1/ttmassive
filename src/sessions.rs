@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState,
     config::{Agent, Preset, RestartPolicy},
-    gitinfo, limits,
+    limits,
     notify::{self, Alert, Kind},
     ops,
     screen::Activity,
@@ -345,8 +345,12 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             id,
         });
     }
+    let mut dirs: Vec<PathBuf> = out.iter().filter_map(|v| v.cwd.as_deref().map(PathBuf::from)).collect();
+    dirs.sort();
+    dirs.dedup();
+    let branches = st.branches.get_all(dirs).await;
     for v in &mut out {
-        v.branch = v.cwd.as_deref().and_then(|c| gitinfo::branch(Path::new(c)));
+        v.branch = v.cwd.as_deref().and_then(|c| branches.get(Path::new(c)).cloned().flatten());
     }
     out.sort_by(|a, b| {
         b.pinned.cmp(&a.pinned).then(b.created.cmp(&a.created)).then_with(|| a.id.cmp(&b.id))

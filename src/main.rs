@@ -76,6 +76,8 @@ pub struct AppState {
     pub memory: memory::Memory,
     /// Whether a pane routes through Team Claude, remembered briefly.
     pub teamclaude: teamclaude::Probes,
+    /// The git branch of each session's folder, looked up off the runtime.
+    pub branches: gitinfo::Branches,
 }
 
 #[derive(Parser)]
