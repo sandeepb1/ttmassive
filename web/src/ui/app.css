@@ -64,6 +64,10 @@
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font: 1rem var(--font-ui); overscroll-behavior: none; }
   [hidden] { display: none !important; }
+  /* iOS 26 blurs and fades the top of an installed web app (over the usage strip) unless an opaque, fixed box spans the
+     top edge. This paints the status-bar zone in the page colour, which the page leaves empty anyway, so it counts as
+     that box. It is as tall as the inset, so it is 0 where there is none. */
+  #edge { position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: var(--bg); z-index: 40; }
   #app { display: flex; height: var(--vvh, 100dvh); position: relative; overflow: hidden;
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   /* OSC 9;4 progress: a thin bar along the top edge of the terminal. */

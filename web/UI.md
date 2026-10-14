@@ -108,6 +108,15 @@ declarations beat all normal ones whatever the layer. `[hidden]` already works (
 important). The guard knows the hook classes of the kit buttons that CSS hides (`KIT_HOOKS` in
 `guard.test.ts`); add to it when you hide another.
 
+### iOS 26 and the top edge
+
+An installed web app on iOS 26 gets a blur that fades the top of the page (the usage strip). No CSS turns it off.
+WebKit skips it when a fixed, opaque, full-width box spans the top edge, so `index.html` has `#edge`: a fixed strip in
+the page colour, as tall as `env(safe-area-inset-top)` (so 0 elsewhere), painted in the status-bar zone the page
+leaves empty. Keep it, and do not give it a different colour from `--bg`. It is not reproducible in a headless
+browser; check on a device, and if it comes back, remove the home-screen icon and add it again. Making `#app`
+itself fixed also suppresses the blur but risks the soft-keyboard layout (`--vvh`), so it was not used.
+
 Also: Tailwind generates only the utilities it finds in source, scanned across the project, so a class
 must appear as a whole string in a `.ts` file (do not build `bg-${x}` at runtime).
 
