@@ -11,6 +11,7 @@ import {
   isRecorded,
   lastUserMessage,
   modeChipText,
+  modeTone,
   newStore,
   noteLeavingBuild,
   pendingQuestion,
@@ -29,6 +30,9 @@ import { MoreSheet } from './more-sheet';
 import { ResumeSheet } from './resume-sheet';
 import type { QuestionRequest } from './question-form';
 import { el } from './dom';
+import { icon } from './icons';
+import { button } from './ui/button';
+import { chip, setChipTone } from './ui/chip';
 import { tap } from './haptics';
 import { filesChanged, searchItems, type ChangedFile, type Hit } from './chat-insights';
 
@@ -109,19 +113,19 @@ export class ChatView {
   private sentBox = el('div', 'chat-sent');
   private typing = el('div', 'chat-typing', 'Working…');
   private empty = el('div', 'chat-empty');
-  private jump = el('button', 'chat-jump', '↓');
+  private jump = button({ variant: 'secondary', size: 'icon-sm', label: 'Jump to the latest message', cls: 'absolute bottom-2.5 left-1/2 z-5 -translate-x-1/2 rounded-full shadow-pop' }, icon('arrow-down'));
   private promptEl = el('div', 'bar chat-prompt');
   private err = el('div', 'chat-err');
-  private input = el('textarea', 'c-input');
-  private chip = el('button', 'c-chip');
-  private stopBtn = el('button', 'c-stop', '■');
-  private sendBtn = el('button', 'c-send', '↑');
-  private attachBtn = el('button', 'c-attach', '+');
+  private input = el('textarea', 'max-h-40 min-h-7 resize-none bg-transparent px-0.5 py-1 text-base leading-snug text-foreground outline-none placeholder:text-faint');
+  private chip = chip({ cls: 'px-3' });
+  private stopBtn = button({ variant: 'soft-danger', size: 'icon', label: 'Stop', cls: 'size-11 rounded-full' }, icon('stop'));
+  private sendBtn = button({ size: 'icon', label: 'Send', cls: 'size-11 rounded-full' }, icon('arrow-up'));
+  private attachBtn = button({ variant: 'secondary', size: 'icon-sm', label: 'Attach an image', cls: 'rounded-full' }, icon('plus'));
   private fileInput = el('input');
-  private attachRow = el('div', 'attach-row');
+  private attachRow = el('div', 'flex flex-wrap gap-2');
   private suggestEl = el('div', 'suggest');
   /** Claude's suggested reply, offered as a chip above the box. */
-  private replyChip = el('button', 'reply-chip');
+  private replyChip = el('button', 'mb-1.5 max-w-full self-start truncate rounded-lg border border-dashed border-input bg-card px-3 py-1.5 text-left text-md text-muted-foreground active:bg-muted');
   private note = el('div', 'chat-note');
   private noteTimer = 0;
   private agent: 'claude' | 'codex' | null = null;
@@ -129,8 +133,8 @@ export class ChatView {
   private modeSheet: ModeSheet | null = null;
   private moreSheet: MoreSheet | null = null;
   private resumeSheet: ResumeSheet | null = null;
-  private modeChip = el('button', 'c-mode');
-  private moreBtn = el('button', 'c-more', '⋯');
+  private modeChip = chip({ cls: 'px-3' });
+  private moreBtn = button({ variant: 'secondary', size: 'icon-sm', label: 'More', cls: 'rounded-full' }, icon('more'));
   private suggestions: Suggestion[] = [];
   private activeSuggestion = 0;
   private trigger: Trigger | null = null;
@@ -201,7 +205,7 @@ export class ChatView {
 
     this.promptBar = new PromptBar(this.promptEl, (choice, promptId) => this.answer(choice, promptId));
 
-    const form = el('form', 'composer');
+    const form = el('form', 'relative mx-2 mb-2 mt-0.5 flex w-[calc(min(100%,51.25rem)-1rem)] flex-col gap-1.5 self-center rounded-xl bg-card px-3 pb-2 pt-2.5');
     this.input.rows = 1;
     this.input.placeholder = 'Message';
     this.input.setAttribute('aria-label', 'Message');
@@ -288,8 +292,8 @@ export class ChatView {
     this.replyChip.type = 'button';
     this.replyChip.hidden = true;
     this.replyChip.addEventListener('click', () => this.useSuggestedReply());
-    const row = el('div', 'composer-row');
-    row.append(this.attachBtn, this.chip, this.modeChip, el('span', 'c-spacer'), this.moreBtn, this.stopBtn, this.sendBtn);
+    const row = el('div', 'flex items-center gap-2');
+    row.append(this.attachBtn, this.chip, this.modeChip, el('span', 'flex-1'), this.moreBtn, this.stopBtn, this.sendBtn);
     form.append(this.suggestEl, this.replyChip, this.note, this.err, this.attachRow, this.input, row, this.fileInput);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -517,7 +521,7 @@ export class ChatView {
     const text = modeChipText(this.store);
     this.modeChip.textContent = text;
     this.modeChip.hidden = text === '';
-    this.modeChip.className = `c-mode m-${this.store.mode ?? 'none'}${this.store.yolo ? ' yolo' : ''}`;
+    setChipTone(this.modeChip, modeTone(this.store.mode, this.store.yolo));
     this.modeChip.title = this.store.yolo ? 'Started with permission checks skipped. Tap to change mode.' : 'Change mode';
     this.moreBtn.hidden = this.agent === null;
     this.emitInfo();
@@ -783,11 +787,12 @@ export class ChatView {
   private renderAttachments() {
     this.attachRow.replaceChildren(
       ...this.attachments.map((a) => {
-        const chip = el('span', 'att');
-        const img = el('img');
+        const thumb = el('span', 'relative');
+        const img = el('img', 'block size-14 rounded-md border border-border object-cover');
         img.src = a.thumb;
         img.alt = 'Attached image';
-        const x = el('button', 'att-x', '✕');
+        const x = el('button', 'absolute -right-1.5 -top-1.5 grid size-5 place-items-center rounded-full border border-background bg-border text-foreground');
+        x.append(icon('close', 'size-2.5'));
         x.type = 'button';
         x.setAttribute('aria-label', 'Remove the image');
         x.addEventListener('click', () => {
@@ -799,8 +804,8 @@ export class ChatView {
           this.saveDraft();
           this.syncControls();
         });
-        chip.append(img, x);
-        return chip;
+        thumb.append(img, x);
+        return thumb;
       }),
     );
     this.attachRow.hidden = this.attachments.length === 0;

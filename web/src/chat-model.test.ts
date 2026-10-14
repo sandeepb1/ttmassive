@@ -11,6 +11,7 @@ import {
   pasteHint,
   pasteLabel,
   modeChipText,
+  modeTone,
   stepEffort,
   isRecorded,
   levelKey,
@@ -313,4 +314,14 @@ test('a paste is labelled by its length and hinted by its first line', () => {
   assert.equal(pasteHint('\n\n  ~/code main*  \n❯ ls'), '~/code main*');
   assert.equal(pasteHint(''), '');
   assert.equal(pasteHint('x'.repeat(100), 20), `${'x'.repeat(19)}…`);
+});
+
+test('the mode chip is tinted by how much the agent may do on its own', () => {
+  assert.equal(modeTone('default', false), 'neutral');
+  assert.equal(modeTone(null, false), 'neutral');
+  assert.equal(modeTone('plan', false), 'accent');
+  assert.equal(modeTone('accept_edits', false), 'ok');
+  assert.equal(modeTone('auto', false), 'warn');
+  assert.equal(modeTone('bypass', false), 'danger');
+  assert.equal(modeTone('plan', true), 'danger');
 });

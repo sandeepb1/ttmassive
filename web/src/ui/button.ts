@@ -12,6 +12,7 @@ export const buttonStyles = tv({
       outline: 'border border-border bg-transparent text-foreground active:bg-muted',
       ghost: 'bg-transparent text-foreground active:bg-muted',
       destructive: 'bg-destructive text-destructive-foreground',
+      'soft-danger': 'bg-danger-bg text-danger-text',
     },
     size: {
       md: 'h-ctl px-5 text-md',
@@ -24,7 +25,7 @@ export const buttonStyles = tv({
 });
 
 export interface ButtonProps {
-  variant?: 'default' | 'secondary' | 'outline' | 'ghost' | 'destructive';
+  variant?: 'default' | 'secondary' | 'outline' | 'ghost' | 'destructive' | 'soft-danger';
   size?: 'md' | 'sm' | 'icon' | 'icon-sm';
   /** Accessible name; required for icon-only buttons. */
   label?: string;
