@@ -1,5 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import { KeyBar } from './keybar';
 import type { Analysis, ClientMsg, ServerMsg } from './protocol';
@@ -69,6 +70,7 @@ export class TerminalSession {
     );
     this.term.loadAddon(this.fit);
     this.term.open(el);
+    this.useGpuRenderer();
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
     this.term.onResize(({ rows, cols }) => this.sendCtl({ type: 'resize', rows, cols }));
@@ -95,6 +97,20 @@ export class TerminalSession {
       window.visualViewport?.removeEventListener('resize', refit);
     };
     this.fit.fit();
+  }
+
+  /**
+   * Draw on the GPU. The default DOM renderer is the main source of lag when an agent streams a
+   * lot of output. Without WebGL, or if the context is lost, xterm keeps its DOM renderer.
+   */
+  private useGpuRenderer() {
+    try {
+      const gl = new WebglAddon();
+      gl.onContextLoss(() => gl.dispose());
+      this.term.loadAddon(gl);
+    } catch {
+      /* no WebGL here: the DOM renderer stays */
+    }
   }
 
   /** Raw bytes to the PTY (used by the keybar too). */

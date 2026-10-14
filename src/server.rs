@@ -59,7 +59,15 @@ pub async fn serve(cfg: Config) -> Result<()> {
         auth,
     });
 
-    let listener = tokio::net::TcpListener::bind(bind).await.with_context(|| format!("binding {bind}"))?;
+    use axum::serve::ListenerExt;
+    // Keystrokes and echoes are tiny writes: without TCP_NODELAY they wait to be batched with
+    // the next one (Nagle), which adds up to tens of milliseconds to every key.
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .with_context(|| format!("binding {bind}"))?
+        .tap_io(|tcp| {
+            let _ = tcp.set_nodelay(true);
+        });
     let app = api::router(state.clone());
     let (stop_http, stopped) = tokio::sync::oneshot::channel::<()>();
     let http = tokio::spawn(async move {
