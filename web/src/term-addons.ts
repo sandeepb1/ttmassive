@@ -65,3 +65,18 @@ export function linkAction(text: string, uri: string): LinkAction {
   const real = u.hostname.toLowerCase();
   return shown === real ? 'open' : 'confirm';
 }
+
+/**
+ * A program's window title (OSC 0/2) as a header subtitle: control characters and the spinner or
+ * star glyph agents put in front are dropped, spaces collapse, and a long title is cut short.
+ */
+export function cleanTitle(raw: string, max = 60): string {
+  const plain = raw.replace(/\s+/g, ' ').replace(/\p{C}/gu, '').trim().replace(/^[^\p{L}\p{N}]+/u, '');
+  return plain.length > max ? `${plain.slice(0, max - 1).trimEnd()}…` : plain;
+}
+
+/** Whether a bell is worth a dot, a sound and a buzz: not for the pane you are looking at, and not twice in `gapMs`. */
+export function bellRings(o: { now: number; last: number; focused: boolean; hidden: boolean; gapMs: number }): boolean {
+  if (o.focused && !o.hidden) return false;
+  return o.now - o.last >= o.gapMs;
+}

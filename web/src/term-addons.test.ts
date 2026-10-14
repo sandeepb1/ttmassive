@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { linkAction, progressView } from './term-addons.ts';
+import { bellRings, cleanTitle, linkAction, progressView } from './term-addons.ts';
 
 test('progress: hidden when off', () => {
   assert.equal(progressView({ state: 0, value: 0 }), null);
@@ -42,4 +42,21 @@ test('links: only http(s) and mailto are allowed', () => {
   assert.equal(linkAction('x', 'file:///etc/passwd'), 'block');
   assert.equal(linkAction('x', 'not a url'), 'block');
   assert.equal(linkAction('me@example.com', 'mailto:me@example.com'), 'open');
+});
+
+test('titles lose spinner glyphs, control characters and extra space, and are cut short', () => {
+  assert.equal(cleanTitle('✳ Refactor auth'), 'Refactor auth');
+  assert.equal(cleanTitle('⠂  Fix\tthe   build\x07'), 'Fix the build');
+  assert.equal(cleanTitle('~/code — zsh'), 'code — zsh');
+  assert.equal(cleanTitle('✻'), '');
+  assert.equal(cleanTitle('a'.repeat(100), 10), 'aaaaaaaaa…');
+});
+
+test('a bell rings for an unfocused or hidden pane, at most once per gap', () => {
+  const base = { now: 100_000, last: 0, focused: false, hidden: false, gapMs: 10_000 };
+  assert.equal(bellRings(base), true);
+  assert.equal(bellRings({ ...base, focused: true }), false);
+  assert.equal(bellRings({ ...base, focused: true, hidden: true }), true);
+  assert.equal(bellRings({ ...base, last: 95_000 }), false);
+  assert.equal(bellRings({ ...base, last: 90_000 }), true);
 });

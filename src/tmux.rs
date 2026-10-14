@@ -72,7 +72,9 @@ fn target(id: &str) -> String {
 /// client attaches, so after is too late. It lets the browser terminal receive OSC 52 copies and
 /// OSC 8 links. `set-clipboard on` and `allow-passthrough on` forward the rest: OSC 52, and the
 /// DCS-wrapped OSC 9;4 progress that Claude Code sends when it sees tmux. Index 10 keeps the
-/// line from piling up a new entry on every attach.
+/// line from piling up a new entry on every attach. `focus-events` lets the agents see whether the
+/// pane is focused; `set-titles` hands the program's own window title (OSC 0/2) to the browser,
+/// which tmux otherwise keeps to itself.
 pub fn attach_args(id: &str) -> Vec<String> {
     let mut a: Vec<String> = ["-u", "-L", SOCKET].map(String::from).into();
     for opt in [
@@ -83,6 +85,9 @@ pub fn attach_args(id: &str) -> Vec<String> {
         ";", "set", "-g", "status", "off",
         ";", "set", "-g", "history-limit", "50000",
         ";", "set", "-g", "set-clipboard", "on",
+        ";", "set", "-g", "focus-events", "on",
+        ";", "set", "-g", "set-titles", "on",
+        ";", "set", "-g", "set-titles-string", "#{pane_title}",
         ";", "set", "-g", "allow-passthrough", "on",
     ] {
         a.push(opt.into());

@@ -12,7 +12,10 @@ import { icon } from './icons';
 import type { Analysis } from './protocol';
 import type { ChatActions } from './rightbar';
 import { setAgentAccent } from './theme';
+import { playBell } from './bell';
+import { bell } from './haptics';
 import { TerminalSession } from './term';
+import { bellRings } from './term-addons';
 import { ActivityChip } from './term-chip';
 import { TermSearch } from './term-search';
 
@@ -21,7 +24,7 @@ export interface PaneEvents {
   /** The user touched this pane: make it the focused one. */
   onActivate: (pane: Pane) => void;
   /** Something the sidebars show changed. */
-  onChange: (pane: Pane, what: 'name' | 'status' | 'info' | 'data' | 'agent' | 'progress') => void;
+  onChange: (pane: Pane, what: 'name' | 'status' | 'info' | 'data' | 'agent' | 'progress' | 'attention') => void;
   onSplit: (pane: Pane) => void;
   /** Open the layout sheet: presets and saved workspaces. */
   onLayout: () => void;
@@ -102,6 +105,9 @@ export class Pane {
   private viewChosen = false;
   private connMsg = '';
   private activityMsg = '';
+  /** The program's own window title, cleaned. */
+  private termTitle = '';
+  private lastBell = 0;
   private notice = '';
   private noticeTimer = 0;
 
@@ -177,6 +183,8 @@ export class Pane {
     this.nameEl.textContent = name;
     this.connMsg = '';
     this.activityMsg = '';
+    this.termTitle = '';
+    delete this.el.dataset.attention;
     this.renderStatus();
     this.events.onChange(this, 'name');
 
@@ -241,6 +249,11 @@ export class Pane {
         },
         onOpenFile: (path, line) => this.events.onOpenFile(this.name, path, line),
         agent: () => this.agent,
+        onTitle: (t) => {
+          this.termTitle = t;
+          this.renderStatus();
+        },
+        onBell: () => this.ring(),
         onProgress: (kind) => {
           if ((this.el.dataset.progress ?? '') === (kind ?? '')) return;
           this.el.dataset.progress = kind ?? '';
@@ -343,8 +356,23 @@ export class Pane {
     this.historySearch.open();
   }
 
+  /** The program rang the bell: mark a pane you are not looking at, and nudge. */
+  private ring() {
+    const now = Date.now();
+    if (!bellRings({ now, last: this.lastBell, focused: this.focused, hidden: document.hidden, gapMs: 10_000 })) return;
+    this.lastBell = now;
+    this.el.dataset.attention = '1';
+    this.events.onChange(this, 'attention');
+    playBell();
+    bell();
+  }
+
   setFocused(on: boolean) {
     this.focused = on;
+    if (on && this.el.dataset.attention) {
+      delete this.el.dataset.attention;
+      this.events.onChange(this, 'attention');
+    }
     this.el.classList.toggle('focused', on);
     if (on && this.view === 'term') this.term?.focus();
   }
@@ -383,7 +411,8 @@ export class Pane {
   }
 
   private renderStatus() {
-    this.statusText = this.notice || this.connMsg || this.activityMsg;
+    const t = this.termTitle.toLowerCase() === this.activityMsg.toLowerCase() ? '' : this.termTitle;
+    this.statusText = this.notice || this.connMsg || [this.activityMsg, t].filter(Boolean).join(' · ');
     this.statusEl.textContent = this.statusText;
     this.events.onChange(this, 'status');
   }

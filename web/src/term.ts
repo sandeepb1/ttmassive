@@ -10,7 +10,7 @@ import { el } from './dom';
 import { KeyBar } from './keybar';
 import type { Analysis, ClientMsg, ServerMsg } from './protocol';
 import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
-import { linkAction, progressView, type Progress } from './term-addons';
+import { cleanTitle, linkAction, progressView, type Progress } from './term-addons';
 import { skewFromDate } from './activity-chip';
 import { findPaths } from './paths';
 import { markedRows } from './turn-marks';
@@ -33,6 +33,10 @@ export interface SessionHooks {
   onOpenFile: (path: string, line: number | null) => void;
   /** Which agent the session runs, or null for a plain shell. */
   agent: () => 'claude' | 'codex' | null;
+  /** The program set its window title (OSC 0/2), already cleaned for display. */
+  onTitle: (title: string) => void;
+  /** The program rang the bell. */
+  onBell: () => void;
 }
 
 /** Copies text for a program that asked via OSC 52. Reading the clipboard is never allowed. */
@@ -130,6 +134,8 @@ export class TerminalSession {
     this.watchTaps();
     this.term.attachCustomKeyEventHandler((e) => this.newlineKey(e));
     this.watchDrops();
+    this.term.onTitleChange((t) => this.hooks.onTitle(cleanTitle(t)));
+    this.term.onBell(() => this.hooks.onBell());
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
     this.term.onResize(({ rows, cols }) => this.sendCtl({ type: 'resize', rows, cols }));

@@ -13,3 +13,6 @@ export const tap = () => buzz(10);
 
 /** A firmer double pulse, for a confirm that throws something away. */
 export const warn = () => buzz([18, 40, 18]);
+
+/** Two short pulses: a pane you are not looking at rang its bell. */
+export const bell = () => buzz([25, 45, 25]);

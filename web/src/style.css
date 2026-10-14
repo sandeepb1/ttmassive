@@ -823,3 +823,9 @@ details.acard > summary:active { background: var(--surface-3); }
   .p-viewtoggle button { min-height: 34px; padding: 0 14px; }
   .c-chip, .c-mode { min-height: 36px; padding-top: 0; padding-bottom: 0; }
 }
+
+/* A pane (or its drawer row) whose program rang the bell while you were looking elsewhere. */
+.pane[data-attention] .p-name::after, .srow.bell .srow-name::after {
+  content: ''; display: inline-block; width: 8px; height: 8px; margin-left: 8px; border-radius: 50%;
+  background: var(--warn); vertical-align: middle;
+}

@@ -8,6 +8,7 @@ import { UsageView } from './usage';
 import { Layout } from './layout';
 import { edgeSwipe } from './gestures';
 import { RightBar } from './rightbar';
+import { armBell } from './bell';
 import { SettingsSheet } from './settings';
 import { Pane, type PaneEvents } from './pane';
 import { el } from './dom';
@@ -23,6 +24,7 @@ import type { SubAgent } from './agents';
 
 initTheme();
 initUiScale();
+armBell();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const layout = new Layout($('app'));
@@ -95,7 +97,7 @@ const paneEvents: PaneEvents = {
       sidebar?.reload();
       saveTiles();
     }
-    if (what === 'progress') sidebar?.reload();
+    if (what === 'progress' || what === 'attention') sidebar?.reload();
     if (p !== focused) return;
     switch (what) {
       case 'name':
@@ -636,6 +638,7 @@ async function showApp() {
       openAgent,
       shown: () => panes.map((p) => p.name),
       progress: (id) => panes.find((p) => p.name === id)?.el.dataset.progress || null,
+      attention: (id) => !!panes.find((p) => p.name === id)?.el.dataset.attention,
     },
     (id) => usage?.tokensLabel(id),
   );

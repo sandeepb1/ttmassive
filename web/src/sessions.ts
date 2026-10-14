@@ -105,6 +105,8 @@ export interface SidebarHooks {
   shown: () => string[];
   /** Progress a program reported (OSC 9;4) in a session open in a pane, if any. */
   progress: (id: string) => string | null;
+  /** A pane you were not looking at rang its bell. */
+  attention: (id: string) => boolean;
 }
 
 /** The left sidebar: your sessions, a way to start new ones, and the way into Settings. */
@@ -433,6 +435,7 @@ export class SessionSidebar {
 
     const state = dotState(s, ACTIVE_SECS);
     if (state === 'waiting') row.classList.add('waiting');
+    if (this.hooks.attention(s.id)) row.classList.add('bell');
     const dot = el('span', `dot ${state}`);
     dot.setAttribute('aria-label', DOT_LABEL[state]);
     const prog = this.hooks.progress(s.id);
