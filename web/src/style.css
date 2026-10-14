@@ -65,7 +65,21 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 [hidden] { display: none !important; }
 #app { display: flex; height: var(--vvh, 100dvh); position: relative; overflow: hidden;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
-.p-term { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
+.p-term { flex: 1; min-height: 0; padding: 4px; overflow: hidden; position: relative; }
+/* OSC 9;4 progress: a thin bar along the top edge of the terminal. */
+.t-progress { position: absolute; top: 0; left: 0; height: 3px; width: var(--pct, 0%); z-index: 3; pointer-events: none;
+  background: var(--accent); transition: width .2s ease, background-color .2s ease; }
+.t-progress[data-kind="error"] { background: var(--danger); }
+.t-progress[data-kind="paused"] { background: var(--warn); }
+.t-progress[data-kind="indeterminate"] { animation: t-sweep 1.2s ease-in-out infinite alternate; }
+@keyframes t-sweep { from { transform: translateX(0); } to { transform: translateX(185%); } }
+@media (prefers-reduced-motion: reduce) { .t-progress[data-kind="indeterminate"] { animation: none; width: 100%; opacity: .5; } }
+/* Shown when the browser refuses an OSC 52 copy outside a tap. */
+.t-toast { position: absolute; right: 8px; bottom: 8px; z-index: 4; display: flex; align-items: center; gap: 10px;
+  padding: 6px 6px 6px 12px; border-radius: 10px; background: var(--surface-5); border: 1px solid var(--border-strong);
+  color: var(--fg); font-size: var(--fs-sm); box-shadow: 0 4px 16px rgb(0 0 0 / .35); }
+.t-toast-btn { min-height: 36px; padding: 0 14px; border-radius: 8px; border: 0; background: var(--accent); color: var(--on-accent);
+  font: inherit; font-weight: 600; cursor: pointer; }
 .p-status:empty { display: none; }
 #login { display: grid; place-items: center; height: 100dvh; }
 #login-form { display: grid; gap: 12px; width: min(320px, 90vw); }
@@ -529,6 +543,10 @@ button { font-family: inherit; touch-action: manipulation; -webkit-tap-highlight
 /* ---- Session list: sections, previews, status ---- */
 .dot.working { background: var(--accent); animation: ttm-pulse 1.2s ease-in-out infinite; }
 .dot.ready { background: var(--ok); }
+/* A program in this session is reporting progress (OSC 9;4). */
+.dot[data-progress] { box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--accent); }
+.dot[data-progress="error"] { box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--danger); }
+.dot[data-progress="paused"] { box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--warn); }
 .dot.waiting { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); animation: ttm-pulse 1s ease-in-out infinite; }
 .srow.waiting { background: var(--warn-bg); border-color: var(--warn-border); }
 .srow.waiting.current { box-shadow: inset 0 0 0 1px var(--accent); }

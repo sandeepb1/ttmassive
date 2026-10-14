@@ -19,7 +19,7 @@ export interface PaneEvents {
   /** The user touched this pane: make it the focused one. */
   onActivate: (pane: Pane) => void;
   /** Something the sidebars show changed. */
-  onChange: (pane: Pane, what: 'name' | 'status' | 'info' | 'data' | 'agent') => void;
+  onChange: (pane: Pane, what: 'name' | 'status' | 'info' | 'data' | 'agent' | 'progress') => void;
   onSplit: (pane: Pane) => void;
   onClose: (pane: Pane) => void;
   onMenu: () => void;
@@ -212,6 +212,11 @@ export class Pane {
           this.promptBar?.render(a);
           this.activityMsg = a ? ACTIVITY[a.activity] : '';
           this.renderStatus();
+        },
+        onProgress: (kind) => {
+          if ((this.el.dataset.progress ?? '') === (kind ?? '')) return;
+          this.el.dataset.progress = kind ?? '';
+          this.events.onChange(this, 'progress');
         },
       },
     );

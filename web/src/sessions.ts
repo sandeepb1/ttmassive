@@ -103,6 +103,8 @@ export interface SidebarHooks {
   openAgent: (session: string, agent: SubAgent) => void;
   /** Every session open in a pane, to mark in the list. */
   shown: () => string[];
+  /** Progress a program reported (OSC 9;4) in a session open in a pane, if any. */
+  progress: (id: string) => string | null;
 }
 
 /** The left sidebar: your sessions, a way to start new ones, and the way into Settings. */
@@ -433,6 +435,8 @@ export class SessionSidebar {
     if (state === 'waiting') row.classList.add('waiting');
     const dot = el('span', `dot ${state}`);
     dot.setAttribute('aria-label', DOT_LABEL[state]);
+    const prog = this.hooks.progress(s.id);
+    if (prog) dot.dataset.progress = prog;
 
     const main = el('button', 'srow-main');
     main.type = 'button';

@@ -1,10 +1,16 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { ClipboardAddon, type IClipboardProvider } from '@xterm/addon-clipboard';
+import { ProgressAddon } from '@xterm/addon-progress';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { el } from './dom';
 import { KeyBar } from './keybar';
 import type { Analysis, ClientMsg, ServerMsg } from './protocol';
 import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
+import { linkAction, progressView, type Progress } from './term-addons';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
@@ -14,6 +20,26 @@ export interface SessionHooks {
   onStopped: (resumable: boolean) => void;
   /** Latest screen analysis, or null when unavailable. */
   onScreen: (a: Analysis | null) => void;
+  /** The program reported progress (OSC 9;4). `kind` is null when it cleared it. */
+  onProgress: (kind: 'normal' | 'error' | 'indeterminate' | 'paused' | null) => void;
+}
+
+/** Copies text for a program that asked via OSC 52. Reading the clipboard is never allowed. */
+class WriteOnlyClipboard implements IClipboardProvider {
+  constructor(private blocked: (text: string) => void) {}
+
+  readText(): string {
+    return '';
+  }
+
+  async writeText(_selection: string, text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Safari only allows this inside a tap; hand the text to a button the user can press.
+      this.blocked(text);
+    }
+  }
 }
 const MAX_BACKOFF_MS = 10_000;
 
@@ -40,7 +66,19 @@ export class TerminalSession {
     allowProposedApi: true,
     fontFamily: MONO_FALLBACK, // swapped to MONO_FONT once the web font has loaded
     theme: xtermTheme(),
+    // OSC 8 hyperlinks: only http(s)/mailto, and a label that fakes another address is confirmed.
+    linkHandler: {
+      allowNonHttpProtocols: false,
+      activate: (_e, uri, range) => {
+        const label =
+          this.term.buffer.active.getLine(range.start.y - 1)?.translateToString(true, range.start.x - 1, range.end.x) ?? '';
+        this.openLink(label, uri);
+      },
+    },
   });
+  private toastEl: HTMLElement | null = null;
+  private toastTimer = 0;
+  private barEl: HTMLElement | null = null;
   private fit = new FitAddon();
   private ws: WebSocket | null = null;
   private attempt = 0;
@@ -71,6 +109,7 @@ export class TerminalSession {
     this.term.loadAddon(this.fit);
     this.term.open(el);
     this.useGpuRenderer();
+    this.loadAddons();
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
     this.term.onResize(({ rows, cols }) => this.sendCtl({ type: 'resize', rows, cols }));
@@ -111,6 +150,69 @@ export class TerminalSession {
     } catch {
       /* no WebGL here: the DOM renderer stays */
     }
+  }
+
+  /** Clipboard (OSC 52 writes), links, progress (OSC 9;4) and correct widths for emoji. */
+  private loadAddons() {
+    this.term.loadAddon(new ClipboardAddon(undefined, new WriteOnlyClipboard((t) => this.offerCopy(t))));
+    this.term.loadAddon(new WebLinksAddon((_e, uri) => this.openLink(uri, uri)));
+    this.term.loadAddon(new UnicodeGraphemesAddon());
+    this.term.unicode.activeVersion = '15-graphemes';
+
+    const progress = new ProgressAddon();
+    this.term.loadAddon(progress);
+    progress.onChange((p: Progress) => {
+      const v = progressView(p);
+      this.drawProgress(v);
+      this.hooks.onProgress(v ? v.kind : null);
+    });
+  }
+
+  private openLink(label: string, uri: string) {
+    const action = linkAction(label, uri);
+    if (action === 'block') return;
+    if (action === 'confirm' && !confirm(`This link says “${label}” but goes to:\n\n${uri}\n\nOpen it?`)) return;
+    window.open(uri, '_blank', 'noopener,noreferrer');
+  }
+
+  /** The thin bar along the top of the terminal. */
+  private drawProgress(v: ReturnType<typeof progressView>) {
+    if (!v) {
+      this.barEl?.remove();
+      this.barEl = null;
+      return;
+    }
+    if (!this.barEl) {
+      this.barEl = el('div', 't-progress');
+      this.el.append(this.barEl);
+    }
+    this.barEl.dataset.kind = v.kind;
+    this.barEl.style.setProperty('--pct', v.pct === null ? '35%' : `${v.pct}%`);
+  }
+
+  /** A program asked to copy but the browser refused outside a tap: show a button that can. */
+  private offerCopy(text: string) {
+    this.toastEl?.remove();
+    clearTimeout(this.toastTimer);
+    const toast = el('div', 't-toast');
+    const copy = el('button', 't-toast-btn', 'Copy');
+    copy.type = 'button';
+    copy.addEventListener('click', () => {
+      void navigator.clipboard
+        .writeText(text)
+        .then(() => {
+          copy.textContent = 'Copied';
+        })
+        .catch(() => {
+          copy.textContent = 'Blocked';
+        });
+      this.toastTimer = window.setTimeout(() => toast.remove(), 1200);
+    });
+    const words = text.length;
+    toast.append(el('span', 't-toast-msg', `Copy ${words} character${words === 1 ? '' : 's'}?`), copy);
+    this.el.append(toast);
+    this.toastEl = toast;
+    this.toastTimer = window.setTimeout(() => toast.remove(), 10_000);
   }
 
   /** Raw bytes to the PTY (used by the keybar too). */

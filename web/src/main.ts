@@ -48,6 +48,7 @@ const paneEvents: PaneEvents = {
       sidebar?.reload();
       saveSplit();
     }
+    if (what === 'progress') sidebar?.reload();
     if (p !== focused) return;
     switch (what) {
       case 'name':
@@ -267,6 +268,7 @@ function showApp() {
       openInSplit,
       openAgent,
       shown: () => panes.map((p) => p.name),
+      progress: (id) => panes.find((p) => p.name === id)?.el.dataset.progress || null,
     },
     (id) => usage?.tokensLabel(id),
   );

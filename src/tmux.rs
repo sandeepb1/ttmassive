@@ -65,16 +65,25 @@ fn target(id: &str) -> String {
 
 /// Argument vector for `tmux … new-session -A`: attach if the session exists,
 /// otherwise create a plain shell. The trailing `set` commands apply
-/// server-wide options on every attach. Nothing user-controlled goes after
-/// the first `;`, because tmux treats trailing-`;` arguments as separators.
+/// server-wide options on every attach. `id` is checked by `valid_session_id`
+/// (no `;`), because tmux treats trailing-`;` arguments as separators.
+///
+/// The `terminal-features` line has to run *before* `new-session`: tmux reads it when the
+/// client attaches, so after is too late. It lets the browser terminal receive OSC 52 copies and
+/// OSC 8 links. `set-clipboard on` and `allow-passthrough on` forward the rest: OSC 52, and the
+/// DCS-wrapped OSC 9;4 progress that Claude Code sends when it sees tmux. Index 10 keeps the
+/// line from piling up a new entry on every attach.
 pub fn attach_args(id: &str) -> Vec<String> {
-    let mut a: Vec<String> = ["-u", "-L", SOCKET, "new-session", "-A", "-s", id]
-        .map(String::from)
-        .into();
+    let mut a: Vec<String> = ["-u", "-L", SOCKET].map(String::from).into();
     for opt in [
+        "start-server",
+        ";", "set", "-s", "terminal-features[10]", "*:clipboard:hyperlinks",
+        ";", "new-session", "-A", "-s", id,
         ";", "set", "-g", "window-size", "latest",
         ";", "set", "-g", "status", "off",
         ";", "set", "-g", "history-limit", "50000",
+        ";", "set", "-g", "set-clipboard", "on",
+        ";", "set", "-g", "allow-passthrough", "on",
     ] {
         a.push(opt.into());
     }
@@ -299,6 +308,16 @@ mod tests {
         assert!(!valid_session_id("a b"));
         assert!(!valid_session_id("a;rm"));
         assert!(!valid_session_id("a.b"));
+    }
+
+    #[test]
+    fn attach_sets_terminal_features_before_the_client_attaches() {
+        let a = attach_args("work");
+        let at = |needle: &str| a.iter().position(|x| x == needle).unwrap();
+        assert!(at("terminal-features[10]") < at("new-session"));
+        assert_eq!(a[at("new-session") + 3], "work");
+        assert!(a.windows(2).any(|w| w[0] == "allow-passthrough" && w[1] == "on"));
+        assert!(a.windows(2).any(|w| w[0] == "set-clipboard" && w[1] == "on"));
     }
 
     #[test]
