@@ -26,6 +26,7 @@ import { AgentSheet } from './agent-sheet';
 import { fetchPresets, launchSession, loadNewSessionData, mainAgents, type PresetInfo } from './dirs';
 import { openMenu, type MenuItem } from './menu';
 import { pushOverlay } from './overlays';
+import { watchForUpdates } from './update';
 import { NewSessionSheet } from './new-session-sheet';
 import { chip } from './ui/chip';
 import { SHEET_SELECTOR } from './ui/sheet';
@@ -747,6 +748,7 @@ function showLogin() {
   // many requests failing at once with a 401 calls this again.
   const wasShowing = !$('app').hidden;
   $('app').hidden = true;
+  $('offline').hidden = true;
   $('login').hidden = false;
   if (wasShowing) {
     for (const p of panes) p.dispose();
@@ -772,8 +774,10 @@ async function logout() {
 
 async function showApp() {
   $('login').hidden = true;
+  $('offline').hidden = true;
   $('app').hidden = false;
   void loadNewSessionData();
+  watchForUpdates($('app'));
   usage ??= new UsageView($('usage'), showLogin);
   sidebar ??= new SessionSidebar(
     $('left'),
@@ -968,4 +972,24 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }
 
-fetch('/api/me').then((r) => (r.ok ? showApp() : showLogin()), showLogin);
+// Start up. Only a real "not signed in" shows the password box: a server that cannot be reached (the tunnel is
+// down, the phone has no signal) gets a screen that says so and keeps trying.
+let offlineTimer = 0;
+async function boot() {
+  window.clearTimeout(offlineTimer);
+  const r = await fetch('/api/me').catch(() => null);
+  if (r?.ok) return void showApp();
+  if (r?.status === 401) return showLogin();
+  $('login').hidden = true;
+  $('offline').hidden = false;
+  offlineTimer = window.setTimeout(() => void boot(), 5000);
+}
+const retryBoot = () => {
+  if (!$('offline').hidden) void boot();
+};
+$('offline-retry').addEventListener('click', retryBoot);
+window.addEventListener('online', retryBoot);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) retryBoot();
+});
+void boot();

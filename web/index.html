@@ -33,6 +33,13 @@
         <p id="login-err" role="alert"></p>
       </form>
     </div>
+    <div id="offline" hidden role="status">
+      <div>
+        <h1>Can't reach ttm</h1>
+        <p>The server isn't answering. Trying again…</p>
+        <button type="button" id="offline-retry">Retry now</button>
+      </div>
+    </div>
     <div id="app" hidden>
       <aside id="left"></aside>
       <div id="main">

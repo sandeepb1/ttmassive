@@ -101,6 +101,12 @@
   #login-form { display: grid; gap: 12px; width: min(320px, 90vw); }
   #login-form h1 { margin: 0; font-weight: 600; }
   #login-form input, #login-form button { font: inherit; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); color: var(--fg); }
+  #offline { display: grid; place-items: center; height: 100dvh; padding: 0 24px; text-align: center; }
+  #offline[hidden] { display: none; }
+  #offline > div { display: grid; gap: 10px; width: min(320px, 90vw); }
+  #offline h1 { margin: 0; font-weight: 600; font-size: 1.25rem; }
+  #offline p { margin: 0; color: var(--fg-muted); }
+  #offline button { font: inherit; padding: 12px; min-height: 44px; border: 0; border-radius: var(--radius-sm); background: var(--surface-4); color: var(--fg); font-weight: 600; }
   #login-form button { background: var(--accent); color: var(--on-accent); border: 0; font-weight: 600; }
   #login-err { color: var(--danger-text); min-height: 1.2em; margin: 0; }
 

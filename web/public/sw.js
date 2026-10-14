@@ -1,5 +1,5 @@
 // App-shell cache. Terminal traffic (/api, /ws) is never cached.
-const CACHE = 'ttm-shell-v4';
+const CACHE = 'ttm-shell-v5';
 const SHELL = ['/', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (e) => {
@@ -10,9 +10,25 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(pruneAssets)
       .then(() => self.clients.claim()),
   );
 });
+
+// Hashed build assets pile up in the cache with every deploy. Keep the ones the cached page names.
+async function pruneAssets() {
+  const cache = await caches.open(CACHE);
+  const shell = await cache.match('/');
+  if (!shell) return;
+  const html = await shell.text();
+  const keep = new Set(html.match(/\/assets\/[^"')\s]+/g) || []);
+  if (keep.size === 0) return; // the page names none (a dev build): leave the cache alone
+  for (const req of await cache.keys()) {
+    const path = new URL(req.url).pathname;
+    // Font files are named by the stylesheet, not the page, so only the scripts and styles are pruned here.
+    if (/^\/assets\/.+\.(js|css)$/.test(path) && !keep.has(path)) await cache.delete(req);
+  }
+}
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
@@ -25,9 +41,13 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put('/', copy));
-          return res;
+          // Only a good page replaces the offline shell: a 502 from a tunnel that is down must not.
+          if (res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put('/', copy));
+            return res;
+          }
+          return caches.match('/').then((shell) => shell || res);
         })
         .catch(() => caches.match('/')),
     );

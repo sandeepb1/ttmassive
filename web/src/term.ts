@@ -131,6 +131,8 @@ export class TerminalSession {
   private fit = new FitAddon();
   private ws: WebSocket | null = null;
   private attempt = 0;
+  /** A new connection is up and tmux's redraw has not arrived yet: clear the old screen when it does. */
+  private freshScreenPending = false;
   private closed = false;
   private stopped = false;
   private ended = false;
@@ -772,8 +774,9 @@ export class TerminalSession {
     ws.onopen = () => {
       this.attempt = 0;
       this.onStatus('');
-      // tmux redraws the whole screen on attach; start from a clean slate.
-      this.term.reset();
+      // tmux redraws the whole screen on attach, so start from a clean slate - but only when that redraw arrives, so
+      // the last frame stays up (dimmed) until then instead of a blank pane.
+      this.freshScreenPending = true;
       this.sendCtl({ type: 'resize', rows: this.term.rows, cols: this.term.cols });
       this.scrollPending = 0;
       this.scrollInFlight = 0;
@@ -794,12 +797,20 @@ export class TerminalSession {
     };
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') this.handleCtl(JSON.parse(e.data) as ServerMsg);
-      else this.term.write(new Uint8Array(e.data as ArrayBuffer));
+      else {
+        if (this.freshScreenPending) {
+          this.freshScreenPending = false;
+          this.term.reset();
+          this.el.classList.remove('reconnecting');
+        }
+        this.term.write(new Uint8Array(e.data as ArrayBuffer));
+      }
     };
     ws.onclose = () => {
       window.clearInterval(this.pingTimer);
       window.clearInterval(this.screenTimer);
       if (this.closed || this.stopped || this.ended || this.ws !== ws) return;
+      this.el.classList.add('reconnecting');
       void this.retry();
     };
   }
