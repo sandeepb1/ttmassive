@@ -501,7 +501,7 @@ async function startHere(preset: string | undefined, dir: string) {
 }
 
 /** The new-session sheet: the focused pane's project is filled in unless the caller names a folder. */
-async function newSession(dir?: string) {
+async function newSession(dir?: string, agent?: 'claude' | 'codex') {
   if (document.querySelector(SHEET_SELECTOR)) return;
   layout.dismissOverlays();
   // The sheet opens on the tap: the pane's folder comes from the list already on hand, and only a cold start waits.
@@ -513,7 +513,7 @@ async function newSession(dir?: string) {
       openSession(id);
     },
     pinned: () => layouts.pinnedProjects,
-  }).open(from);
+  }).open(from, agent);
 }
 
 /** The pane header's and the key bar's New button: Claude, Codex or a shell in this pane's project. */
@@ -772,12 +772,22 @@ async function logout() {
   showLogin();
 }
 
+/** The home-screen icon's long-press shortcuts open as /?new=claude or /?new=codex: show the sheet once, then tidy the URL. */
+function launchShortcut() {
+  const q = new URLSearchParams(location.search);
+  const agent = q.get('new');
+  if (agent !== 'claude' && agent !== 'codex') return;
+  history.replaceState(null, '', location.pathname + location.hash);
+  void newSession(undefined, agent);
+}
+
 async function showApp() {
   $('login').hidden = true;
   $('offline').hidden = true;
   $('app').hidden = false;
   void loadNewSessionData();
   watchForUpdates($('app'));
+  launchShortcut();
   usage ??= new UsageView($('usage'), showLogin);
   sidebar ??= new SessionSidebar(
     $('left'),

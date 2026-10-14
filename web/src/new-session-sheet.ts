@@ -77,12 +77,12 @@ export class NewSessionSheet extends Sheet {
   }
 
   /** Open the sheet. Make a new sheet for every opening. `dir` is the folder to start in, when the caller knows one (a project, the focused pane). */
-  async open(dir?: string) {
+  async open(dir?: string, agent?: 'claude' | 'codex') {
     if (!this.gone) return;
     const cached = cachedNewSessionData();
     if (cached) {
       // Fill the sheet before it is shown, so it slides in at its final height. Fresh data trickles in afterwards.
-      this.apply(cached, dir);
+      this.apply(cached, dir, agent);
       this.show();
       this.focusFolder();
       void loadNewSessionData().then((fresh) => this.refresh(fresh));
@@ -94,17 +94,20 @@ export class NewSessionSheet extends Sheet {
     const data = await loadNewSessionData();
     if (this.gone) return;
     this.body.style.minHeight = '';
-    this.apply(data, dir);
+    this.apply(data, dir, agent);
     this.focusFolder();
   }
 
-  private apply(data: NewSessionData, dir?: string) {
+  private apply(data: NewSessionData, dir?: string, agent?: 'claude' | 'codex') {
     ({ presets: this.presets, groups: this.groups, recents: this.recents } = data);
 
     const names = new Set(this.presets.map((p) => p.name));
     const saved = remembered();
     const { claude, codex } = mainAgents(this.presets);
     this.choice = saved !== null && (saved === SHELL || names.has(saved)) ? saved : (claude ?? codex)?.name ?? SHELL;
+    // A home-screen shortcut ("New Codex session") names the agent; otherwise the last choice stands.
+    const wanted = agent ? { claude, codex }[agent] : undefined;
+    if (wanted) this.choice = wanted.name;
     this.skip = false;
     this.browsing = false;
     this.showMore = false;
