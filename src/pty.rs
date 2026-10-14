@@ -21,6 +21,17 @@ fn size(rows: u16, cols: u16) -> PtySize {
     PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }
 }
 
+/// A handle for typing into the PTY. Not `take_writer()`: portable-pty's writer sends a newline and
+/// Ctrl-D when dropped, tmux hands them to the shell in the session, and the shell exits, so every
+/// detach (a closed tab, a ttm restart) would end the session.
+fn input_file(master: &dyn MasterPty) -> Result<std::fs::File> {
+    use std::os::fd::BorrowedFd;
+    let fd = master.as_raw_fd().context("pty has no file descriptor")?;
+    // SAFETY: `master` is alive and owns `fd` for the duration of this call; we only duplicate it.
+    let owned = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned().context("duplicating the pty fd")?;
+    Ok(std::fs::File::from(owned))
+}
+
 impl PtyClient {
     pub fn spawn(args: Vec<String>, rows: u16, cols: u16) -> Result<Self> {
         let pair = native_pty_system()
@@ -35,7 +46,7 @@ impl PtyClient {
 
         let killer = child.clone_killer();
         let mut reader = pair.master.try_clone_reader()?;
-        let mut writer = pair.master.take_writer()?;
+        let mut writer = input_file(pair.master.as_ref())?;
         let master = Arc::new(Mutex::new(pair.master));
 
         // Bounded channels give the PTY natural backpressure.
