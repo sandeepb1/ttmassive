@@ -548,6 +548,7 @@ public  https://b78e2f4d1619ec.lhr.life  (localhost.run)
 |---|---|
 | `--tunnel` / `--tunnel localhost.run` | localhost.run: no account, no time limit. The address can change whenever the tunnel reconnects |
 | `--tunnel pinggy` | pinggy.io over port 443. The free tier closes after an hour and the address changes. `tunnel_token` (or `TTM_TUNNEL_TOKEN`) gives a tunnel that lasts |
+| `--tunnel cloudflare` | Your own [Cloudflare Tunnel](#your-own-domain-with-cloudflare): a domain you pick, no time limit, needs `cloudflared` |
 | `--no-tunnel` | Turn off a tunnel the config asks for |
 
 Works on `serve`, `start` and `restart`. The flag beats the config.
@@ -570,6 +571,29 @@ Works on `serve`, `start` and `restart`. The flag beats the config.
   attempt through every 2 seconds for everyone instead, so a stranger can't lock you out.
   While the tunnel is on, ttm believes `X-Forwarded-*` headers only from connections made by
   this machine, and marks the session cookie `Secure` for the public address.
+### Your own domain with Cloudflare
+
+For an address you choose and that never changes, use a Cloudflare Tunnel. ttm runs
+`cloudflared` with your tunnel token and reports your domain as the public address.
+
+1. In Cloudflare Zero Trust, create a tunnel (Networks > Tunnels) and copy its token.
+2. Under the tunnel's Public Hostname, add your domain (`ttm.example.com`) with service
+   `HTTP` and URL `localhost:7681` (your `bind` port). Cloudflare creates the DNS record.
+3. Put this in the config, then restart the service:
+
+```toml
+tunnel = "cloudflare"
+tunnel_token = "eyJh..."          # or TTM_TUNNEL_TOKEN
+tunnel_domain = "ttm.example.com" # or TTM_TUNNEL_DOMAIN
+```
+
+- ttm refuses to start the tunnel without the token, the domain, and a `password_hash`.
+- The token is passed to `cloudflared` in its environment, not on the command line. Keep
+  the config file private (`chmod 600`).
+- The address shows as up once `cloudflared` registers a connection. If the hostname is not
+  routed to the tunnel in the dashboard, ttm still shows it as up but the domain will not
+  load: check step 2. `cloudflared` reconnects on its own; ttm restarts it if it exits.
+
 - **Both services are free third-party services.** Everything you do in ttm passes through their
   servers (over TLS that they terminate), and they can rate-limit or drop you. For something you
   depend on, use Tailscale or your own domain and proxy.
@@ -649,7 +673,7 @@ the CLI, `--prompt-id` does the same.
 | `agent`, `idle_alert_secs` | Override the agent guess (`claude`, `codex` or `other`), and set the quiet-time threshold for `other` |
 
 Groups (`[[groups]]`, with `name` and `presets = [...]`) start several presets together. Other
-settings are `bind`, `password_hash`, `trust_proxy`, `tunnel`, `tunnel_token`, `session_ttl_hours`, `data_dir`, `socket`,
+settings are `bind`, `password_hash`, `trust_proxy`, `tunnel`, `tunnel_token`, `tunnel_domain`, `session_ttl_hours`, `data_dir`, `socket`,
 `vapid_subject` and `notify_url`.
 
 ## How it works

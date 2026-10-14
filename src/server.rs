@@ -28,8 +28,8 @@ pub async fn serve(cfg: Config) -> Result<()> {
     let _pid = daemon::PidGuard::acquire(&data_dir)?;
 
     crate::tunnel::check_config(&cfg)?;
-    if cfg.tunnel.is_some() {
-        crate::tunnel::check_ssh().await?;
+    if let Some(p) = cfg.tunnel {
+        crate::tunnel::check_program(p).await?;
     }
     let auth = auth::Auth::new(&cfg, &data_dir)?;
     let bind = cfg.bind;

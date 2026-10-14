@@ -1,6 +1,9 @@
 //! A public HTTPS address for ttm, made by running the system `ssh` as a reverse tunnel to
 //! localhost.run or pinggy.io. No account, no extra binary, no new crates: every Mac and Linux
 //! machine already has OpenSSH. We read the address off ssh's output and keep the tunnel up.
+//!
+//! The third choice is your own Cloudflare Tunnel: we run `cloudflared` with your tunnel token and
+//! the address is the domain you routed to the tunnel in the Cloudflare dashboard.
 
 use std::{
     path::Path,
@@ -39,6 +42,8 @@ pub enum Provider {
     LocalhostRun,
     #[serde(rename = "pinggy")]
     Pinggy,
+    #[serde(rename = "cloudflare")]
+    Cloudflare,
 }
 
 impl Provider {
@@ -46,6 +51,15 @@ impl Provider {
         match self {
             Self::LocalhostRun => "localhost.run",
             Self::Pinggy => "pinggy",
+            Self::Cloudflare => "cloudflare",
+        }
+    }
+
+    /// The program that carries the tunnel.
+    pub fn program(self) -> &'static str {
+        match self {
+            Self::Cloudflare => "cloudflared",
+            Self::LocalhostRun | Self::Pinggy => "ssh",
         }
     }
 
@@ -55,6 +69,7 @@ impl Provider {
         match self {
             Self::LocalhostRun => &["lhr.life", "localhost.run"],
             Self::Pinggy => &["pinggy.link", "pinggy-free.link", "pinggy.io"],
+            Self::Cloudflare => &[],
         }
     }
 
@@ -100,6 +115,8 @@ impl Provider {
             Self::LocalhostRun => {
                 a.extend(["-R".into(), format!("80:127.0.0.1:{port}"), "nokey@localhost.run".into()]);
             }
+            // Not an ssh tunnel: `connect_cloudflared` runs `cloudflared` instead.
+            Self::Cloudflare => {}
             Self::Pinggy => {
                 let dest = match token {
                     Some(t) => format!("{t}@pro.pinggy.io"),
@@ -131,7 +148,8 @@ impl FromStr for Provider {
         match s.to_ascii_lowercase().as_str() {
             "localhost.run" | "localhost-run" | "lhr" => Ok(Self::LocalhostRun),
             "pinggy" | "pinggy.io" => Ok(Self::Pinggy),
-            other => Err(format!("unknown tunnel {other:?}: use `localhost.run` or `pinggy`")),
+            "cloudflare" | "cloudflared" | "cf" => Ok(Self::Cloudflare),
+            other => Err(format!("unknown tunnel {other:?}: use `localhost.run`, `pinggy` or `cloudflare`")),
         }
     }
 }
@@ -150,6 +168,10 @@ pub struct TunnelState {
 }
 
 impl TunnelState {
+    pub fn is_up(&self) -> bool {
+        self.since.is_some()
+    }
+
     pub fn enabled(&self) -> bool {
         self.provider.is_some()
     }
@@ -177,20 +199,53 @@ pub fn check_config(cfg: &crate::config::Config) -> Result<()> {
         "a public tunnel needs `password_hash` (make one with `ttm hash-password`); a plaintext \
          `password` or TTM_PASSWORD is not accepted when ttm is reachable from the internet"
     );
+    if cfg.tunnel == Some(Provider::Cloudflare) {
+        anyhow::ensure!(
+            cfg.tunnel_token.as_deref().is_some_and(|t| !t.trim().is_empty()),
+            "the cloudflare tunnel needs `tunnel_token` (or TTM_TUNNEL_TOKEN): the token from your \
+             tunnel's page in the Cloudflare Zero Trust dashboard"
+        );
+        let domain = cfg.tunnel_domain.as_deref().unwrap_or_default();
+        anyhow::ensure!(
+            valid_domain(domain),
+            "the cloudflare tunnel needs `tunnel_domain` (like \"ttm.example.com\"): the public hostname \
+             you routed to this tunnel in Cloudflare, without https:// or a path"
+        );
+    }
     Ok(())
 }
 
-/// Fail early, with a useful message, if there is no `ssh` to run.
-pub async fn check_ssh() -> Result<()> {
-    Command::new("ssh")
-        .arg("-V")
+/// A bare hostname: letters, digits, hyphens and dots, at least two labels.
+pub fn valid_domain(d: &str) -> bool {
+    d.contains('.')
+        && d.len() <= 253
+        && d.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+}
+
+/// Fail early, with a useful message, if there is no program to carry the tunnel.
+pub async fn check_program(provider: Provider) -> Result<()> {
+    let (program, flag) = match provider {
+        Provider::Cloudflare => ("cloudflared", "--version"),
+        Provider::LocalhostRun | Provider::Pinggy => ("ssh", "-V"),
+    };
+    Command::new(program)
+        .arg(flag)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .await
         .map(|_| ())
-        .context("--tunnel needs `ssh` (OpenSSH) on your PATH")
+        .with_context(|| match provider {
+            Provider::Cloudflare => "the cloudflare tunnel needs `cloudflared` on your PATH (macOS: `brew install cloudflared`)".to_owned(),
+            _ => "--tunnel needs `ssh` (OpenSSH) on your PATH".to_owned(),
+        })
 }
 
 /// Keep the tunnel connected until ttm shuts down, reconnecting with a growing pause.
@@ -207,7 +262,11 @@ pub async fn run(st: Arc<AppState>, provider: Provider, token: Option<String>) {
     let mut backoff = BACKOFF_START;
     loop {
         let started = Instant::now();
-        let result = connect(&st, provider, port, token.as_deref(), &known_hosts, expires).await;
+        let result = if provider == Provider::Cloudflare {
+            connect_cloudflared(&st, token.as_deref().unwrap_or_default()).await
+        } else {
+            connect(&st, provider, port, token.as_deref(), &known_hosts, expires).await
+        };
         let healthy = started.elapsed() >= HEALTHY_AFTER;
         {
             let mut t = st.tunnel.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -305,6 +364,55 @@ async fn connect(
     let status = child.wait().await.context("waiting for ssh")?;
     let why = tail.iter().cloned().collect::<Vec<_>>().join(" / ");
     anyhow::bail!("ssh exited ({status}){}", if why.is_empty() { String::new() } else { format!(": {why}") })
+}
+
+/// One `cloudflared` run, from spawn until it exits. The address is the domain from the config;
+/// cloudflared says when its connection to Cloudflare is registered and does its own reconnecting
+/// while it runs, so there is no outside watcher here.
+async fn connect_cloudflared(st: &Arc<AppState>, token: &str) -> Result<()> {
+    let domain = st.cfg.tunnel_domain.clone().context("tunnel_domain is not set")?;
+    let mut child = Command::new("cloudflared")
+        .args(["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:0", "run"])
+        // In the environment, not on the command line, so `ps` does not show the token.
+        .env("TUNNEL_TOKEN", token.trim())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("starting cloudflared")?;
+    let out = child.stdout.take().context("cloudflared stdout")?;
+    let err = child.stderr.take().context("cloudflared stderr")?;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
+    forward_lines(out, false, tx.clone());
+    forward_lines(err, true, tx.clone());
+    drop(tx);
+
+    let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    while let Some((_, line)) = rx.recv().await {
+        let clean = strip_ansi(&line);
+        if clean.contains("Registered tunnel connection") {
+            // Four connections register one after another; the first makes the address work.
+            if !st.tunnel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_up() {
+                announce(st, Provider::Cloudflare, format!("https://{}", domain.to_ascii_lowercase()), false).await;
+            }
+        } else if let Some(why) = cloudflared_problem(&clean) {
+            tail.push_back(why);
+            if tail.len() > ERROR_LINES {
+                tail.pop_front();
+            }
+        }
+    }
+    let status = child.wait().await.context("waiting for cloudflared")?;
+    let why = tail.iter().cloned().collect::<Vec<_>>().join(" / ");
+    anyhow::bail!("cloudflared exited ({status}){}", if why.is_empty() { String::new() } else { format!(": {why}") })
+}
+
+/// The part of a cloudflared log line worth showing in `status`: errors, without the timestamp.
+fn cloudflared_problem(line: &str) -> Option<String> {
+    let mut words = line.splitn(3, ' ');
+    let (_time, level, rest) = (words.next()?, words.next()?, words.next()?);
+    matches!(level, "ERR" | "FTL").then(|| rest.trim().to_owned())
 }
 
 /// Send each line of `r` to `tx`, tagged with whether it came from stderr.
@@ -526,6 +634,44 @@ mod tests {
     #[test]
     fn ansi_colours_are_removed() {
         assert_eq!(strip_ansi("\u{1b}[1;32mhttps://x\u{1b}[0m"), "https://x");
+    }
+
+    #[test]
+    fn cloudflare_needs_a_token_and_a_domain() {
+        let mut cfg = crate::config::Config {
+            tunnel: Some(Provider::Cloudflare),
+            password_hash: Some("$argon2id$v=19$m=19456,t=2,p=1$x$y".into()),
+            ..Default::default()
+        };
+        assert!(check_config(&cfg).unwrap_err().to_string().contains("tunnel_token"));
+        cfg.tunnel_token = Some("tok".into());
+        assert!(check_config(&cfg).unwrap_err().to_string().contains("tunnel_domain"));
+        cfg.tunnel_domain = Some("https://ttm.example.com".into());
+        assert!(check_config(&cfg).is_err(), "a url is not a hostname");
+        cfg.tunnel_domain = Some("ttm.example.com".into());
+        assert!(check_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn domains_are_bare_hostnames() {
+        for ok in ["ttm.nvy.me", "a-b.example.co.uk", "x1.io"] {
+            assert!(valid_domain(ok), "{ok}");
+        }
+        for bad in ["", "localhost", "ttm.nvy.me/", "-a.b.c", "a..b", "a b.c", "ttm.nvy.me:443", "https://a.b"] {
+            assert!(!valid_domain(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn cloudflared_errors_are_kept_without_their_timestamp() {
+        assert_eq!(
+            cloudflared_problem("2026-10-14T10:00:00Z ERR Unable to reach the origin service err=\"x\""),
+            Some("Unable to reach the origin service err=\"x\"".into())
+        );
+        assert_eq!(cloudflared_problem("2026-10-14T10:00:00Z INF Registered tunnel connection"), None);
+        assert_eq!(cloudflared_problem("garbage"), None);
+        assert_eq!("cloudflare".parse(), Ok(Provider::Cloudflare));
+        assert!(!Provider::Cloudflare.expires(None));
     }
 
     #[test]

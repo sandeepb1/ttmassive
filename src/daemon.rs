@@ -438,21 +438,45 @@ pub async fn install_service(config_path: Option<&Path>, cfg: &Config, now: bool
         }
         return Ok(());
     }
-    if let Some(pid) = running_pid(&data_dir) {
-        bail!("a self-started ttm is running (pid {pid}); run `ttm stop` first so the service can take over the port");
-    }
     if cfg!(target_os = "macos") {
         let target = format!("gui/{}", uid());
-        // Reloading an already-loaded job fails, so unload first (ignore "not loaded").
+        // Reloading an already-loaded job fails, so unload first (ignore "not loaded"). This also
+        // stops a ttm that an earlier install of the service is running.
         let _ = Command::new("launchctl").args(["bootout", &format!("{target}/{LAUNCHD_LABEL}")]).output();
+        wait_for_exit(&data_dir).await;
+        refuse_if_self_started(&data_dir)?;
         run_checked(Command::new("launchctl").args(["bootstrap", &target]).arg(&file))?;
     } else {
+        let active = Command::new("systemctl").args(["--user", "is-active", "--quiet", "ttm"]).status().is_ok_and(|s| s.success());
+        if !active {
+            refuse_if_self_started(&data_dir)?;
+        }
         run_checked(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
-        run_checked(Command::new("systemctl").args(["--user", "enable", "--now", "ttm"]))?;
+        run_checked(Command::new("systemctl").args(["--user", "enable", "ttm"]))?;
+        // `restart` also starts it, and picks up a new unit file or config when it already runs.
+        run_checked(Command::new("systemctl").args(["--user", "restart", "ttm"]))?;
         println!("tip: `loginctl enable-linger $USER` keeps it running after you log out");
     }
     println!("service started; check with `ttm status`");
     Ok(())
+}
+
+/// A ttm that nobody's service manager owns would keep the port from the service.
+fn refuse_if_self_started(data_dir: &Path) -> Result<()> {
+    if let Some(pid) = running_pid(data_dir) {
+        bail!("a self-started ttm is running (pid {pid}); run `ttm stop` first so the service can take over the port");
+    }
+    Ok(())
+}
+
+/// Give a ttm that was just told to stop a few seconds to leave.
+async fn wait_for_exit(data_dir: &Path) {
+    for _ in 0..50 {
+        if running_pid(data_dir).is_none() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 fn dirs_config() -> Option<PathBuf> {

@@ -32,6 +32,11 @@ trust_proxy = false
 # A token pinggy does not accept silently gives a free tunnel; ttm logs a warning when it does.
 # tunnel_token = ""
 
+# Your own Cloudflare Tunnel: set tunnel = "cloudflare", tunnel_token to the token from the tunnel's
+# page in the Cloudflare Zero Trust dashboard, and tunnel_domain to the public hostname you routed to
+# it (service type HTTP, URL localhost:7681 or your bind port). Needs `cloudflared` on PATH.
+# tunnel_domain = "ttm.example.com"
+
 # How long a login stays valid, in hours (default 30 days).
 session_ttl_hours = 720
 

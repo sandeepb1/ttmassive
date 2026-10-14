@@ -78,7 +78,8 @@ struct Cli {
 /// Whether to open a public HTTPS address for the web app (see `tunnel` in the config).
 #[derive(clap::Args, Clone, Default)]
 struct TunnelArgs {
-    /// Reach ttm from anywhere through an ssh tunnel: `localhost.run` (default) or `pinggy`.
+    /// Reach ttm from anywhere: `localhost.run` (default) or `pinggy` over ssh, or `cloudflare`
+    /// (needs `tunnel_token` and `tunnel_domain` in the config).
     #[arg(long, value_name = "SERVICE", num_args = 0..=1, default_missing_value = "localhost.run")]
     tunnel: Option<tunnel::Provider>,
     /// Do not open a tunnel, even if the config asks for one.
@@ -145,7 +146,11 @@ enum Cmd {
     /// Remove the service installed by `install-service`.
     UninstallService,
     /// Print an Argon2 hash for the config file (reads the password from stdin).
-    HashPassword,
+    HashPassword {
+        /// Accept a password shorter than 12 characters. Only for a password you accept the risk of.
+        #[arg(long)]
+        allow_short: bool,
+    },
 
     // ---- sessions
     /// List sessions.
@@ -272,11 +277,11 @@ async fn main() -> Result<()> {
 
     // Commands that need no config or daemon.
     match &cli.cmd {
-        Cmd::HashPassword => {
+        Cmd::HashPassword { allow_short } => {
             let pw = read_password()?;
             anyhow::ensure!(
-                pw.chars().count() >= auth::MIN_PASSWORD_LEN,
-                "use at least {} characters: with `--tunnel` this password is all that stands between the internet and your terminals",
+                *allow_short || pw.chars().count() >= auth::MIN_PASSWORD_LEN,
+                "use at least {} characters: with `--tunnel` this password is all that stands between the internet and your terminals (`--allow-short` overrides)",
                 auth::MIN_PASSWORD_LEN
             );
             println!("{}", auth::hash_password(&pw)?);
