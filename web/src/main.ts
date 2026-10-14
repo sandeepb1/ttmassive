@@ -1,6 +1,6 @@
 import '@fontsource-variable/inter/wght.css';
 import '@fontsource-variable/jetbrains-mono/wght.css';
-import './style.css';
+import './ui/tailwind.css';
 import { initTheme, setAgentAccent } from './theme';
 import { initUiScale } from './scale';
 import { SessionSidebar, type SessionView } from './sessions';

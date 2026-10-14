@@ -1030,3 +1030,11 @@ details[open].paste .paste-hint { display: none; }
 .ns-err:empty { display: none; }
 .ns-go { min-height: 48px; font: 700 1rem var(--font-ui); color: var(--on-accent, var(--bg)); background: var(--accent); border: 0; border-radius: 12px; touch-action: manipulation; }
 .ns-go:disabled { opacity: .45; }
+
+/* Compat for Tailwind's preflight, which strips browser defaults these surfaces still lean on.
+   Delete each rule when its surface moves to the kit. */
+#login-form h1 { font-size: 2em; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md a { text-decoration: underline; }
+img, svg, video, canvas { display: inline; vertical-align: baseline; }

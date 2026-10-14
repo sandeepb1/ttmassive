@@ -1,0 +1,76 @@
+/* Entry stylesheet. Order matters: the legacy sheet beats Tailwind's reset until each surface moves to the kit. */
+@layer theme, base, legacy, components, utilities;
+
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import '../style.css' layer(legacy);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+/* Semantic names (shadcn's vocabulary) over the vars theme.ts and style.css already derive from the active theme.
+   Declared on [data-agent] too, because a pane re-points --accent there and var() resolves where it is declared.
+   Note: --accent is the brand colour here, not shadcn's hover surface; use bg-muted for hovers. */
+@layer base {
+  :root, [data-agent] {
+    --background: var(--bg);
+    --foreground: var(--fg);
+    --card: var(--surface-3);
+    --popover: var(--surface-4);
+    --muted: var(--surface-4);
+    --muted-foreground: var(--fg-muted);
+    --secondary: var(--surface-5);
+    --primary: var(--accent);
+    --primary-foreground: var(--on-accent);
+    --input: var(--border-strong);
+    --ring: var(--accent);
+    --destructive: var(--danger-solid);
+    --destructive-foreground: var(--on-danger);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-text: var(--accent-text);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ok: var(--ok);
+  --color-ok-text: var(--ok-text);
+  --color-warn: var(--warn);
+  --color-warn-text: var(--warn-text);
+  --color-danger-text: var(--danger-text);
+  --color-soft: var(--fg-soft);
+  --color-faint: var(--fg-faint);
+  --font-sans: var(--font-ui);
+}
+
+/* Direction D (soft / iOS): generous radii and 48px touch targets. rem, so the UI-scale setting applies. */
+@theme {
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+
+  --spacing-ctl-xs: 1.75rem;
+  --spacing-ctl-sm: 2.25rem;
+  --spacing-ctl: 3rem;
+
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+
+  --shadow-pop: 0 8px 28px var(--shadow);
+}
