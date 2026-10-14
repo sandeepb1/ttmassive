@@ -45,6 +45,32 @@ function stepControl(label: string, value: () => string, step: (dir: -1 | 1) => 
   return sheetBlock(sheetLabel(label), steps.el);
 }
 
+/** What this device reports about its screen, for working out layout problems. */
+function displayReadout(): string {
+  const probe = (css: string) => {
+    const e = el('div');
+    e.style.cssText = `position:fixed;visibility:hidden;pointer-events:none;${css}`;
+    document.body.append(e);
+    const r = e.getBoundingClientRect();
+    e.remove();
+    return r;
+  };
+  const inset = (side: string) => Math.round(probe(`top:0;left:0;height:env(safe-area-inset-${side});width:1px`).height);
+  const vh = (unit: string) => Math.round(probe(`top:0;left:0;width:1px;height:100${unit}`).height);
+  const vv = window.visualViewport;
+  const app = document.getElementById('app')?.getBoundingClientRect();
+  const standalone = matchMedia('(display-mode: standalone)').matches;
+  return [
+    `window ${innerWidth}×${innerHeight}`,
+    `visual ${vv ? `${Math.round(vv.width)}×${Math.round(vv.height)} (top ${Math.round(vv.offsetTop)})` : 'n/a'}`,
+    `screen ${screen.width}×${screen.height}`,
+    `100vh ${vh('vh')}  dvh ${vh('dvh')}  svh ${vh('svh')}  lvh ${vh('lvh')}`,
+    `inset top ${inset('top')}  bottom ${inset('bottom')}`,
+    `#app ${app ? `${Math.round(app.width)}×${Math.round(app.height)} at ${Math.round(app.top)}` : 'n/a'}`,
+    `installed app ${standalone}`,
+  ].join('\n');
+}
+
 /** A setting's name on the left and its control on the right. */
 const settingRow = (label: string, control: HTMLElement): HTMLElement => {
   const r = el('div', 'flex items-center justify-between gap-3');
@@ -116,7 +142,8 @@ export class SettingsSheet extends Sheet {
     });
     const account = sheetBlock(sheetLabel('Account'), out);
 
-    this.body.replaceChildren(...blocks, this.tunnel, this.notif, this.note, account);
+    const display = sheetBlock(sheetLabel('Display'), el('pre', 'm-0 select-text whitespace-pre-wrap font-mono text-xs text-muted-foreground', displayReadout()));
+    this.body.replaceChildren(...blocks, this.tunnel, this.notif, this.note, account, display);
     void this.renderNotif();
     void this.renderTunnel();
     this.show();
