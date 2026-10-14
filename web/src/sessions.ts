@@ -2,6 +2,8 @@
 
 import { fetchPresets, launchSession, mainAgents, type PresetInfo } from './dirs';
 import { el } from './dom';
+import { button } from './ui/button';
+import { cn } from './ui/cn';
 import { asTree, elapsedSecs, fmtElapsed, stateOf, type SubAgent } from './agents';
 import { warn } from './haptics';
 import { icon } from './icons';
@@ -127,37 +129,18 @@ export class SessionSidebar {
     this.root.setAttribute('aria-label', 'Sessions');
 
     const head = el('div', 'sb-head');
-    const add = el('button', 'icon sb-new');
-    add.type = 'button';
-    add.setAttribute('aria-label', 'New session');
-    add.append(icon('plus'));
-    add.addEventListener('click', () => this.hooks.newSession());
-    const collapse = el('button', 'icon sb-collapse');
-    collapse.type = 'button';
-    collapse.setAttribute('aria-label', 'Hide sessions');
-    collapse.append(icon('panel-left'));
-    collapse.addEventListener('click', () => this.hooks.collapse());
+    const add = button({ variant: 'ghost', size: 'icon-sm', label: 'New session', cls: 'sb-new', onClick: () => this.hooks.newSession() }, icon('plus'));
+    const collapse = button({ variant: 'ghost', size: 'icon-sm', label: 'Hide sessions', cls: 'sb-collapse', onClick: () => this.hooks.collapse() }, icon('panel-left'));
     head.append(el('strong', 'sb-brand', 'ttm'), el('span', 'sb-spacer'), add, collapse);
 
     const foot = el('div', 'sb-foot');
-    const settings = el('button', 'sb-settings');
-    settings.type = 'button';
-    settings.append(icon('sliders'), el('span', undefined, 'Settings'));
-    settings.addEventListener('click', () => this.hooks.openSettings());
+    const settings = button({ variant: 'ghost', cls: 'sb-settings w-full justify-start gap-2.5 text-muted-foreground', onClick: () => this.hooks.openSettings() }, icon('sliders'), 'Settings');
     foot.append(settings);
 
     // Split view shrinks the sidebar to this: one button per session, and the same way to Settings.
-    const railOpen = el('button', 'icon rail-expand');
-    railOpen.type = 'button';
-    railOpen.setAttribute('aria-label', 'Show the session list');
-    railOpen.append(icon('panel-left'));
-    railOpen.addEventListener('click', () => this.hooks.collapse());
+    const railOpen = button({ variant: 'ghost', size: 'icon-sm', label: 'Show the session list', cls: 'rail-expand', onClick: () => this.hooks.collapse() }, icon('panel-left'));
     this.railList.className = 'rail-list';
-    const railSettings = el('button', 'icon rail-settings');
-    railSettings.type = 'button';
-    railSettings.setAttribute('aria-label', 'Settings');
-    railSettings.append(icon('sliders'));
-    railSettings.addEventListener('click', () => this.hooks.openSettings());
+    const railSettings = button({ variant: 'ghost', size: 'icon-sm', label: 'Settings', cls: 'rail-settings', onClick: () => this.hooks.openSettings() }, icon('sliders'));
     this.rail.append(railOpen, this.railList, railSettings);
 
     this.root.append(head, this.msg, this.list, foot, this.rail);
@@ -239,10 +222,7 @@ export class SessionSidebar {
     this.renderRail(sessions);
     const sections = groupSessions(sessions, this.hooks.pinnedProjects());
     if (sections.length === 0) {
-      const start = el('button', 'drawer-start');
-      start.type = 'button';
-      start.append(icon('plus'), el('span', undefined, 'New session'));
-      start.addEventListener('click', () => this.hooks.newSession());
+      const start = button({ variant: 'secondary', cls: 'drawer-start w-full', onClick: () => this.hooks.newSession() }, icon('plus'), 'New session');
       this.list.replaceChildren(el('div', 'drawer-empty', 'No sessions yet'), start);
       return;
     }
@@ -281,18 +261,16 @@ export class SessionSidebar {
       if (path) {
         const branch = this.branchOf(sec.items);
         if (branch) head.append(el('span', 'sg-branch', branch));
-        const pin = el('button', sec.kept ? 'icon sg-act on' : 'icon sg-act', sec.kept ? '★' : '☆');
-        pin.type = 'button';
-        pin.setAttribute('aria-label', sec.kept ? `Stop keeping ${sec.title} in the list` : `Keep ${sec.title} in the list`);
+        const act = 'sg-act size-ctl-sm text-muted-foreground aria-expanded:bg-muted aria-expanded:text-foreground';
+        const pin = button(
+          { variant: 'ghost', size: 'icon-sm', label: sec.kept ? `Stop keeping ${sec.title} in the list` : `Keep ${sec.title} in the list`, cls: cn(act, sec.kept && 'text-warn'),
+            onClick: () => void this.hooks.togglePinProject(path).then(() => this.renderList(this.lastSessions)) },
+          sec.kept ? '★' : '☆',
+        );
         pin.title = sec.kept ? 'Kept in the list' : 'Keep in the list when nothing runs in it';
-        pin.addEventListener('click', () => void this.hooks.togglePinProject(path).then(() => this.renderList(this.lastSessions)));
-        const add = el('button', 'icon sg-act');
-        add.type = 'button';
-        add.setAttribute('aria-label', `Start a session in ${sec.title}`);
+        const add = button({ variant: 'ghost', size: 'icon-sm', label: `Start a session in ${sec.title}`, cls: act, onClick: () => void this.projectMenu(add, { title: sec.title, path }) }, icon('plus'));
         add.setAttribute('aria-haspopup', 'menu');
         add.setAttribute('aria-expanded', 'false');
-        add.append(icon('plus'));
-        add.addEventListener('click', () => void this.projectMenu(add, { title: sec.title, path }));
         head.append(pin, add);
       }
       out.push(head);
@@ -426,16 +404,11 @@ export class SessionSidebar {
 
     const inline: HTMLElement[] = [];
     if (s.status !== 'running') {
-      const b = el('button', 'chip chip-go', s.resumable ? 'Resume' : 'Restore');
-      b.type = 'button';
-      b.addEventListener('click', () => void this.restore(s.id, false));
-      inline.push(b);
+      inline.push(button({ size: 'sm', onClick: () => void this.restore(s.id, false) }, s.resumable ? 'Resume' : 'Restore'));
     }
 
     // Pin, split, rename and remove live in one menu: the `⋯`, or a long press on the row.
-    const more = el('button', 'icon srow-more', '⋯');
-    more.type = 'button';
-    more.setAttribute('aria-label', `Actions for ${s.id}`);
+    const more = button({ variant: 'ghost', size: 'icon-sm', label: `Actions for ${s.id}`, cls: 'srow-more h-11 text-muted-foreground aria-expanded:bg-muted aria-expanded:text-foreground' }, icon('more'));
     more.setAttribute('aria-haspopup', 'menu');
     more.setAttribute('aria-expanded', 'false');
     const menu = () => openMenu(more, this.rowMenu(s), `Actions for ${s.id}`);

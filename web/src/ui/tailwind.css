@@ -6,6 +6,7 @@
 @import '../style.css' layer(legacy);
 @import './chat.css';
 @import './sheets.css';
+@import './sidebar.css';
 @import 'tailwindcss/utilities.css' layer(utilities);
 
 /* Semantic names (shadcn's vocabulary) over the vars theme.ts and style.css already derive from the active theme.
