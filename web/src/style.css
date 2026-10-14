@@ -74,6 +74,28 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .t-progress[data-kind="indeterminate"] { animation: t-sweep 1.2s ease-in-out infinite alternate; }
 @keyframes t-sweep { from { transform: translateX(0); } to { transform: translateX(185%); } }
 @media (prefers-reduced-motion: reduce) { .t-progress[data-kind="indeterminate"] { animation: none; width: 100%; opacity: .5; } }
+/* History search, over the top of the terminal. */
+.ts-btn { display: inline-grid; place-items: center; flex: none; width: 40px; height: 40px; color: var(--fg-muted);
+  background: var(--surface-4); border: 1px solid var(--border); border-radius: 10px; touch-action: manipulation; }
+.ts-btn:active { background: var(--surface-press); }
+.ts-btn svg { width: 18px; height: 18px; }
+.ts-open { position: absolute; top: 8px; right: 8px; z-index: 5; opacity: .7; }
+.ts-open:hover, .ts-open:focus-visible { opacity: 1; }
+.ts-panel { position: absolute; top: 6px; left: 6px; right: 6px; z-index: 5; display: flex; flex-direction: column; gap: 6px; max-width: 620px; margin-left: auto;
+  padding: 8px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / .45); }
+.ts-row { display: flex; align-items: center; gap: 6px; }
+.ts-input { flex: 1; min-width: 0; min-height: 40px; padding: 0 12px; color: var(--fg); background: var(--surface-3); border: 1px solid var(--border);
+  border-radius: 10px; font: 1rem var(--font-ui); }
+.ts-count { flex: none; cursor: pointer; min-width: 5.5em; font-size: var(--fs-xs); color: var(--fg-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.ts-list { display: flex; flex-direction: column; gap: 2px; max-height: min(45vh, 360px); overflow-y: auto; overscroll-behavior: contain; }
+.ts-list:empty, .ts-panel.compact .ts-list { display: none; }
+.ts-hit { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 10px; text-align: left; color: var(--fg);
+  background: transparent; border: 0; border-radius: 8px; font: inherit; touch-action: manipulation; }
+.ts-hit:active, .ts-hit.current { background: var(--accent-bg); }
+.ts-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; font: var(--fs-sm) var(--font-mono); }
+.ts-text mark { color: var(--on-accent); background: var(--accent); border-radius: 3px; padding: 0 1px; }
+.ts-up { flex: none; font-size: var(--fs-2xs); color: var(--fg-faint); }
+.ts-more { padding: 6px 10px; font-size: var(--fs-xs); color: var(--fg-muted); }
 /* Shown when the browser refuses an OSC 52 copy outside a tap. */
 .t-toast { position: absolute; right: 8px; bottom: 8px; z-index: 4; display: flex; align-items: center; gap: 10px;
   padding: 6px 6px 6px 12px; border-radius: 10px; background: var(--surface-5); border: 1px solid var(--border-strong);

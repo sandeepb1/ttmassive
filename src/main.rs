@@ -20,6 +20,7 @@ mod question;
 mod resume;
 mod screen;
 mod scrollback;
+mod search;
 mod server;
 mod subagents;
 mod sessions;

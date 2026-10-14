@@ -13,6 +13,7 @@ import type { Analysis } from './protocol';
 import type { ChatActions } from './rightbar';
 import { setAgentAccent } from './theme';
 import { TerminalSession } from './term';
+import { TermSearch } from './term-search';
 
 export interface PaneEvents {
   onUnauthorized: () => void;
@@ -90,6 +91,7 @@ export class Pane {
   private promptBar: PromptBar | null = null;
   private stoppedBar: StoppedBar | null = null;
   private focused = false;
+  private historySearch: TermSearch;
   /** Whether the terminal draws on the GPU (browsers cap how many panes can). */
   private gpu = true;
   /** Whether this session's starting view has been picked yet. */
@@ -135,6 +137,13 @@ export class Pane {
       headButton('p-panel', 'Session details', 'panel-right', () => events.onPanel()),
     );
 
+    this.historySearch = new TermSearch(this.termEl, {
+      session: () => this.name,
+      onUnauthorized: () => events.onUnauthorized(),
+      refocus: () => {
+        if (this.focused && this.view === 'term') this.term?.focus();
+      },
+    });
     this.el.append(head, this.termEl, this.chatEl, this.agentEl, this.stoppedEl, this.promptEl, this.keybarEl);
     // Capture, so a tap on a button inside still focuses the pane first.
     this.el.addEventListener('pointerdown', () => events.onActivate(this), { capture: true });
@@ -144,6 +153,7 @@ export class Pane {
 
   /** Show `name` in this pane, replacing whatever it showed. */
   open(name: string) {
+    this.historySearch.reset();
     this.leaveAgent();
     this.term?.dispose();
     this.chat?.dispose();
@@ -288,6 +298,7 @@ export class Pane {
   }
 
   dispose() {
+    this.historySearch.reset(); // a closed pane must not leave its session in copy-mode
     this.agentView?.dispose();
     window.clearTimeout(this.noticeTimer);
     this.term?.dispose();
@@ -303,6 +314,12 @@ export class Pane {
   setGpu(on: boolean) {
     this.gpu = on;
     this.term?.setGpu(on);
+  }
+
+  /** Open the history search, if this pane is showing a terminal. */
+  openSearch() {
+    if (this.view !== 'term' || this.isAgent || !this.term) return this.say('History search works in the terminal view.');
+    this.historySearch.open();
   }
 
   setFocused(on: boolean) {

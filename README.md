@@ -239,6 +239,20 @@ The key bar has Esc, Ctrl, Alt, Tab and the arrows.
 The terminal refits when the screen rotates or the on-screen keyboard opens, and tmux follows the
 device you used most recently (`window-size latest`).
 
+### Searching the history
+
+The terminal only shows the screen; tmux keeps the rest (the last 50,000 lines). Tap the magnifier
+in the corner of the terminal, or press `Ctrl+Alt+F`, and type: every match in the whole history
+is listed, newest first, with how far up it is. Tap one, or step with the up and down arrows (or
+Enter and Shift+Enter), and tmux scrolls to it in copy-mode with the matches highlighted and the
+current one in a different colour. The list tucks away after a jump so you can see the match; tap
+the counter to bring it back. Leave with the close button, Escape in the search box, or `q` in the
+terminal. Closing the tab after a jump also leaves copy-mode.
+
+Matching is literal, not a regular expression. Case is ignored unless the search has a capital
+letter, as in tmux. Up to 1000 matches are counted and 200 are listed. It searches running
+sessions only; a stopped session keeps just its saved output (see `ttm output`).
+
 ### When an agent exits
 
 When the agent in a preset session ends (you press Ctrl+C out of Claude, or run `/exit`), the
@@ -718,6 +732,12 @@ settings are `bind`, `password_hash`, `trust_proxy`, `tunnel`, `tunnel_token`, `
   runs `ttm statusline`, which prints the footer and posts to `/api/internal/usage` the same
   loopback way. Token totals come from Claude's transcript and Codex's session log, found by the
   conversation id the hooks reported, and are read incrementally.
+- Search: `GET /api/sessions/{id}/search?q=` reads the whole tmux history and returns
+  `{total, capped, hits: [{n, up, text, at, len}]}`, newest first, where `n` counts matches from the
+  newest. `POST /api/sessions/{id}/search/jump` with `{q, n, text?}` puts the session in tmux's
+  copy-mode on that match using tmux's own search, so the count and the jump agree; `text` is the
+  line that was tapped, so the jump still lands on it if new output renumbered the matches.
+  `POST .../search/close` leaves copy-mode. The query is passed to tmux as an escaped literal.
 - Chat: `GET /api/sessions/{id}/chat?epoch=&after=` returns the conversation items added or
   changed since the client's last sequence number (a new `epoch` means start over), together with
   the screen analysis, the current mode and any suggested reply. Other routes under the same

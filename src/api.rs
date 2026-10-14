@@ -12,7 +12,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 
 use crate::{
-    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, layouts, modelmenu, modes, notify, ops, resume, sessions, suggest, tmux, uploads, usage,
+    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, layouts, modelmenu, modes, notify, ops, resume, search, sessions, suggest, tmux, uploads, usage,
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -29,6 +29,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/rename", post(rename_session))
         .route("/api/sessions/{id}/restore", post(restore_session))
         .route("/api/sessions/{id}/output", get(session_output))
+        .route("/api/sessions/{id}/search", get(session_search))
+        .route("/api/sessions/{id}/search/jump", post(session_search_jump))
+        .route("/api/sessions/{id}/search/close", post(session_search_close))
         .route("/api/sessions/{id}/screen", get(session_screen))
         .route("/api/sessions/{id}/chat", get(session_chat))
         .route("/api/sessions/{id}/keys", post(session_keys))
@@ -474,6 +477,76 @@ async fn session_output(
     match ops::output(&st, &id, q.lines.unwrap_or(200)).await {
         Ok(text) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], text)
             .into_response(),
+        Err(e) => server_error(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+}
+
+/// Search a running session's whole history. Newest match first, numbered for the jump.
+async fn session_search(Path(id): Path<String>, Query(q): Query<SearchQuery>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let query = match search::clean(&q.q) {
+        Ok(q) => q,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    if !tmux::exists(&id).await {
+        return (StatusCode::CONFLICT, "session is not running").into_response();
+    }
+    match tmux::capture_all(&id).await {
+        Ok(text) => ([(header::CACHE_CONTROL, "no-store")], Json(search::find(&text, query))).into_response(),
+        Err(e) => server_error(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct JumpBody {
+    q: String,
+    /// The match to go to, counted from the newest.
+    n: usize,
+    /// The line that was tapped, so a jump still lands on it if new output renumbered the matches.
+    text: Option<String>,
+}
+
+/// Put the session in copy-mode on a match, as tmux's own search would.
+async fn session_search_jump(Path(id): Path<String>, Json(b): Json<JumpBody>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let query = match search::clean(&b.q) {
+        Ok(q) => q,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    if !tmux::exists(&id).await {
+        return (StatusCode::CONFLICT, "session is not running").into_response();
+    }
+    let text = match tmux::capture_all(&id).await {
+        Ok(t) => t,
+        Err(e) => return server_error(&e),
+    };
+    let (hits, _) = search::occurrences(&text, query);
+    // tmux wraps around past the last match, so a number beyond the count would land on the first.
+    let n = search::resolve(&hits, b.n, b.text.as_deref()).unwrap_or(b.n);
+    if n < 1 || n > hits.len() {
+        return (StatusCode::GONE, "that match is gone").into_response();
+    }
+    match tmux::search_jump(&id, &search::pattern(query), n).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => server_error(&e),
+    }
+}
+
+async fn session_search_close(Path(id): Path<String>) -> Response {
+    if !valid_id(&id) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match tmux::search_close(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => server_error(&e),
     }
 }

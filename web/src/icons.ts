@@ -2,7 +2,7 @@
 
 const NS = 'http://www.w3.org/2000/svg';
 
-export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid';
+export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down';
 
 /** Each icon is a list of SVG path `d` strings, plus circles as [cx, cy, r]. */
 const SHAPES: Record<IconName, { d: string[]; circles?: [number, number, number][] }> = {
@@ -16,6 +16,8 @@ const SHAPES: Record<IconName, { d: string[]; circles?: [number, number, number]
   skill: { d: ['M8 2l1.4 4.6L14 8l-4.6 1.4L8 14l-1.4-4.6L2 8l4.6-1.4z'] },
   dot: { d: [], circles: [[8, 8, 1.6]] },
   chevron: { d: ['M6 4l4 4-4 4'] },
+  'chevron-up': { d: ['M4 10l4-4 4 4'] },
+  'chevron-down': { d: ['M4 6l4 4 4-4'] },
   plus: { d: ['M8 3v10M3 8h10'] },
   'panel-left': { d: ['M2.5 3.5h11v9h-11z', 'M6 3.5v9'] },
   'panel-right': { d: ['M2.5 3.5h11v9h-11z', 'M10 3.5v9'] },

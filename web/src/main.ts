@@ -429,11 +429,17 @@ function toggleList() {
   }
 }
 
-// Ctrl+Alt+arrows move between tiles; Ctrl+Alt+1..6 jump to one.
+// Ctrl+Alt+arrows move between tiles; Ctrl+Alt+1..6 jump to one; Ctrl+Alt+F searches the history.
 document.addEventListener(
   'keydown',
   (e) => {
     if (!e.ctrlKey || !e.altKey || e.metaKey || e.shiftKey || $('app').hidden || document.querySelector('.sheet')) return;
+    if (e.code === 'KeyF') {
+      e.preventDefault();
+      e.stopPropagation();
+      focused?.openSearch();
+      return;
+    }
     const dirs: Record<string, Dir> = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
     let slot: number | null = null;
     const dir = dirs[e.key];

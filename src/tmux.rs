@@ -214,6 +214,54 @@ pub async fn capture(id: &str, lines: usize) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Everything in the session, history and screen, as plain text with wrapped lines joined.
+pub async fn capture_all(id: &str) -> Result<String> {
+    let out = base()
+        .args(["capture-pane", "-p", "-J", "-S", "-", "-t", &target(id)])
+        .output()
+        .await
+        .context("running tmux capture-pane")?;
+    anyhow::ensure!(out.status.success(), "no such session: {id}");
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Put the session in copy-mode on its `n`th match for `pattern`, counted from the bottom (the
+/// newest is 1). tmux scrolls to it and highlights the matches. `pattern` must come from
+/// `search::pattern`: it is a regex, and must not end in `;`, which tmux would take as a command
+/// separator.
+pub async fn search_jump(id: &str, pattern: &str, n: usize) -> Result<()> {
+    anyhow::ensure!(n >= 1 && !pattern.ends_with(';'), "bad search");
+    let t = target(id);
+    let mut steps: Vec<Vec<String>> = vec![
+        vec!["copy-mode".into(), "-t".into(), t.clone()],
+        // Start from the very end, so a match on the last line is the first one found.
+        vec!["send-keys".into(), "-X".into(), "-t".into(), t.clone(), "history-bottom".into()],
+        vec!["send-keys".into(), "-X".into(), "-t".into(), t.clone(), "end-of-line".into()],
+        vec!["send-keys".into(), "-X".into(), "-t".into(), t.clone(), "search-backward".into(), pattern.into()],
+    ];
+    if n > 1 {
+        steps.push(vec!["send-keys".into(), "-X".into(), "-N".into(), (n - 1).to_string(), "-t".into(), t, "search-again".into()]);
+    }
+    let mut cmd = base();
+    for (i, step) in steps.iter().enumerate() {
+        if i > 0 {
+            cmd.arg(";");
+        }
+        cmd.args(step);
+    }
+    let out = cmd.output().await.context("running tmux copy-mode")?;
+    anyhow::ensure!(out.status.success(), "tmux: {}", String::from_utf8_lossy(&out.stderr).trim());
+    Ok(())
+}
+
+/// Leave copy-mode. Fine when the session is not in it (the user may have pressed `q` already).
+pub async fn search_close(id: &str) -> Result<()> {
+    let out = base().args(["send-keys", "-X", "-t", &target(id), "cancel"]).output().await.context("running tmux send-keys")?;
+    let err = String::from_utf8_lossy(&out.stderr);
+    anyhow::ensure!(out.status.success() || err.contains("not in a mode"), "no such session: {id}");
+    Ok(())
+}
+
 /// The visible screen with its escape codes (colours, faint, bold), for the few things plain text
 /// can't tell apart.
 pub async fn capture_styled(id: &str) -> Result<String> {
