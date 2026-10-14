@@ -56,11 +56,37 @@ pub fn dir(data_dir: &Path) -> PathBuf {
 
 /// Save an image for the session whose hidden id is `uid`. Returns its absolute path.
 pub fn save(data_dir: &Path, uid: &str, bytes: &[u8]) -> Result<PathBuf> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    ensure!(valid_component(uid), "no such session");
     ensure!(!bytes.is_empty(), "the image is empty");
     ensure!(bytes.len() <= MAX_BYTES, "the image is too large (max {} MB)", MAX_BYTES / (1024 * 1024));
     let Some(ext) = detect(bytes) else { bail!("that is not a PNG, JPEG, GIF or WebP image") };
+    write(data_dir, uid, bytes, ext)
+}
+
+/// Save any file dropped into the terminal. Images keep the kind their bytes show; anything else
+/// keeps a harmless extension taken from `name` so the agent can tell what it is. The stored name
+/// is always generated, never the client's.
+pub fn save_file(data_dir: &Path, uid: &str, bytes: &[u8], name: &str) -> Result<PathBuf> {
+    ensure!(!bytes.is_empty(), "the file is empty");
+    ensure!(bytes.len() <= MAX_BYTES, "the file is too large (max {} MB)", MAX_BYTES / (1024 * 1024));
+    let ext = detect(bytes).map_or_else(|| plain_extension(name), str::to_owned);
+    write(data_dir, uid, bytes, &ext)
+}
+
+/// The extension of `name` if it is short and made of letters and digits, else `bin`. Image
+/// extensions are not trusted here: only `detect` may call a file an image.
+fn plain_extension(name: &str) -> String {
+    let ext = name.rsplit_once('.').map_or("", |(_, e)| e).to_ascii_lowercase();
+    let boring = (1..=8).contains(&ext.len()) && ext.bytes().all(|b| b.is_ascii_alphanumeric());
+    if boring && !is_image_ext(&ext) { ext } else { "bin".to_owned() }
+}
+
+fn is_image_ext(ext: &str) -> bool {
+    matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp")
+}
+
+fn write(data_dir: &Path, uid: &str, bytes: &[u8], ext: &str) -> Result<PathBuf> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    ensure!(valid_component(uid), "no such session");
     let folder = dir(data_dir).join(uid);
     std::fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
     let micros = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros());
@@ -94,7 +120,8 @@ pub struct Stored {
     pub ts: u64,
 }
 
-/// The images saved for the session whose hidden id is `uid`, newest first.
+/// The images saved for the session whose hidden id is `uid`, newest first. Other files dropped
+/// into the terminal are not listed.
 pub fn list(data_dir: &Path, uid: &str) -> Vec<Stored> {
     if !valid_component(uid) {
         return Vec::new();
@@ -105,6 +132,7 @@ pub fn list(data_dir: &Path, uid: &str) -> Vec<Stored> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok().filter(|n| valid_component(n))?;
+            is_image_ext(name.rsplit_once('.')?.1).then_some(())?;
             let meta = e.metadata().ok().filter(|m| m.is_file())?;
             let ts = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs();
             Some(Stored { name, size: meta.len(), ts })
@@ -208,6 +236,25 @@ mod tests {
         assert_eq!(names, vec![b.file_name().unwrap().to_str().unwrap(), a.file_name().unwrap().to_str().unwrap()]);
         assert_eq!(list(&d, "u1")[0].size, PNG.len() as u64);
         assert!(list(&d, "../u1").is_empty(), "a hostile id lists nothing");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn any_file_can_be_saved_but_only_images_are_listed() {
+        let d = temp("file");
+        let note = save_file(&d, "u1", b"hello", "My Notes.TXT").unwrap();
+        assert_eq!(note.extension().unwrap(), "txt");
+        assert_eq!(std::fs::read(&note).unwrap(), b"hello");
+        // The client's name and its image extensions are never trusted.
+        assert_eq!(save_file(&d, "u1", b"hello", "../../x.sh").unwrap().extension().unwrap(), "sh");
+        assert_eq!(save_file(&d, "u1", b"<svg onload=1>", "pic.png").unwrap().extension().unwrap(), "bin");
+        assert_eq!(save_file(&d, "u1", b"x", "noext").unwrap().extension().unwrap(), "bin");
+        assert_eq!(save_file(&d, "u1", b"x", "a.tar.verylongext").unwrap().extension().unwrap(), "bin");
+        assert_eq!(save_file(&d, "u1", PNG, "whatever.txt").unwrap().extension().unwrap(), "png");
+        assert!(save_file(&d, "u1", &[], "a.txt").is_err());
+        assert!(save_file(&d, "../u1", b"x", "a.txt").is_err());
+        let names: Vec<_> = list(&d, "u1").into_iter().map(|s| s.name).collect();
+        assert_eq!(names.len(), 1, "only the PNG is an image: {names:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -15,6 +15,8 @@ import { skewFromDate } from './activity-chip';
 import { findPaths } from './paths';
 import { markedRows } from './turn-marks';
 import { newlineFor } from './keys';
+import { filesOf, pathsToPaste } from './term-drop';
+import { UnauthorizedError, uploadFile } from './term-upload';
 import { getOptionMeta, onPrefsChange } from './prefs';
 
 const PING_MS = 20_000;
@@ -127,6 +129,7 @@ export class TerminalSession {
     this.loadAddons();
     this.watchTaps();
     this.term.attachCustomKeyEventHandler((e) => this.newlineKey(e));
+    this.watchDrops();
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
     this.term.onResize(({ rows, cols }) => this.sendCtl({ type: 'resize', rows, cols }));
@@ -342,6 +345,53 @@ export class TerminalSession {
     }
     this.barEl.dataset.kind = v.kind;
     this.barEl.style.setProperty('--pct', v.pct === null ? '35%' : `${v.pct}%`);
+  }
+
+  /**
+   * A short note over the terminal, replacing any earlier one.
+   */
+  private say(message: string, ms = 4000) {
+    this.toastEl?.remove();
+    clearTimeout(this.toastTimer);
+    const toast = el('div', 't-toast');
+    toast.append(el('span', 't-toast-msg', message));
+    this.el.append(toast);
+    this.toastEl = toast;
+    this.toastTimer = window.setTimeout(() => toast.remove(), ms);
+  }
+
+  /**
+   * Pasting or dropping files uploads them and pastes their paths into the prompt (never Enter).
+   * Text pastes carry no files and keep xterm's own handling.
+   */
+  private watchDrops() {
+    const take = (e: ClipboardEvent | DragEvent) => {
+      const files = filesOf('clipboardData' in e ? e.clipboardData : e.dataTransfer);
+      if (files.length === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void this.attachFiles(files);
+    };
+    // Capture phase, so xterm's textarea never sees a file paste as an empty text paste.
+    this.el.addEventListener('paste', take, true);
+    this.el.addEventListener('drop', take, true);
+    this.el.addEventListener('dragover', (e) => {
+      if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
+    });
+  }
+
+  private async attachFiles(files: File[]) {
+    this.say(files.length === 1 ? 'Uploading…' : `Uploading ${files.length} files…`, 30_000);
+    try {
+      const paths: string[] = [];
+      for (const f of files) paths.push(await uploadFile(this.session, f));
+      this.toastEl?.remove();
+      this.term.paste(pathsToPaste(paths));
+      this.term.focus();
+    } catch (e) {
+      if (e instanceof UnauthorizedError) return this.onUnauthorized();
+      this.say(e instanceof Error && e.message ? e.message : 'Could not upload the file');
+    }
   }
 
   /** A program asked to copy but the browser refused outside a tap: show a button that can. */

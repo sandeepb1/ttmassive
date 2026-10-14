@@ -998,8 +998,20 @@ async fn session_suggest(State(st): State<Arc<AppState>>, Path(id): Path<String>
     ([(header::CACHE_CONTROL, "no-store")], Json(items)).into_response()
 }
 
-/// An image attached in the chat view: saved on the host so the agent can read it by path.
-async fn session_upload(State(st): State<Arc<AppState>>, Path(id): Path<String>, body: axum::body::Bytes) -> Response {
+#[derive(Deserialize)]
+struct UploadQuery {
+    /// The original file name of something dropped into the terminal. Without it, only images are accepted.
+    name: Option<String>,
+}
+
+/// An image attached in the chat view, or a file dropped into the terminal (`?name=`): saved on the
+/// host so the agent can read it by path.
+async fn session_upload(
+    State(st): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> Response {
     if !valid_id(&id) {
         return StatusCode::BAD_REQUEST.into_response();
     }
@@ -1009,7 +1021,10 @@ async fn session_upload(State(st): State<Arc<AppState>>, Path(id): Path<String>,
     let data_dir = st.data_dir.clone();
     let saved = tokio::task::spawn_blocking({
         let uid = uid.clone();
-        move || uploads::save(&data_dir, &uid, &body)
+        move || match q.name {
+            Some(name) => uploads::save_file(&data_dir, &uid, &body, &name),
+            None => uploads::save(&data_dir, &uid, &body),
+        }
     })
     .await;
     match saved {
