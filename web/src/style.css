@@ -634,11 +634,56 @@ details.rb-plan > summary { min-height: 44px; display: flex; align-items: center
 .rb-hit mark { padding: 0 2px; font-weight: 600; color: var(--accent-text); background: var(--accent-bg); border-radius: 3px; }
 
 /* ---- Panes: one session, or two side by side ---- */
-#panes { flex: 1; min-height: 0; display: flex; }
-.pane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; position: relative; }
-.pane + .pane { border-left: 1px solid var(--border); }
+/* The panes sit in a grid whose 1px gaps show the border colour. Extra panes hide behind tabs. */
+#panes { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tiles { flex: 1; min-height: 0; display: grid; gap: 1px; background: var(--border); position: relative; }
+.pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; background: var(--bg); }
 .pane:not(.is-first) .p-menu, .pane:not(.is-last) .p-panel { display: none; }
-#app:not(.can-split) .p-split, #app.is-split .p-split, #app:not(.is-split) .p-close { display: none; }
+#app:not(.can-add) .p-split, #app:not(.many) .p-close, #app:not(.can-split) .p-layout { display: none; }
+
+.tile-tabs { flex: none; display: flex; gap: 4px; padding: 4px 6px; overflow-x: auto; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.tile-tab { flex: none; max-width: 40vw; min-height: 36px; padding: 0 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 600 var(--fs-sm) var(--font-ui); color: var(--fg-muted); background: transparent; border: 1px solid transparent; border-radius: 8px; }
+.tile-tab.shown { color: var(--fg); background: var(--surface-4); }
+.tile-tab[aria-pressed="true"] { color: var(--on-accent); background: var(--accent); }
+
+/* Drag handles over the gaps between tiles. */
+.tile-div { position: absolute; z-index: 6; touch-action: none; }
+.tile-div.col { width: 18px; margin-left: -9px; cursor: col-resize; }
+.tile-div.row { height: 18px; margin-top: -9px; cursor: row-resize; }
+.tile-div::after { content: ""; position: absolute; border-radius: 2px; background: transparent; transition: background-color .12s ease; }
+.tile-div.col::after { left: 7px; right: 7px; top: 0; bottom: 0; }
+.tile-div.row::after { top: 7px; bottom: 7px; left: 0; right: 0; }
+.tile-div:hover::after, .tile-div.dragging::after { background: var(--accent); }
+
+.tile-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 16px; background: var(--bg); min-width: 0; min-height: 0; }
+.te-title { font-size: var(--fs-sm); color: var(--fg-muted); }
+.te-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.te-hint { font-size: var(--fs-xs); color: var(--fg-faint); text-align: center; }
+
+/* Layout sheet. */
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.lp-preset { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 6px; color: var(--fg); background: var(--surface-3);
+  border: 1px solid var(--border); border-radius: 10px; font: inherit; touch-action: manipulation; }
+.lp-preset[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-bg); }
+.lp-preset:disabled { opacity: .38; }
+.lp-label { font-size: var(--fs-xs); color: var(--fg-muted); text-align: center; }
+.lp-thumb { display: grid; gap: 2px; width: 72px; height: 48px; }
+.lp-thumb span { background: var(--fg-faint); border-radius: 2px; }
+.ws-save { display: flex; gap: 8px; }
+.ws-name { flex: 1; min-width: 0; min-height: 44px; padding: 0 12px; color: var(--fg); background: var(--surface-3); border: 1px solid var(--border); border-radius: 10px; font: inherit; }
+.ws-row { display: flex; align-items: stretch; gap: 6px; }
+.ws-open { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; text-align: left;
+  color: var(--fg); background: var(--surface-3); border: 1px solid var(--border); border-radius: 10px; font: inherit; }
+.ws-title { font-weight: 600; }
+.ws-sum { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--fg-muted); }
+.ws-del { flex: none; width: 44px; font: 400 1.5rem/1 var(--font-ui); color: var(--fg-muted); background: var(--surface-3); border: 1px solid var(--border); border-radius: 10px; }
+
+/* Settings: pane preferences. */
+.ps-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; }
+.ps-label { font-size: var(--fs-md); }
+.sheet-select { min-height: 40px; padding: 0 10px; color: var(--fg); background: var(--surface-4); border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.sheet-select:disabled { opacity: .45; }
 /* In split view the focused pane underlines its header in its own agent's colour. */
 #app.is-split .p-head { box-shadow: inset 0 -2px 0 transparent; transition: box-shadow .15s ease; }
 #app.is-split .pane.focused .p-head { box-shadow: inset 0 -2px 0 var(--accent); }

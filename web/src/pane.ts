@@ -21,6 +21,8 @@ export interface PaneEvents {
   /** Something the sidebars show changed. */
   onChange: (pane: Pane, what: 'name' | 'status' | 'info' | 'data' | 'agent' | 'progress') => void;
   onSplit: (pane: Pane) => void;
+  /** Open the layout sheet: presets and saved workspaces. */
+  onLayout: () => void;
   onClose: (pane: Pane) => void;
   onMenu: () => void;
   onPanel: () => void;
@@ -88,6 +90,8 @@ export class Pane {
   private promptBar: PromptBar | null = null;
   private stoppedBar: StoppedBar | null = null;
   private focused = false;
+  /** Whether the terminal draws on the GPU (browsers cap how many panes can). */
+  private gpu = true;
   /** Whether this session's starting view has been picked yet. */
   private viewChosen = false;
   private connMsg = '';
@@ -125,7 +129,8 @@ export class Pane {
       headButton('p-menu', 'Sessions', 'menu', () => events.onMenu()),
       title,
       this.toggle,
-      headButton('p-split', 'Show a second session beside this one', 'columns', () => events.onSplit(this)),
+      headButton('p-split', 'Open another session in a new pane', 'columns', () => events.onSplit(this)),
+      headButton('p-layout', 'Pane layout and workspaces', 'grid', () => events.onLayout()),
       headButton('p-close', 'Close this pane', 'close', () => events.onClose(this)),
       headButton('p-panel', 'Session details', 'panel-right', () => events.onPanel()),
     );
@@ -219,6 +224,7 @@ export class Pane {
           this.events.onChange(this, 'progress');
         },
       },
+      this.gpu,
     );
     this.term = term;
     this.promptBar = new PromptBar(this.promptEl, (choice, id) => term.answer(choice, id));
@@ -292,6 +298,12 @@ export class Pane {
   }
 
   // ------------------------------------------------------------------ state
+
+  /** Give the terminal the GPU renderer, or take it away to free a WebGL context. */
+  setGpu(on: boolean) {
+    this.gpu = on;
+    this.term?.setGpu(on);
+  }
 
   setFocused(on: boolean) {
     this.focused = on;

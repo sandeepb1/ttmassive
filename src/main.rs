@@ -8,6 +8,7 @@ mod config;
 mod control;
 mod daemon;
 mod gitinfo;
+mod layouts;
 mod limits;
 mod modelmenu;
 mod modes;

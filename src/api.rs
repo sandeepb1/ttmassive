@@ -12,7 +12,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 
 use crate::{
-    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, modelmenu, modes, notify, ops, resume, sessions, suggest, tmux, uploads, usage,
+    AppState, assets, auth::COOKIE_NAME, config::{Agent, RestartPolicy}, layouts, modelmenu, modes, notify, ops, resume, sessions, suggest, tmux, uploads, usage,
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -64,6 +64,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/tunnel", get(get_tunnel))
         .route("/api/dirs", get(recent_dirs))
         .route("/api/groups", get(list_groups))
+        .route("/api/layouts", get(get_layouts).put(put_layouts))
         .route("/api/groups/{name}/start", post(start_group))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
@@ -185,6 +186,23 @@ fn is_local_host(headers: &HeaderMap) -> bool {
 async fn get_tunnel(State(st): State<Arc<AppState>>) -> impl IntoResponse {
     let v = st.tunnel.lock().map_or(serde_json::Value::Null, |t| t.to_json());
     ([(header::CACHE_CONTROL, "no-store")], Json(v))
+}
+
+async fn get_layouts(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    ([(header::CACHE_CONTROL, "no-store")], Json(layouts::load(&st.data_dir).await))
+}
+
+async fn put_layouts(State(st): State<Arc<AppState>>, Json(l): Json<layouts::Layouts>) -> Response {
+    if let Err(why) = layouts::validate(&l) {
+        return (StatusCode::BAD_REQUEST, why).into_response();
+    }
+    match layouts::save(&st.data_dir, &l).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::warn!("saving layouts: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 async fn logout(jar: CookieJar) -> impl IntoResponse {

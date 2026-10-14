@@ -419,8 +419,9 @@ When Claude starts subagents (its `Agent` tool) or Codex starts helper threads, 
 - In the chat, the call becomes a **card**: the agent type, what it was asked, a clock while it
   runs, how many tool calls it has made, and the last thing it did. Tap the card for the task and
   the helper's report, and **Open transcript** for everything it did.
-- A transcript opens beside the conversation when the screen is wide enough (replacing the other
-  pane if two are open; the conversation you were reading keeps focus), or in a tall sheet that
+- A transcript opens beside the conversation when the screen has room for panes (in another helper's
+  pane if one is open, otherwise a new pane or the next one; the conversation you were reading keeps
+  focus), or in a tall sheet that
   drags down to close. It is read-only and live while the helper runs, and a helper that started
   helpers of its own shows them as cards in turn.
 - The details panel's **Overview** lists every helper of the conversation as a tree, newest state
@@ -434,20 +435,37 @@ tells ttm when a helper is *interrupted*, so one that stopped early shows as fin
 reads the last 8 MB of a long log, so a card may be missing for an old helper: the Overview list still
 has it.
 
-## Split view
+## Tiled panes
 
-On a screen 1100px wide or more (a tablet in landscape, a desktop) you can show two sessions side
-by side. Tap the columns button in a pane's header to open another session next to it, or use
-the columns button in a session's `⋯` menu. Each pane has its own Chat/Terminal toggle, key bar and
-agent colour (orange for Claude, teal for Codex, set by the theme), and its own close button.
+Show several sessions at once, as many as **Settings → Panes → Most panes** allows (up to 6).
+Tap the columns button in a pane's header to open another session in a new pane, or the grid
+button to pick a layout. Each pane has its own Chat/Terminal toggle, key bar and agent colour
+(orange for Claude, teal for Codex, set by the theme), and its own close button.
 
-The pane you touched last is the focused one: its header is underlined, the details panel
-describes it, and the address bar names it. While two panes are open the session list shrinks to a
-rail of buttons (two letters per session, with the status dot). A button opens that session in the
-focused pane, and the first button widens the rail back to the full list until you pick something.
+**Grids.** One pane, two columns, two rows, three columns, one big and two small, 2×2 and 3×2.
+Opening panes picks the smallest grid with room, starting from the grid you set in Settings (one
+for big screens, one for tablets). Picking a grid by hand keeps it, even with empty tiles: an
+empty tile lists the sessions that are not on screen. Drag the line between two tiles to resize
+them; the sizes are remembered for each grid.
 
-The split is remembered across reloads. On a narrower screen only the focused pane is shown, and
-the other comes back when there is room again. Phones never split.
+**Small screens.** A grid only appears if every tile gets room for a usable terminal. A portrait
+tablet gets stacked rows, a phone gets one pane. Panes that do not fit stay open behind a strip
+of tabs; tap a tab to bring that pane on screen.
+
+**Focus.** The pane you touched last is the focused one: its header is underlined, the details
+panel describes it, and the address bar names it. `Ctrl+Alt` with an arrow key moves to the
+neighbouring tile, and `Ctrl+Alt+1` to `6` jumps to a tile. In tiled view the session list shrinks
+to a rail of buttons (two letters per session, with the status dot). A button opens that session
+in the focused pane, or jumps to the pane that already shows it, and the first button widens the
+rail back to the full list until you pick something.
+
+**Workspaces.** In the layout sheet, name the current grid and its sessions and save it, for
+example "Claude + Codex + shell". Workspaces and the Panes settings are stored on the server, so
+one saved on your Mac opens on your tablet. A session that is no longer running is skipped.
+
+Open panes are remembered across reloads on each device. At most four panes draw with the GPU
+(the focused one and the most recently used); the rest use the slower text renderer, so a
+tablet's few WebGL contexts are never used up.
 
 ## Modes, toggles and launch options
 

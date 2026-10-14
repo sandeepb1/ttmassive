@@ -10,6 +10,13 @@ import { edgeSwipe } from './gestures';
 import { RightBar } from './rightbar';
 import { SettingsSheet } from './settings';
 import { Pane, type PaneEvents } from './pane';
+import { el } from './dom';
+import { LayoutSheet } from './layout-sheet';
+import {
+  corners, dividers, dragSizes, effectivePreset, isPresetId, neighbor, preset, presetClass, presetForCount, sanitizeSizes, span,
+  tileCount, tileNames, usable, visiblePanes, type Dir, type Divider, type Preset, type PresetId,
+} from './tiling';
+import { defaultLayouts, fetchLayouts, MAX_PANES_LIMIT, paneLimit, updateLayouts, type Layouts, type Workspace } from './workspace';
 import { AgentSheet } from './agent-sheet';
 import type { SubAgent } from './agents';
 
@@ -23,19 +30,58 @@ let rightbar: RightBar | null = null;
 let settings: SettingsSheet | null = null;
 let usage: UsageView | null = null;
 
-/** The open panes: one, or two side by side on a wide screen. */
+/**
+ * The open panes, in tile order. There can be more open than the screen has room for: the extra
+ * ones stay alive behind a strip of tabs.
+ */
 const panes: Pane[] = [];
 let focused: Pane | null = null;
-/** The screen is wide enough for two panes. */
+/** The settings allow several panes and the screen has room for at least two tiles. */
 let canSplit = false;
-/** In split view the session list is an icon rail; this widens it back to the full list. */
+/** In tiled view the session list is an icon rail; this widens it back to the full list. */
 let railOpen = false;
 
-const SPLIT_KEY = 'ttm.split';
+const TILES_KEY = 'ttm.tiles';
+const OLD_SPLIT_KEY = 'ttm.split';
+const RAIL_W = 64;
+/** Browsers allow only a few WebGL contexts (fewer on a tablet): the busiest panes get one. */
+const GPU_BUDGET = 4;
+
+interface Sizes {
+  cols: number[];
+  rows: number[];
+}
+
+let layouts: Layouts = defaultLayouts();
+/** The grid asked for; the one drawn is the biggest of those that fit (`current`). */
+let asked: PresetId = 'single';
+/** The grid was picked by hand, so it is kept even when panes close, instead of following the pane count. */
+let explicit = false;
+let current: Preset = preset('single');
+/** The pane in each tile of `current`, or null for an empty tile. */
+let slotOf: (Pane | null)[] = [];
+const sizes = new Map<PresetId, Sizes>();
+const lastFocus = new Map<Pane, number>();
+let focusTick = 0;
+/** How many panes there were the last time the tiles were laid out. */
+let lastCount = 0;
+
+const tilesEl = el('div', 'tiles');
+const tabsEl = el('div', 'tile-tabs');
+tabsEl.hidden = true;
+$('panes').append(tabsEl, tilesEl);
+
+const limit = () => paneLimit(layouts.settings);
+const defaultPreset = (): PresetId => layouts.settings[presetClass(window.innerWidth)];
 
 function sessionName(): string {
   const n = decodeURIComponent(location.hash.slice(1));
   return /^[A-Za-z0-9_-]{1,64}$/.test(n) ? n : 'main';
+}
+
+async function sessionList(): Promise<SessionView[]> {
+  const r = await fetch('/api/sessions').catch(() => null);
+  return r?.ok ? ((await r.json()) as SessionView[]) : [];
 }
 
 // ---------------------------------------------------------------------- panes
@@ -46,7 +92,7 @@ const paneEvents: PaneEvents = {
   onChange: (p, what) => {
     if (what === 'name') {
       sidebar?.reload();
-      saveSplit();
+      saveTiles();
     }
     if (what === 'progress') sidebar?.reload();
     if (p !== focused) return;
@@ -71,6 +117,7 @@ const paneEvents: PaneEvents = {
     }
   },
   onSplit: () => void split(),
+  onLayout: () => openLayout(),
   onClose: (p) => closePane(p),
   onMenu: () => toggleList(),
   onPanel: () => layout.toggle('right'),
@@ -79,9 +126,8 @@ const paneEvents: PaneEvents = {
 
 function createPane(): Pane {
   const p = new Pane(paneEvents);
-  $('panes').append(p.el);
+  tilesEl.append(p.el);
   panes.push(p);
-  applySplit();
   return p;
 }
 
@@ -90,6 +136,7 @@ function focus(p: Pane) {
   if (focused === p) return;
   focused?.setFocused(false);
   focused = p;
+  lastFocus.set(p, ++focusTick);
   p.setFocused(true);
   setAgentAccent(p.agent);
   rightbar?.setSession(p.name, p.title);
@@ -98,124 +145,424 @@ function focus(p: Pane) {
   rightbar?.setData(p.data);
   updateHash();
   sidebar?.reload();
-  saveSplit();
+  applyTiles(); // a pane behind a tab takes a tile when it is focused
+  saveTiles();
 }
 
 function updateHash() {
   if (focused && location.hash.slice(1) !== focused.name) history.replaceState(null, '', `#${encodeURIComponent(focused.name)}`);
 }
 
-/**
- * Show a helper agent's transcript: beside the conversation when there is room (replacing the other
- * pane if two are open), or in a sheet over it. From inside a helper's own pane, in place.
- */
-function openAgent(session: string, a: SubAgent) {
-  if (!canSplit || !focused) {
-    new AgentSheet($('app'), session, a, { onUnauthorized: showLogin, open: (c) => openAgent(session, c) }).open();
-    return;
-  }
-  const target = focused.isAgent ? focused : (panes.find((p) => p !== focused) ?? createPane());
-  target.openAgent(session, a); // the conversation you were reading keeps focus
-  applySplit();
+function openAgentSheet(session: string, a: SubAgent) {
+  new AgentSheet($('app'), session, a, { onUnauthorized: showLogin, open: (c) => openAgent(session, c) }).open();
 }
 
-/** Open a session in the focused pane. */
+/**
+ * Show a helper agent's transcript: in a pane beside the conversation when there is room, or in a
+ * sheet over it. From inside a helper's own pane, in place.
+ */
+function openAgent(session: string, a: SubAgent) {
+  if (!canSplit || !focused) return openAgentSheet(session, a);
+  const others = panes.filter((p) => p !== focused);
+  const target = focused.isAgent
+    ? focused
+    : (others.find((p) => p.isAgent) ?? others.find((p) => slotOf.includes(p)) ?? (panes.length < limit() ? createPane() : null));
+  if (!target) return openAgentSheet(session, a);
+  target.openAgent(session, a); // the conversation you were reading keeps focus
+  applyTiles();
+}
+
+/** Open a session in the focused pane, or jump to the pane that already shows it. */
 function openSession(name: string) {
+  const open = panes.find((p) => p.name === name && !p.isAgent);
+  if (open) return focus(open);
   if (!focused) focus(createPane());
   focused?.open(name);
 }
 
-/** Put the focused pane's neighbour on screen: a second session beside this one. */
-async function split(name?: string) {
-  if (!focused || panes.length >= 2 || !canSplit) return;
-  let target = name;
-  if (!target) {
-    const r = await fetch('/api/sessions').catch(() => null);
-    const list = r?.ok ? ((await r.json()) as SessionView[]) : [];
-    const others = list.filter((s) => s.id !== focused?.name);
-    target = (others.find((s) => s.status === 'running') ?? others[0])?.id;
-  }
-  if (!target) return focused.say('No other session to show. Start one from the sidebar.');
+/** Put a session in a new pane. */
+function addPane(name: string) {
   const p = createPane();
-  p.open(target);
+  p.open(name);
   focus(p);
-  applySplit();
 }
 
-/** Open a session beside the one you are in: in the other pane, or a new one. */
+/** Open another session in a new pane: the one you asked for, or the next running one. */
+async function split(name?: string) {
+  if (!focused || panes.length >= limit() || !canSplit) return;
+  let target = name;
+  if (!target) {
+    const free = (await sessionList()).filter((s) => !panes.some((p) => p.name === s.id));
+    target = (free.find((s) => s.status === 'running') ?? free[0])?.id;
+  }
+  if (!target) return focused?.say('No other session to show. Start one from the sidebar.');
+  addPane(target);
+}
+
+/** Open a session beside the one you are in: in a new pane, or in place of the next one if full. */
 function openInSplit(id: string) {
   if (!canSplit || !focused) return openSession(id);
-  const other = panes.find((p) => p !== focused);
-  if (other) {
-    other.open(id);
-    focus(other);
-  } else {
-    void split(id);
-  }
+  const open = panes.find((p) => p.name === id && !p.isAgent);
+  if (open) return focus(open);
+  if (panes.length < limit()) return void split(id);
+  const next = panes[(panes.indexOf(focused) + 1) % panes.length]!;
+  next.open(id);
+  focus(next);
 }
 
 function closePane(p: Pane) {
   if (panes.length < 2) return;
-  const rest = panes.filter((x) => x !== p);
-  panes.splice(panes.indexOf(p), 1);
+  const at = panes.indexOf(p);
+  panes.splice(at, 1);
+  lastFocus.delete(p);
   p.dispose();
   if (focused === p) {
     focused = null;
-    focus(rest[0]!);
+    focus(panes[Math.min(at, panes.length - 1)]!);
   }
-  applySplit();
-  saveSplit();
+  applyTiles();
+  saveTiles();
 }
 
-/** The layout classes, and which panes show: with two open but no room, only the focused one does. */
-function applySplit() {
-  const squeezed = panes.length === 2 && !canSplit;
-  for (const p of panes) p.el.hidden = squeezed && p !== focused;
-  const shown = panes.filter((p) => !p.el.hidden);
-  // The list and details buttons live in the outer headers: first pane on the left, last on the right.
+// ---------------------------------------------------------------------- tiles
+
+/** How much room the tiles have, counting the wide list as the icon rail it becomes once tiled. */
+function room(): { w: number; h: number } {
+  const leftNow = layout.placement('left') === 'pinned' ? $('left').offsetWidth : 0;
+  const extra = railOpen ? 0 : Math.max(0, leftNow - RAIL_W);
+  return { w: $('panes').clientWidth + extra, h: $('panes').clientHeight + (tabsEl.hidden ? 0 : tabsEl.offsetHeight) };
+}
+
+/**
+ * Lay the panes out: choose the grid that fits, give each tile its pane, show a prompt in empty
+ * tiles, tab away the panes that do not fit, and hand out the GPU renderers.
+ */
+function applyTiles() {
+  const max = limit();
+  const { w, h } = room();
+  const count = panes.length;
+  if (!explicit) {
+    const start = tileCount(preset(defaultPreset())) >= count ? defaultPreset() : asked;
+    asked = count <= 1 ? 'single' : presetForCount(start, count, w, h, max);
+  } else if (count > lastCount && lastCount > 0) {
+    // A pane was added to a grid picked by hand: grow it if it is full. Otherwise a grid chosen
+    // with more panes open than tiles stays as it is, and the rest wait behind tabs.
+    asked = presetForCount(asked, count, w, h, max);
+  }
+  lastCount = count;
+  current = effectivePreset(asked, w, h, max);
+  canSplit = max >= 2 && usable(w, h, max).length > 1;
+  if (!canSplit) railOpen = false;
+
+  const names = tileNames(current);
+  const visible = visiblePanes(count, Math.max(0, focused ? panes.indexOf(focused) : 0), names.length);
+  slotOf = names.map((_, s) => panes[visible[s]!] ?? null);
   for (const p of panes) {
-    p.el.classList.toggle('is-first', p === shown[0]);
-    p.el.classList.toggle('is-last', p === shown[shown.length - 1]);
+    const slot = slotOf.indexOf(p);
+    p.el.hidden = slot < 0;
+    if (slot >= 0) p.el.style.gridArea = names[slot]!;
   }
-  $('app').classList.toggle('is-split', shown.length === 2);
-  $('app').classList.toggle('can-split', canSplit);
-  $('app').classList.toggle('rail-open', railOpen);
+
+  const sz = sizes.get(current.id) ?? sanitizeSizes(current, null, null);
+  sizes.set(current.id, sz);
+  tilesEl.style.gridTemplateAreas = current.areas.map((r) => `"${r.join(' ')}"`).join(' ');
+  applyGrid(sz);
+  renderEmpty(names.slice(visible.length));
+  renderDividers();
+  renderTabs();
+
+  // The list and details buttons live in the outer headers: top-left tile and top-right tile.
+  const shown = slotOf.filter((p): p is Pane => p !== null);
+  const corner = corners(current);
+  const first = slotOf[names.indexOf(corner.first)] ?? shown[0];
+  const last = slotOf[names.indexOf(corner.last)] ?? shown[shown.length - 1];
+  for (const p of panes) {
+    p.el.classList.toggle('is-first', p === first);
+    p.el.classList.toggle('is-last', p === last);
+  }
+  const app = $('app');
+  app.classList.toggle('is-split', names.length >= 2);
+  app.classList.toggle('can-split', canSplit);
+  app.classList.toggle('can-add', canSplit && count < max);
+  app.classList.toggle('many', count >= 2);
+  app.classList.toggle('rail-open', railOpen);
+  balanceGpu();
 }
 
-/** The list button: in split view the rail widens; otherwise the sidebar slides in or out. */
+function applyGrid(sz: Sizes) {
+  // Scaled so the weights add up to far more than 1: a grid track set in fr only fills the space when they do.
+  const track = (n: number) => `minmax(0, ${(n * 1000).toFixed(1)}fr)`;
+  tilesEl.style.gridTemplateColumns = sz.cols.map(track).join(' ');
+  tilesEl.style.gridTemplateRows = sz.rows.map(track).join(' ');
+}
+
+let dividerEls: { d: Divider; el: HTMLElement }[] = [];
+
+function renderDividers() {
+  for (const { el: e } of dividerEls) e.remove();
+  dividerEls = dividers(current).map((d) => {
+    const handle = el('div', `tile-div ${d.axis}`);
+    handle.setAttribute('role', 'separator');
+    handle.addEventListener('pointerdown', (e) => dragDivider(e, d, handle));
+    tilesEl.append(handle);
+    return { d, el: handle };
+  });
+  placeDividers();
+}
+
+function placeDividers() {
+  const sz = sizes.get(current.id);
+  if (!sz) return;
+  for (const { d, el: e } of dividerEls) {
+    const along = d.axis === 'col' ? sz.cols : sz.rows;
+    const across = d.axis === 'col' ? sz.rows : sz.cols;
+    const at = span(along, 0, d.after)[1] * 100;
+    const [from, to] = span(across, d.from, d.to);
+    if (d.axis === 'col') {
+      e.style.cssText = `left:${at}%;top:${from * 100}%;height:${(to - from) * 100}%`;
+    } else {
+      e.style.cssText = `top:${at}%;left:${from * 100}%;width:${(to - from) * 100}%`;
+    }
+  }
+}
+
+function dragDivider(e: PointerEvent, d: Divider, handle: HTMLElement) {
+  e.preventDefault();
+  const sz = sizes.get(current.id);
+  if (!sz) return;
+  const id = current.id;
+  const start = d.axis === 'col' ? e.clientX : e.clientY;
+  const total = d.axis === 'col' ? tilesEl.clientWidth : tilesEl.clientHeight;
+  const before = (d.axis === 'col' ? sz.cols : sz.rows).slice();
+  handle.setPointerCapture(e.pointerId);
+  handle.classList.add('dragging');
+  const move = (ev: PointerEvent) => {
+    const now = d.axis === 'col' ? ev.clientX : ev.clientY;
+    const next = dragSizes(before, d.after, (now - start) / total);
+    const sizesNow: Sizes = d.axis === 'col' ? { cols: next, rows: sz.rows } : { cols: sz.cols, rows: next };
+    sizes.set(id, sizesNow);
+    applyGrid(sizesNow);
+    placeDividers();
+  };
+  const stop = () => {
+    handle.classList.remove('dragging');
+    handle.removeEventListener('pointermove', move);
+    handle.removeEventListener('pointerup', stop);
+    handle.removeEventListener('pointercancel', stop);
+    explicit = true;
+    saveTiles();
+  };
+  handle.addEventListener('pointermove', move);
+  handle.addEventListener('pointerup', stop);
+  handle.addEventListener('pointercancel', stop);
+}
+
+/** Tiles with no pane yet offer the sessions that are not on screen. */
+function renderEmpty(empty: string[]) {
+  for (const n of tilesEl.querySelectorAll('.tile-empty')) n.remove();
+  if (!empty.length) return;
+  const boxes = empty.map((area) => {
+    const box = el('div', 'tile-empty');
+    box.style.gridArea = area;
+    box.append(el('div', 'te-title', 'Empty tile'));
+    tilesEl.append(box);
+    return box;
+  });
+  void sessionList().then((list) => {
+    const free = list.filter((s) => !panes.some((p) => p.name === s.id)).slice(0, 8);
+    for (const box of boxes) {
+      if (!box.isConnected) continue;
+      const row = el('div', 'te-chips');
+      for (const s of free) {
+        const chip = el('button', 'chip', s.id);
+        chip.type = 'button';
+        chip.addEventListener('click', () => addPane(s.id));
+        row.append(chip);
+      }
+      box.append(row.childElementCount ? row : el('div', 'te-hint', 'No other sessions. Start one from the list.'));
+    }
+  });
+}
+
+/** Panes that do not fit sit behind a strip of tabs; tapping one brings it on screen. */
+function renderTabs() {
+  const overflow = panes.length > slotOf.length;
+  tabsEl.hidden = !overflow;
+  if (!overflow) return tabsEl.replaceChildren();
+  tabsEl.replaceChildren(
+    ...panes.map((p) => {
+      const b = el('button', 'tile-tab', p.title || p.name);
+      b.type = 'button';
+      b.classList.toggle('shown', slotOf.includes(p));
+      b.setAttribute('aria-pressed', String(p === focused));
+      b.addEventListener('click', () => focus(p));
+      return b;
+    }),
+  );
+}
+
+/** The focused pane and the most recently used ones draw on the GPU; the rest use the DOM renderer. */
+function balanceGpu() {
+  const ranked = panes.filter((p) => !p.el.hidden).sort((a, b) => (lastFocus.get(b) ?? 0) - (lastFocus.get(a) ?? 0));
+  const gpu = new Set(ranked.slice(0, GPU_BUDGET));
+  for (const p of panes) p.setGpu(gpu.has(p));
+}
+
+let tilesQueued = false;
+function queueTiles() {
+  if (tilesQueued) return;
+  tilesQueued = true;
+  requestAnimationFrame(() => {
+    tilesQueued = false;
+    if (!$('app').hidden) applyTiles();
+  });
+}
+new ResizeObserver(queueTiles).observe($('panes'));
+
+/** The list button: in tiled view the rail widens; otherwise the sidebar slides in or out. */
 function toggleList() {
   if ($('app').classList.contains('is-split') && layout.placement('left') === 'pinned') {
     railOpen = !railOpen;
-    applySplit();
+    applyTiles();
   } else {
     layout.toggle('left');
   }
 }
 
-function saveSplit() {
-  // On a screen too narrow for two panes the app shows one: don't let that wipe the split you had.
+// Ctrl+Alt+arrows move between tiles; Ctrl+Alt+1..6 jump to one.
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (!e.ctrlKey || !e.altKey || e.metaKey || e.shiftKey || $('app').hidden || document.querySelector('.sheet')) return;
+    const dirs: Record<string, Dir> = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+    let slot: number | null = null;
+    const dir = dirs[e.key];
+    if (dir) slot = neighbor(current, Math.max(0, focused ? slotOf.indexOf(focused) : 0), dir);
+    else if (/^Digit[1-6]$/.test(e.code)) slot = Number(e.code.slice(5)) - 1;
+    const target = slot === null ? null : slotOf[slot];
+    if (!target) return;
+    e.preventDefault();
+    e.stopPropagation(); // the terminal must not see it
+    focus(target);
+  },
+  true,
+);
+
+// ---------------------------------------------------------------------- remembering
+
+interface SavedTiles {
+  names: string[];
+  focus: number;
+  asked: PresetId;
+  explicit: boolean;
+}
+
+function saveTiles() {
   // A helper's transcript is a passing view, not part of the layout to come back to.
-  if (!canSplit || panes.some((p) => p.isAgent)) return;
+  if (panes.some((p) => p.isAgent)) return;
   try {
-    if (panes.length === 2) {
-      localStorage.setItem(SPLIT_KEY, JSON.stringify({ names: panes.map((p) => p.name), focus: panes.indexOf(focused!) }));
-    } else {
-      localStorage.removeItem(SPLIT_KEY);
-    }
+    const memo: Record<string, Sizes> = {};
+    for (const [id, s] of sizes) memo[id] = s;
+    localStorage.setItem(
+      TILES_KEY,
+      JSON.stringify({ names: panes.map((p) => p.name), focus: Math.max(0, panes.indexOf(focused!)), asked, explicit, sizes: memo }),
+    );
+    localStorage.removeItem(OLD_SPLIT_KEY);
   } catch {
     /* not remembered */
   }
 }
 
-function loadSplit(): { names: string[]; focus: number } | null {
+function loadTiles(): SavedTiles | null {
   try {
-    const raw = JSON.parse(localStorage.getItem(SPLIT_KEY) ?? 'null') as { names?: unknown; focus?: unknown } | null;
-    const names = Array.isArray(raw?.names) ? raw.names.filter((n): n is string => typeof n === 'string') : [];
-    if (names.length === 2 && names.every((n) => /^[A-Za-z0-9_-]{1,64}$/.test(n))) return { names, focus: raw?.focus === 1 ? 1 : 0 };
+    const raw = JSON.parse(localStorage.getItem(TILES_KEY) ?? 'null') as Record<string, unknown> | null;
+    const valid = (n: unknown): n is string => typeof n === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(n);
+    if (raw && Array.isArray(raw.names)) {
+      const names = raw.names.filter(valid).slice(0, MAX_PANES_LIMIT);
+      if (!names.length) return null;
+      if (raw.sizes && typeof raw.sizes === 'object') {
+        for (const [id, s] of Object.entries(raw.sizes as Record<string, { cols?: unknown; rows?: unknown }>)) {
+          if (isPresetId(id)) sizes.set(id, sanitizeSizes(preset(id), s?.cols, s?.rows));
+        }
+      }
+      return {
+        names,
+        focus: typeof raw.focus === 'number' ? raw.focus : 0,
+        asked: isPresetId(raw.asked) ? raw.asked : 'cols2',
+        explicit: raw.explicit === true,
+      };
+    }
+    // Before tiling, only a two-pane split was remembered.
+    const old = JSON.parse(localStorage.getItem(OLD_SPLIT_KEY) ?? 'null') as { names?: unknown; focus?: unknown } | null;
+    const names = Array.isArray(old?.names) ? old.names.filter(valid) : [];
+    if (names.length === 2) return { names, focus: old?.focus === 1 ? 1 : 0, asked: 'cols2', explicit: false };
   } catch {
     /* ignore */
   }
   return null;
+}
+
+// ---------------------------------------------------------------------- layout sheet and workspaces
+
+let layoutSheet: LayoutSheet | null = null;
+
+function openLayout() {
+  layout.dismissOverlays();
+  layoutSheet ??= new LayoutSheet($('app'), {
+    onUnauthorized: showLogin,
+    active: () => current.id,
+    usable: () => {
+      const { w, h } = room();
+      return usable(w, h, limit()).map((p) => p.id);
+    },
+    choose: (id) => {
+      asked = id;
+      explicit = true;
+      applyTiles();
+      saveTiles();
+    },
+    snapshot,
+    open: (w) => void openWorkspace(w),
+    workspaces: () => layouts.workspaces,
+    saved: (l) => {
+      layouts = l;
+    },
+  });
+  layoutSheet.open();
+}
+
+/** The grid and the session in each tile, as a workspace called `name`. */
+function snapshot(name: string): Workspace {
+  const sz = sizes.get(current.id) ?? sanitizeSizes(current, null, null);
+  return { name, preset: current.id, cols: sz.cols, rows: sz.rows, tiles: slotOf.map((p) => (p && !p.isAgent ? p.name : '')) };
+}
+
+/** Bring a workspace back: its grid, its sizes and its sessions. Sessions that are gone are skipped. */
+async function openWorkspace(w: Workspace) {
+  const alive = new Set((await sessionList()).map((s) => s.id));
+  const wanted = [...new Set(w.tiles.filter(Boolean))];
+  const names = wanted.filter((n) => alive.has(n)).slice(0, limit());
+  const missing = wanted.filter((n) => !alive.has(n));
+  if (!names.length) return focused?.say('None of that workspace’s sessions are running.');
+  asked = w.preset;
+  explicit = true;
+  sizes.set(w.preset, sanitizeSizes(preset(w.preset), w.cols, w.rows));
+  while (panes.length > names.length) {
+    const p = panes.pop()!;
+    lastFocus.delete(p);
+    p.dispose();
+  }
+  while (panes.length < names.length) createPane();
+  names.forEach((n, i) => {
+    const p = panes[i]!;
+    if (p.name !== n || p.isAgent) p.open(n);
+  });
+  focused?.setFocused(false);
+  focused = null;
+  focus(panes[0]!);
+  applyTiles();
+  saveTiles();
+  if (missing.length) panes[0]?.say(`Not running, skipped: ${missing.join(', ')}`);
 }
 
 // ---------------------------------------------------------------------- app
@@ -229,9 +576,12 @@ function showLogin() {
   if (wasShowing) {
     for (const p of panes) p.dispose();
     panes.length = 0;
+    slotOf = [];
+    lastCount = 0;
+    lastFocus.clear();
     focused = null;
     setAgentAccent(null);
-    $('app').classList.remove('is-split');
+    $('app').classList.remove('is-split', 'many', 'can-add');
     usage?.stop();
     sidebar?.setActive(false);
     rightbar?.setActive(false);
@@ -245,7 +595,7 @@ async function logout() {
   showLogin();
 }
 
-function showApp() {
+async function showApp() {
   $('login').hidden = true;
   $('app').hidden = false;
   usage ??= new UsageView($('usage'), showLogin);
@@ -260,7 +610,7 @@ function showApp() {
         // Picking a session from the widened list puts the rail back, so the panes get their room again.
         if (railOpen) {
           railOpen = false;
-          applySplit();
+          applyTiles();
         }
       },
       collapse: () => toggleList(),
@@ -286,18 +636,23 @@ function showApp() {
   });
   usage.start(); // before syncPanels: start() resets what the sidebar asked the usage view to watch
   syncPanels();
+  layouts = await fetchLayouts();
   const name = sessionName();
-  const saved = loadSplit();
-  if (saved && canSplit && saved.names.includes(name)) {
-    // Bring back the two panes you had, focused on the one the address names.
-    const [a, b] = [createPane(), createPane()];
-    a.open(saved.names[0]!);
-    b.open(saved.names[1]!);
-    focus(saved.names[1] === name ? b : a);
-    applySplit();
+  const saved = loadTiles();
+  if (saved && saved.names.length >= 2 && limit() >= 2 && saved.names.includes(name)) {
+    // Bring back the panes you had, focused on the one the address names.
+    asked = saved.asked;
+    explicit = saved.explicit;
+    const made = saved.names.slice(0, limit()).map((n) => {
+      const p = createPane();
+      p.open(n);
+      return p;
+    });
+    focus(made.find((p) => p.name === name) ?? made[saved.focus] ?? made[0]!);
   } else {
     openSession(name);
   }
+  applyTiles();
 }
 
 function openSettings() {
@@ -310,6 +665,12 @@ function openSettings() {
     setTerminalFont: (px) => {
       for (const p of panes) p.setTerminalFont(px);
     },
+    layoutSettings: () => layouts.settings,
+    setLayoutSettings: (next) => {
+      layouts = { ...layouts, settings: next };
+      applyTiles();
+      void updateLayouts((l) => ({ ...l, settings: next }));
+    },
   });
   settings.open();
 }
@@ -320,9 +681,7 @@ function syncPanels() {
   const left = layout.isVisible('left');
   const right = layout.isVisible('right');
   const on = !$('app').hidden; // signed out: nothing polls
-  canSplit = layout.placement('right') === 'pinned';
-  if (!canSplit) railOpen = false;
-  applySplit();
+  applyTiles();
   sidebar?.setActive(left && on);
   usage?.watch(right && on);
   rightbar?.setActive(right && on);

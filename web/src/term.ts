@@ -79,6 +79,7 @@ export class TerminalSession {
   private toastEl: HTMLElement | null = null;
   private toastTimer = 0;
   private barEl: HTMLElement | null = null;
+  private gl: WebglAddon | null = null;
   private fit = new FitAddon();
   private ws: WebSocket | null = null;
   private attempt = 0;
@@ -99,6 +100,7 @@ export class TerminalSession {
     private onUnauthorized: () => void,
     keybarEl: HTMLElement,
     private hooks: SessionHooks,
+    gpu = true,
   ) {
     this.keybar = new KeyBar(
       keybarEl,
@@ -108,7 +110,7 @@ export class TerminalSession {
     );
     this.term.loadAddon(this.fit);
     this.term.open(el);
-    this.useGpuRenderer();
+    this.setGpu(gpu);
     this.loadAddons();
     this.term.onData((d) => this.sendInput(this.enc.encode(this.keybar.transform(d))));
     this.term.onBinary((d) => this.sendInput(Uint8Array.from(d, (c) => c.charCodeAt(0))));
@@ -140,13 +142,25 @@ export class TerminalSession {
 
   /**
    * Draw on the GPU. The default DOM renderer is the main source of lag when an agent streams a
-   * lot of output. Without WebGL, or if the context is lost, xterm keeps its DOM renderer.
+   * lot of output, but browsers allow only a handful of WebGL contexts (fewer on a tablet), so
+   * with many panes open only the busiest ones get one. Without WebGL, or if the context is lost,
+   * xterm keeps its DOM renderer.
    */
-  private useGpuRenderer() {
+  setGpu(on: boolean) {
+    if (on === (this.gl !== null) || this.closed) return;
+    if (!on) {
+      this.gl?.dispose();
+      this.gl = null;
+      return;
+    }
     try {
       const gl = new WebglAddon();
-      gl.onContextLoss(() => gl.dispose());
+      gl.onContextLoss(() => {
+        gl.dispose();
+        if (this.gl === gl) this.gl = null;
+      });
       this.term.loadAddon(gl);
+      this.gl = gl;
     } catch {
       /* no WebGL here: the DOM renderer stays */
     }
@@ -157,7 +171,6 @@ export class TerminalSession {
     this.term.loadAddon(new ClipboardAddon(undefined, new WriteOnlyClipboard((t) => this.offerCopy(t))));
     this.term.loadAddon(new WebLinksAddon((_e, uri) => this.openLink(uri, uri)));
     this.term.loadAddon(new UnicodeGraphemesAddon());
-    this.term.unicode.activeVersion = '15-graphemes';
 
     const progress = new ProgressAddon();
     this.term.loadAddon(progress);

@@ -6,6 +6,8 @@ import { warn } from './haptics';
 import { disablePush, enablePush, pushState, sendTest, type PushState } from './push';
 import { getUiScale, SCALE_MAX, SCALE_MIN, SCALE_STEP, setUiScale } from './scale';
 import { Sheet } from './sheet';
+import { PRESETS, type PresetId } from './tiling';
+import { MAX_PANES_LIMIT, type LayoutSettings } from './workspace';
 import { ThemePicker } from './theme-picker';
 import { fetchTunnel, tunnelStatus } from './tunnel';
 
@@ -17,6 +19,9 @@ export interface SettingsHooks {
   /** The terminal's font size now, or null when no terminal is open. */
   terminalFont: () => { size: number; min: number; max: number } | null;
   setTerminalFont: (px: number) => void;
+  /** Pane preferences, kept on the server. */
+  layoutSettings: () => LayoutSettings;
+  setLayoutSettings: (s: LayoutSettings) => void;
 }
 
 /** A label with a minus button, a value and a plus button. */
@@ -45,6 +50,24 @@ function stepper(label: string, value: () => string, step: (dir: -1 | 1) => void
   wrap.append(minus, out, plus);
   box.append(wrap);
   return box;
+}
+
+/** A labelled pick-list of grids for a second pane to start from. */
+function gridSelect(label: string, value: PresetId, pick: (id: PresetId) => void, disabled: boolean): HTMLElement {
+  const row = el('label', 'ps-row');
+  row.append(el('span', 'ps-label', label));
+  const sel = el('select', 'sheet-select');
+  sel.disabled = disabled;
+  for (const p of PRESETS) {
+    if (p.id === 'single') continue;
+    const o = el('option', undefined, p.label);
+    o.value = p.id;
+    sel.append(o);
+  }
+  sel.value = value;
+  sel.addEventListener('change', () => pick(sel.value as PresetId));
+  row.append(sel);
+  return row;
 }
 
 export class SettingsSheet extends Sheet {
@@ -91,6 +114,8 @@ export class SettingsSheet extends Sheet {
       );
     }
 
+    blocks.push(this.panesBlock());
+
     const account = el('div', 'more-block');
     account.append(el('div', 'sheet-label', 'Account'));
     const out = el('button', 'sheet-row sheet-danger');
@@ -107,6 +132,45 @@ export class SettingsSheet extends Sheet {
     void this.renderNotif();
     void this.renderTunnel();
     this.show();
+  }
+
+  /** Several panes at once: on or off, how many, and which grid to start from. */
+  private panesBlock(): HTMLElement {
+    const box = el('div', 'more-block');
+    const cur: LayoutSettings = { ...this.hooks.layoutSettings() };
+    const commit = () => this.hooks.setLayoutSettings({ ...cur });
+    const render = () => {
+      const head = el('div', 'ps-row');
+      head.append(el('span', 'ps-label', 'Show several sessions at once'));
+      const toggle = el('button', 'chip', cur.multi ? 'On' : 'Off');
+      toggle.type = 'button';
+      toggle.setAttribute('aria-pressed', String(cur.multi));
+      toggle.addEventListener('click', () => {
+        cur.multi = !cur.multi;
+        commit();
+        render();
+      });
+      head.append(toggle);
+      const count = stepper(
+        'Most panes',
+        () => String(cur.maxPanes),
+        (dir) => {
+          cur.maxPanes = Math.min(MAX_PANES_LIMIT, Math.max(1, cur.maxPanes + dir));
+          commit();
+        },
+        (dir) => cur.multi && (dir < 0 ? cur.maxPanes > 1 : cur.maxPanes < MAX_PANES_LIMIT),
+      );
+      box.replaceChildren(
+        el('div', 'sheet-label', 'Panes'),
+        head,
+        count,
+        gridSelect('Starting grid, big screen', cur.desktop, (id) => ((cur.desktop = id), commit()), !cur.multi),
+        gridSelect('Starting grid, tablet', cur.tablet, (id) => ((cur.tablet = id), commit()), !cur.multi),
+        el('div', 'sheet-hint', 'Tiles that do not fit your screen become tabs. Ctrl+Alt+arrows move between tiles.'),
+      );
+    };
+    render();
+    return box;
   }
 
   private say(text: string) {
