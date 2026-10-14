@@ -2,6 +2,7 @@
 // type, see every match in the history (not just what is on screen), and tap one to put tmux in
 // copy-mode on it. tmux does the scrolling and highlighting, so the terminal shows what tmux shows.
 
+import type { TurnRef } from './turn-marks';
 import { el } from './dom';
 import { icon } from './icons';
 import {
@@ -25,8 +26,8 @@ export interface SearchHooks {
   onUnauthorized: () => void;
   /** Hand the keyboard back to the terminal. */
   refocus: () => void;
-  /** The first lines of your messages to the agent, whenever the list is refreshed. */
-  onTurns: (snippets: string[]) => void;
+  /** Your messages to the agent (newest first), whenever the list is refreshed. */
+  onTurns: (turns: TurnRef[]) => void;
 }
 
 const TYPING_DELAY_MS = 250;
@@ -244,7 +245,7 @@ export class TermSearch {
     if (r.status === 409) return quiet ? undefined : this.say('Only a running session can be searched');
     if (!r.ok) return quiet ? undefined : this.say('Could not load your messages');
     this.turns = parseTurns(await r.json().catch(() => null));
-    this.hooks.onTurns(this.turns.map((t) => t.snippet));
+    this.hooks.onTurns(this.turns.map((t) => ({ id: t.id, snippet: t.snippet })));
     if (!quiet || (this.isOpen && this.showingTurns)) this.renderTurns();
   }
 

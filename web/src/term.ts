@@ -14,7 +14,7 @@ import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
 import { cleanTitle, linkAction, progressView, type Progress } from './term-addons';
 import { skewFromDate } from './activity-chip';
 import { findPaths } from './paths';
-import { markedRows } from './turn-marks';
+import { markedTurns, type TurnRef } from './turn-marks';
 import { newlineFor } from './keys';
 import {
   LineCarry,
@@ -55,6 +55,8 @@ export interface SessionHooks {
   onTitle: (title: string) => void;
   /** The program rang the bell. */
   onBell: () => void;
+  /** A bar beside one of your messages was tapped: show that message in the chat. */
+  onJumpTurn: (id: string) => void;
   /** The key bar's New button was tapped: offer to start a session beside `anchor`. */
   onLaunch: (anchor: HTMLElement) => void;
   /** A long press on the terminal asked for its text as selectable text. */
@@ -118,7 +120,7 @@ export class TerminalSession {
   private toastTimer = 0;
   private barEl: HTMLElement | null = null;
   private gl: WebglAddon | null = null;
-  private turnSnippets: string[] = [];
+  private turns: TurnRef[] = [];
   private marksEl: HTMLElement | null = null;
   private marksTimer = 0;
   private fit = new FitAddon();
@@ -288,9 +290,9 @@ export class TerminalSession {
 
   private lastOpened = 0;
 
-  /** The first lines of your messages to the agent, so rows that are one can be marked. */
-  setTurnSnippets(snippets: string[]) {
-    this.turnSnippets = snippets;
+  /** Your messages to the agent, so rows that are one can be marked. */
+  setTurns(turns: TurnRef[]) {
+    this.turns = turns;
     this.scheduleMarks();
   }
 
@@ -312,26 +314,33 @@ export class TerminalSession {
     const screen = this.el.querySelector('.xterm-screen');
     const buf = this.term.buffer.active;
     const rows: string[] = [];
-    if (this.turnSnippets.length) {
+    if (this.turns.length) {
       for (let r = 0; r < this.term.rows; r++) rows.push(buf.getLine(buf.viewportY + r)?.translateToString(true) ?? '');
     }
-    const hit = screen && rows.length ? markedRows(rows, this.turnSnippets) : [];
+    const hit = screen && rows.length ? markedTurns(rows, this.turns) : [];
     if (!screen || hit.length === 0) {
       this.marksEl?.replaceChildren();
       return;
     }
     if (!this.marksEl) {
       this.marksEl = el('div', 't-marks');
-      this.marksEl.setAttribute('aria-hidden', 'true');
       this.el.append(this.marksEl);
     }
     const host = this.el.getBoundingClientRect();
     const sr = screen.getBoundingClientRect();
     const cell = sr.height / this.term.rows;
     this.marksEl.replaceChildren(
-      ...hit.map((row) => {
-        const m = el('div', 't-mark');
+      ...hit.map(({ row, id }) => {
+        const m = el('button', 't-mark');
+        m.type = 'button';
+        m.title = 'Show this message in Chat';
+        m.setAttribute('aria-label', 'Show this message in Chat');
+        m.tabIndex = -1;
         m.style.cssText = `top:${sr.top - host.top + row * cell}px;height:${cell}px`;
+        m.addEventListener('click', (e) => {
+          e.stopPropagation(); // not a tap on the terminal under it
+          this.hooks.onJumpTurn(id);
+        });
         return m;
       }),
     );

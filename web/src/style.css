@@ -109,7 +109,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 
 /* A bar beside each row of the terminal that is one of your messages. */
 .t-marks { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
-.t-mark { position: absolute; left: 0; width: 3px; background: var(--accent); border-radius: 0 2px 2px 0; opacity: .85; }
+.t-marks .t-mark { position: absolute; left: 0; width: 14px; padding: 0; background: none; border: 0; pointer-events: auto; cursor: pointer; touch-action: manipulation; }
+.t-marks .t-mark::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); border-radius: 0 2px 2px 0; opacity: .85; transition: width .12s; }
+.t-marks .t-mark:hover::before, .t-marks .t-mark:active::before { width: 6px; opacity: 1; }
 /* History search, over the top of the terminal. */
 .ts-btn { display: inline-grid; place-items: center; flex: none; width: 40px; height: 40px; color: var(--fg-muted);
   background: var(--surface-4); border: 1px solid var(--border); border-radius: 10px; touch-action: manipulation; }

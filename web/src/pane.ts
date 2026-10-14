@@ -161,7 +161,7 @@ export class Pane {
       refocus: () => {
         if (this.focused && this.view === 'term') this.term?.focus();
       },
-      onTurns: (snippets) => this.term?.setTurnSnippets(snippets),
+      onTurns: (turns) => this.term?.setTurns(turns),
     });
     this.el.append(head, this.termEl, this.chatEl, this.agentEl, this.stoppedEl, this.promptEl, this.keybarEl);
     // Capture, so a tap on a button inside still focuses the pane first.
@@ -262,6 +262,7 @@ export class Pane {
         },
         onBell: () => this.ring(),
         onLaunch: (anchor) => this.events.onLaunch(this, anchor),
+        onJumpTurn: (id) => this.showMessage(id),
         onSelectText: () => this.selectText(),
         onProgress: (kind) => {
           if ((this.el.dataset.progress ?? '') === (kind ?? '')) return;

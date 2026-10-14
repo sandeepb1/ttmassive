@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { looksLikePrompt, markedRows } from './turn-marks.ts';
+import { looksLikePrompt, markedRows, markedTurns } from './turn-marks.ts';
 
 test('prompt marks are told from prose', () => {
   for (const lead of ['', '> ', '❯ ', '│ > ', '  › ']) assert.ok(looksLikePrompt(lead), JSON.stringify(lead));
@@ -34,4 +34,16 @@ test('empty rows and no snippets mark nothing', () => {
 
 test('repeated snippets are fine', () => {
   assert.deepEqual(markedRows(['> go on', '> go on'], ['go on', 'go on']), [0, 1]);
+});
+
+test('each marked row knows which message it is', () => {
+  const rows = ['> fix the parser', 'ok', '> run tests'];
+  const turns = [{ id: 'm2', snippet: 'run tests' }, { id: 'm1', snippet: 'fix the parser' }];
+  assert.deepEqual(markedTurns(rows, turns), [{ row: 0, id: 'm1' }, { row: 2, id: 'm2' }]);
+});
+
+test('a text sent twice: the lowest row is the newest of them', () => {
+  const rows = ['> yes', 'x', '> yes', 'y'];
+  const turns = [{ id: 'new', snippet: 'yes' }, { id: 'old', snippet: 'yes' }];
+  assert.deepEqual(markedTurns(rows, turns), [{ row: 0, id: 'old' }, { row: 2, id: 'new' }]);
 });
