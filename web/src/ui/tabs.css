@@ -73,4 +73,9 @@
   .tc-switch p { margin: 0; }
   .tc-limits { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
 
+
+  pre, code, .diff, .codeblock { font-variant-ligatures: none; }
+  .faint { color: var(--fg-faint); }
+
+  .mem, .tc { gap: 18px; }
 }

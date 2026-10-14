@@ -2,12 +2,10 @@
 // the restore actions for a stopped session.
 
 import type { Analysis } from './protocol';
+import { button } from './ui/button';
 
-function btn(label: string, cls: string, onClick: () => void): HTMLButtonElement {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.className = cls;
-  b.textContent = label;
+function btn(label: string, isDefault: boolean, onClick: () => void): HTMLButtonElement {
+  const b = button({ variant: isDefault ? 'default' : 'secondary', size: 'sm' }, label);
   // Don't steal focus from the terminal (keeps the soft keyboard up).
   b.addEventListener('pointerdown', (e) => e.preventDefault());
   b.addEventListener('click', onClick);
@@ -45,7 +43,7 @@ export class PromptBar {
     if (!p) {
       this.el.replaceChildren(
         this.label('working…'),
-        btn('Interrupt', 'pb-btn', () => void this.send('interrupt', null)),
+        btn('Interrupt', false, () => void this.send('interrupt', null)),
       );
       return;
     }
@@ -57,7 +55,7 @@ export class PromptBar {
     row.className = 'pb-row';
     for (const c of p.choices.slice(0, 5)) {
       row.append(
-        btn(`${c.index}. ${clip(c.label, 38)}`, c.selected ? 'pb-btn pb-default' : 'pb-btn', () =>
+        btn(`${c.index}. ${clip(c.label, 38)}`, c.selected, () =>
           void this.send(String(c.index), p.id),
         ),
       );
@@ -115,8 +113,8 @@ export class StoppedBar {
     };
     const row = document.createElement('div');
     row.className = 'pb-row';
-    if (resumable) row.append(btn('Resume conversation', 'pb-btn pb-default', () => void act(false)));
-    row.append(btn(resumable ? 'Start fresh' : 'Restore', 'pb-btn', () => void act(true)));
+    if (resumable) row.append(btn('Resume conversation', true, () => void act(false)));
+    row.append(btn(resumable ? 'Start fresh' : 'Restore', false, () => void act(true)));
     this.el.hidden = false;
     this.el.replaceChildren(msg, row, err);
   }

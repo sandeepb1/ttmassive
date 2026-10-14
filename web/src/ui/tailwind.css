@@ -1,17 +1,21 @@
-/* Entry stylesheet. Order matters: the legacy sheet beats Tailwind's reset until each surface moves to the kit. */
-@layer theme, base, legacy, components, utilities;
+/* Entry stylesheet. Tailwind's theme and reset, then the component stylesheets, then utilities. */
+@layer theme, base, components, utilities;
 
 @import 'tailwindcss/theme.css' layer(theme);
 @import 'tailwindcss/preflight.css' layer(base);
-@import '../style.css' layer(legacy);
+@import './app.css';
+@import './panes.css';
 @import './chat.css';
 @import './sheets.css';
 @import './sidebar.css';
 @import './rightbar.css';
 @import './tabs.css';
+@import './command.css';
+@import './viewer.css';
+@import './terminal.css';
 @import 'tailwindcss/utilities.css' layer(utilities);
 
-/* Semantic names (shadcn's vocabulary) over the vars theme.ts and style.css already derive from the active theme.
+/* Semantic names (shadcn's vocabulary) over the vars theme.ts and app.css already derive from the active theme.
    Declared on [data-agent] too, because a pane re-points --accent there and var() resolves where it is declared.
    Note: --accent is the brand colour here, not shadcn's hover surface; use bg-muted for hovers. */
 @layer base {

@@ -4,6 +4,7 @@
 
 import type { TurnRef } from './turn-marks';
 import { el } from './dom';
+import { button } from './ui/button';
 import { icon } from './icons';
 import {
   ago,
@@ -35,13 +36,9 @@ const TYPING_DELAY_MS = 250;
 const TURNS_POLL_MS = 15_000;
 
 function iconButton(cls: string, label: string, glyph: Parameters<typeof icon>[0], onClick: () => void): HTMLButtonElement {
-  const b = el('button', `ts-btn ${cls}`);
-  b.type = 'button';
-  b.setAttribute('aria-label', label);
+  const b = button({ variant: 'ghost', size: 'icon-sm', label, cls: `ts-btn ${cls}`, onClick }, icon(glyph));
   b.title = label;
-  b.append(icon(glyph));
   b.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the keyboard up
-  b.addEventListener('click', onClick);
   return b;
 }
 

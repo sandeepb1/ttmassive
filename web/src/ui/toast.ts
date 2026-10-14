@@ -1,13 +1,17 @@
 // A short message over the bottom of `host`, with an optional action. One per host; a new one replaces it.
 
 import { el } from '../dom';
+import { button } from './button';
 import { cn } from './cn';
 
 const live = new WeakMap<HTMLElement, { node: HTMLElement; timer: number }>();
 
 export interface ToastOptions {
   ms?: number;
-  action?: { label: string; run: () => void };
+  /** Extra classes, for a hook the host's styles can find. */
+  cls?: string;
+  /** `run` gets the button, to relabel it, and a function that closes the toast. */
+  action?: { label: string; run: (button: HTMLButtonElement, dismiss: () => void) => void };
 }
 
 export function toast(host: HTMLElement, message: string, opts: ToastOptions = {}): () => void {
@@ -16,7 +20,7 @@ export function toast(host: HTMLElement, message: string, opts: ToastOptions = {
     prev.node.remove();
     clearTimeout(prev.timer);
   }
-  const node = el('div', cn('absolute inset-x-4 bottom-4 z-20 mx-auto flex max-w-md items-center gap-3 rounded-xl bg-popover px-4 py-3 text-md text-foreground shadow-pop'));
+  const node = el('div', cn('absolute inset-x-4 bottom-4 z-20 mx-auto flex max-w-md items-center gap-3 rounded-xl bg-popover px-4 py-3 text-md text-foreground shadow-pop', opts.cls));
   node.setAttribute('role', 'status');
   node.append(el('span', 'min-w-0 flex-1', message));
   const dismiss = () => {
@@ -25,12 +29,8 @@ export function toast(host: HTMLElement, message: string, opts: ToastOptions = {
     if (live.get(host) === entry) live.delete(host);
   };
   if (opts.action) {
-    const a = el('button', 'shrink-0 rounded-md px-2 py-1 font-semibold text-accent-text active:bg-muted', opts.action.label);
-    a.type = 'button';
-    a.addEventListener('click', () => {
-      dismiss();
-      opts.action!.run();
-    });
+    const a = button({ variant: 'ghost', size: 'sm', cls: '-my-1 shrink-0 text-accent-text', onClick: () => opts.action!.run(a, dismiss) }, opts.action.label);
+    a.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the keyboard where it was
     node.append(a);
   }
   host.append(node);

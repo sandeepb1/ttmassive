@@ -33,6 +33,7 @@ import { filesOf, pathsToPaste } from './term-drop';
 import { UnauthorizedError, uploadFile } from './term-upload';
 import { getOptionMeta, onPrefsChange } from './prefs';
 import { SHEET_SELECTOR } from './ui/sheet';
+import { toast } from './ui/toast';
 
 const PING_MS = 20_000;
 const SCREEN_POLL_MS = 2000;
@@ -117,8 +118,7 @@ export class TerminalSession {
       },
     },
   });
-  private toastEl: HTMLElement | null = null;
-  private toastTimer = 0;
+  private dismissToast: (() => void) | null = null;
   private barEl: HTMLElement | null = null;
   private gl: WebglAddon | null = null;
   private turns: TurnRef[] = [];
@@ -438,13 +438,8 @@ export class TerminalSession {
    * A short note over the terminal, replacing any earlier one.
    */
   private say(message: string, ms = 4000) {
-    this.toastEl?.remove();
-    clearTimeout(this.toastTimer);
-    const toast = el('div', 't-toast');
-    toast.append(el('span', 't-toast-msg', message));
-    this.el.append(toast);
-    this.toastEl = toast;
-    this.toastTimer = window.setTimeout(() => toast.remove(), ms);
+    this.dismissToast?.();
+    this.dismissToast = toast(this.el, message, { ms, cls: 't-toast' });
   }
 
   /**
@@ -472,7 +467,7 @@ export class TerminalSession {
     try {
       const paths: string[] = [];
       for (const f of files) paths.push(await uploadFile(this.session, f));
-      this.toastEl?.remove();
+      this.dismissToast?.();
       this.term.paste(pathsToPaste(paths));
       this.term.focus();
     } catch (e) {
@@ -483,27 +478,26 @@ export class TerminalSession {
 
   /** A program asked to copy but the browser refused outside a tap: show a button that can. */
   private offerCopy(text: string) {
-    this.toastEl?.remove();
-    clearTimeout(this.toastTimer);
-    const toast = el('div', 't-toast');
-    const copy = el('button', 't-toast-btn', 'Copy');
-    copy.type = 'button';
-    copy.addEventListener('click', () => {
-      void navigator.clipboard
-        .writeText(text)
-        .then(() => {
-          copy.textContent = 'Copied';
-        })
-        .catch(() => {
-          copy.textContent = 'Blocked';
-        });
-      this.toastTimer = window.setTimeout(() => toast.remove(), 1200);
-    });
+    this.dismissToast?.();
     const words = text.length;
-    toast.append(el('span', 't-toast-msg', `Copy ${words} character${words === 1 ? '' : 's'}?`), copy);
-    this.el.append(toast);
-    this.toastEl = toast;
-    this.toastTimer = window.setTimeout(() => toast.remove(), 10_000);
+    this.dismissToast = toast(this.el, `Copy ${words} character${words === 1 ? '' : 's'}?`, {
+      ms: 10_000,
+      cls: 't-toast',
+      action: {
+        label: 'Copy',
+        run: (copy, dismiss) => {
+          void navigator.clipboard
+            .writeText(text)
+            .then(() => {
+              copy.textContent = 'Copied';
+            })
+            .catch(() => {
+              copy.textContent = 'Blocked';
+            });
+          window.setTimeout(dismiss, 1200);
+        },
+      },
+    });
   }
 
   /**

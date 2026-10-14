@@ -8,6 +8,7 @@ import { PromptBar, StoppedBar } from './bars';
 import { ChatView, type ChatInfo, type ChatPanelData } from './chat';
 import { chooseView } from './chat-model';
 import { el } from './dom';
+import { button } from './ui/button';
 import { icon } from './icons';
 import type { Analysis } from './protocol';
 import type { ChatActions } from './rightbar';
@@ -61,13 +62,9 @@ function savedView(name: string): string | null {
 
 /** A header button that does not take focus from the terminal (that would drop the soft keyboard). */
 function headButton(cls: string, label: string, glyph: Parameters<typeof icon>[0], onClick: (b: HTMLButtonElement) => void): HTMLButtonElement {
-  const b = el('button', `tb-btn ${cls}`);
-  b.type = 'button';
-  b.setAttribute('aria-label', label);
+  const b = button({ variant: 'ghost', size: 'icon', label, cls: `tb-btn size-11 ${cls}`, onClick: () => onClick(b) }, icon(glyph));
   b.title = label;
-  b.append(icon(glyph));
   b.addEventListener('pointerdown', (e) => e.preventDefault());
-  b.addEventListener('click', () => onClick(b));
   return b;
 }
 
