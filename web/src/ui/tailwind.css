@@ -49,6 +49,12 @@
   --color-warn: var(--warn);
   --color-warn-text: var(--warn-text);
   --color-danger-text: var(--danger-text);
+  --color-accent-bg: var(--accent-bg);
+  --color-accent-border: var(--accent-border);
+  --color-ok-bg: var(--ok-bg);
+  --color-warn-bg: var(--warn-bg);
+  --color-danger-bg: var(--danger-bg);
+  --color-danger-border: var(--danger-border);
   --color-soft: var(--fg-soft);
   --color-faint: var(--fg-faint);
   --font-sans: var(--font-ui);
