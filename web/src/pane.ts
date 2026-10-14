@@ -36,6 +36,8 @@ export interface PaneEvents {
   onPanel: () => void;
   /** A helper agent's card was opened in `session`. */
   onOpenAgent: (session: string, agent: SubAgent) => void;
+  /** The header's command button. */
+  onCommand: () => void;
 }
 
 const ACTIVITY: Record<Analysis['activity'], string> = {
@@ -142,6 +144,7 @@ export class Pane {
       headButton('p-menu', 'Sessions', 'menu', () => events.onMenu()),
       title,
       this.toggle,
+      headButton('p-cmd', 'Commands (Cmd/Ctrl+K)', 'command', () => events.onCommand()),
       headButton('p-split', 'Open another session in a new pane', 'columns', () => events.onSplit(this)),
       headButton('p-layout', 'Pane layout and workspaces', 'grid', () => events.onLayout()),
       headButton('p-close', 'Close this pane', 'close', () => events.onClose(this)),
@@ -356,6 +359,21 @@ export class Pane {
   openSearch() {
     if (this.view !== 'term' || this.isAgent || !this.term) return this.say('History search works in the terminal view.');
     this.historySearch.open();
+  }
+
+  /** The chat view is available for this session (Claude or Codex with a readable log). */
+  get canChat(): boolean {
+    return !this.toggle.hidden;
+  }
+
+  /** Type `text` into the terminal as if the person had. */
+  sendRaw(text: string) {
+    this.term?.sendInput(new TextEncoder().encode(text));
+  }
+
+  /** Give the keyboard back to the terminal, if that is what the pane is showing. */
+  focusTerm() {
+    if (this.view === 'term' && !this.isAgent) this.term?.focus();
   }
 
   /** Show the terminal's text as selectable text, for touch screens. */

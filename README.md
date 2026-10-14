@@ -243,6 +243,38 @@ The key bar has Esc, Ctrl, Alt, Tab and the arrows.
 The terminal refits when the screen rotates or the on-screen keyboard opens, and tmux follows the
 device you used most recently (`window-size latest`).
 
+### Feeling like a native terminal
+
+A few things the browser would otherwise get wrong when you run Claude Code or Codex:
+
+- **Shift+Enter** adds a new line in the prompt instead of sending it (Claude gets `ESC Enter`,
+  Codex gets `Ctrl+J`). Alt/Option+Enter does the same. A plain shell is left alone.
+- **Option as Meta.** With a hardware keyboard, Option+B / F jump by word and Option+Enter adds a new
+  line. It is on by default; turn it off in Settings if you type characters like é with Option.
+  Both toggles in Settings are per device.
+- **Paste or drop a file** onto the terminal to attach it. The file is uploaded to the host and its
+  path is pasted into the prompt, quoted, without pressing Enter. Claude and Codex attach an image
+  given its path. Images are shrunk first; other files up to 10 MB are kept as they are.
+- **Titles and the bell.** A program's window title shows after the activity text in the pane
+  header. A bell from a pane you are not looking at puts a dot on the pane and its row in the list,
+  plays a soft sound and buzzes (Android), at most once every ten seconds. The sound can be turned
+  off in Settings.
+- **Copying on a touch screen.** The terminal is drawn on a canvas, so there is no text to
+  long-press. Touch and hold it for half a second to open **Select text**: the screen and the last
+  2,000 lines as real text, where your device's own selection handles and Copy menu work.
+
+### The command bar
+
+`Cmd+K` (Mac, iPad) or `Ctrl+K` opens a bar over the terminal, even while it has the keyboard; the
+⌘ button in the pane header does the same on a touch screen. Type to filter, arrows and Enter to
+choose, Escape to go back. It can start a shell, Claude or Codex in the current pane's folder,
+**Open folder…** (type a path inside your home folder, Tab completes it, then pick what to start
+there), show another session in a new pane, switch sessions, close a pane, change an agent's model or
+mode, search the history, select text, open a file by path, and flip the toggles above. New sessions
+take the next free tile, or replace the next pane when they are all in use. Commands you use
+recently come first. Press `Ctrl+K` a second time to close the bar and send the terminal its own
+`Ctrl+K` (delete to the end of the line).
+
 ### Searching the history
 
 The terminal only shows the screen; tmux keeps the rest (the last 50,000 lines). Tap the magnifier

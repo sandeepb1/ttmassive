@@ -68,6 +68,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/usage", get(get_usage))
         .route("/api/tunnel", get(get_tunnel))
         .route("/api/dirs", get(recent_dirs))
+        .route("/api/browse", get(browse_dirs))
         .route("/api/groups", get(list_groups))
         .route("/api/layouts", get(get_layouts).put(put_layouts))
         .route("/api/groups/{name}/start", post(start_group))
@@ -275,6 +276,27 @@ struct CreateBody {
     yolo: bool,
     /// Start in this folder (from `/api/dirs`).
     dir: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BrowseQuery {
+    /// What has been typed so far: `~/Doc`, `~/code/`, a name relative to the home folder.
+    #[serde(default)]
+    path: String,
+}
+
+/// Folders for the command bar's "Open folder", inside the home folder only.
+async fn browse_dirs(Query(q): Query<BrowseQuery>) -> Response {
+    let Some(home) = crate::agentlog::home() else { return (StatusCode::NOT_FOUND, "no home folder").into_response() };
+    if q.path.len() > 4096 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let listing = tokio::task::spawn_blocking(move || crate::browse::list(&home, &q.path)).await;
+    match listing {
+        Ok(Ok(l)) => ([(header::CACHE_CONTROL, "no-store")], Json(l)).into_response(),
+        Ok(Err(crate::browse::Refused::Outside)) => (StatusCode::FORBIDDEN, "That folder is outside your home folder").into_response(),
+        Err(e) => server_error(&anyhow::anyhow!("{e}")),
+    }
 }
 
 async fn recent_dirs(State(st): State<Arc<AppState>>) -> Response {

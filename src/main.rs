@@ -2,6 +2,7 @@ mod agentlog;
 mod api;
 mod assets;
 mod auth;
+mod browse;
 mod chat;
 mod cli;
 mod config;

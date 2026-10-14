@@ -2,7 +2,7 @@
 
 const NS = 'http://www.w3.org/2000/svg';
 
-export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down';
+export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command';
 
 /** Each icon is a list of SVG path `d` strings, plus circles as [cx, cy, r]. */
 const SHAPES: Record<IconName, { d: string[]; circles?: [number, number, number][] }> = {
@@ -31,6 +31,7 @@ const SHAPES: Record<IconName, { d: string[]; circles?: [number, number, number]
   columns: { d: ['M2.5 3.5h11v9h-11z', 'M8 3.5v9'] },
   grid: { d: ['M2.5 3.5h11v9h-11z', 'M8 3.5v9', 'M2.5 8h11'] },
   folder: { d: ['M2.5 4.5h3.8l1.4 1.5h5.8v6.5h-11z'] },
+  command: { d: ['M6 6h4v4H6z', 'M6 6V4.5A1.5 1.5 0 1 0 4.5 6H6', 'M10 6V4.5A1.5 1.5 0 1 1 11.5 6H10', 'M6 10v1.5A1.5 1.5 0 1 1 4.5 10H6', 'M10 10v1.5a1.5 1.5 0 1 0 1.5-1.5H10'] },
 };
 
 /** The category a tool belongs to, for its icon and tint. */

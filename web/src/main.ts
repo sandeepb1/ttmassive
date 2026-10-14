@@ -9,6 +9,9 @@ import { Layout } from './layout';
 import { edgeSwipe } from './gestures';
 import { RightBar } from './rightbar';
 import { armBell } from './bell';
+import { CommandBar } from './command-bar';
+import { remember } from './command-model';
+import { rootStep, type Ctx } from './commands';
 import { SettingsSheet } from './settings';
 import { Pane, type PaneEvents } from './pane';
 import { el } from './dom';
@@ -129,6 +132,7 @@ const paneEvents: PaneEvents = {
   onMenu: () => toggleList(),
   onPanel: () => layout.toggle('right'),
   onOpenAgent: (session, a) => openAgent(session, a),
+  onCommand: () => openCommandBar(),
 };
 
 function createPane(): Pane {
@@ -435,6 +439,92 @@ function toggleList() {
     layout.toggle('left');
   }
 }
+
+// ---------------------------------------------------------------------- command bar
+
+const RECENT_COMMANDS_KEY = 'ttm.cmd.recent';
+
+function recentCommands(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(RECENT_COMMANDS_KEY) ?? '[]');
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+async function getJson<T>(url: string, fallback: T): Promise<T> {
+  const r = await fetch(url).catch(() => null);
+  if (r?.status === 401) showLogin();
+  return r?.ok ? ((await r.json()) as T) : fallback;
+}
+
+let presetCache: Promise<{ name: string }[]> | null = null;
+
+const commandCtx: Ctx = {
+  focused: () => focused,
+  panes: () => panes.filter((p) => !p.isAgent),
+  canSplit: () => canSplit,
+  paneLimit: limit,
+  sessions: sessionList,
+  presets: () => (presetCache ??= getJson('/api/presets', [])),
+  recentDirs: () => getJson('/api/dirs', []),
+  browse: (typed) => getJson(`/api/browse?path=${encodeURIComponent(typed)}`, { dir: '', path: '', entries: [] }),
+  focusPane: focus,
+  switchTo: openSession,
+  start: async (preset, dir) => {
+    const r = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ preset, yolo: false, dir }),
+    }).catch(() => null);
+    if (r?.status === 401) return showLogin();
+    if (!r?.ok) return focused?.say(r ? await r.text() : 'Server unreachable');
+    const { id } = (await r.json()) as { id: string };
+    sidebar?.reload();
+    layout.dismissOverlays();
+    openInSplit(id); // the next free tile, or in place of the next pane when they are all taken
+  },
+  showAnother: () => void split(),
+  closePane,
+  openLayout,
+  openSettings,
+  openFile: (session, path) => paneEvents.onOpenFile(session, path, null),
+};
+
+const commandBar = new CommandBar($('app'), {
+  recent: recentCommands,
+  used: (id) => {
+    try {
+      localStorage.setItem(RECENT_COMMANDS_KEY, JSON.stringify(remember(recentCommands(), id)));
+    } catch {
+      /* the order just is not remembered */
+    }
+  },
+  closed: () => focused?.focusTerm(),
+});
+
+function openCommandBar() {
+  if ($('app').hidden || document.querySelector('.sheet')) return;
+  layout.dismissOverlays();
+  commandBar.open(rootStep(commandCtx));
+}
+
+// Cmd+K (Mac, iPad) or Ctrl+K opens it, even while the terminal has the keyboard. Pressing Ctrl+K
+// again closes it and sends the terminal its Ctrl+K (kill to end of line), which the bar took.
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.code !== 'KeyK' || e.altKey || e.shiftKey || e.metaKey === e.ctrlKey || $('app').hidden) return;
+    if (!commandBar.isOpen && document.querySelector('.sheet')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!commandBar.isOpen) return openCommandBar();
+    commandBar.close();
+    if (e.ctrlKey) focused?.sendRaw('\x0b');
+  },
+  true,
+);
 
 // Ctrl+Alt+arrows move between tiles; Ctrl+Alt+1..6 jump to one; Ctrl+Alt+F searches the history; Ctrl+Alt+[ and ] step through your messages.
 document.addEventListener(
