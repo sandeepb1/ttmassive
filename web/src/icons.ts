@@ -3,12 +3,12 @@
 
 import {
   ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ChevronUp, Columns2, Command, createElement, Dot, Ellipsis, FileCheck, FileText, Folder,
-  GitBranch, Globe, Grid2x2, Image, Info, Layers, ListChecks, Menu, PanelLeft, PanelRight, Pencil, Plus, Route,
+  GitBranch, Globe, Grid2x2, Image, Info, Layers, ListChecks, Menu, Minus, PanelLeft, PanelRight, Pencil, Plus, Route,
   Search, SlidersHorizontal, Sparkles, Square, Terminal, X,
   type IconNode,
 } from 'lucide';
 
-export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command' | 'memory' | 'route' | 'more' | 'arrow-up' | 'arrow-down' | 'stop';
+export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command' | 'memory' | 'route' | 'more' | 'arrow-up' | 'arrow-down' | 'stop' | 'minus';
 
 const NODES: Record<IconName, IconNode> = {
   shell: Terminal,
@@ -43,6 +43,7 @@ const NODES: Record<IconName, IconNode> = {
   'arrow-up': ArrowUp,
   'arrow-down': ArrowDown,
   stop: Square,
+  minus: Minus,
 };
 
 /** The category a tool belongs to, for its icon and tint. */

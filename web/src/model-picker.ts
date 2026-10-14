@@ -6,6 +6,10 @@
 
 import { levelKey } from './chat-model';
 import { el } from './dom';
+import { chip } from './ui/chip';
+import { row as listRow } from './ui/row';
+import { sheetShell } from './ui/sheet';
+import { sheetBlock, sheetHint, sheetLabel, sheetList, sheetMsg } from './ui/sheet-parts';
 
 interface ModelRow {
   number: number;
@@ -33,8 +37,6 @@ const EFFORT_LEVELS = {
   codex: ['low', 'medium', 'high', 'xhigh'],
 } as const;
 
-
-
 export interface PickerHooks {
   onUnauthorized: () => void;
   /** The change went through. `message` is what Claude said, such as "Set model to Haiku 5.5…". */
@@ -42,9 +44,8 @@ export interface PickerHooks {
 }
 
 export class ModelPicker {
-  private backdrop = el('div', 'sheet-backdrop');
-  private sheet = el('div', 'sheet');
-  private body = el('div', 'sheet-body');
+  private shell = sheetShell('Model', () => this.close());
+  private body = this.shell.body;
   /** Claude's own menu is open on the host and still needs closing. */
   private menuOpen = false;
   private busy = false;
@@ -56,20 +57,6 @@ export class ModelPicker {
     private agent: 'claude' | 'codex',
     private hooks: PickerHooks,
   ) {
-    this.backdrop.addEventListener('click', () => this.close());
-    // A tap on a button must not take focus from the message box: that would drop the on-screen
-    // keyboard and make the sheet jump under the next tap.
-    this.sheet.addEventListener('pointerdown', (e) => {
-      if (e.target instanceof Element && e.target.closest('button')) e.preventDefault();
-    });
-    const head = el('div', 'sheet-head');
-    head.append(el('strong', undefined, 'Model'));
-    const x = el('button', 'sheet-x', '×');
-    x.type = 'button';
-    x.setAttribute('aria-label', 'Close');
-    x.addEventListener('click', () => this.close());
-    head.append(x);
-    this.sheet.append(head, this.body);
   }
 
   private url(path: string) {
@@ -89,7 +76,7 @@ export class ModelPicker {
   async open(currentEffort: string | null) {
     if (!this.gone) return;
     this.gone = false;
-    this.host.append(this.backdrop, this.sheet);
+    this.shell.open(this.host);
     this.showMessage('Opening the model menu…');
     const r = await this.post('model/open');
     if (this.gone) return; // closed while we waited
@@ -103,8 +90,7 @@ export class ModelPicker {
   close() {
     if (this.gone) return;
     this.gone = true;
-    this.backdrop.remove();
-    this.sheet.remove();
+    this.shell.remove();
     if (this.menuOpen) {
       this.menuOpen = false;
       void this.post('model/close');
@@ -112,36 +98,25 @@ export class ModelPicker {
   }
 
   private showMessage(text: string, isError = false) {
-    this.body.replaceChildren(el('div', isError ? 'sheet-msg err' : 'sheet-msg', text));
+    this.body.replaceChildren(sheetMsg(text, isError));
   }
 
   private renderMenu(menu: ModelMenu, currentEffort: string | null) {
-    const list = el('div', 'sheet-list');
+    const list = sheetList();
     for (const row of menu.rows) {
-      const b = el('button', row.current ? 'sheet-row current' : 'sheet-row');
-      b.type = 'button';
-      const top = el('span', 'sr-top');
-      top.append(el('span', 'sr-label', row.label));
-      if (row.current) top.append(el('span', 'sr-mark', '✓ in use'));
-      b.append(top);
-      if (row.description) b.append(el('span', 'sr-desc', row.description));
+      const b = listRow(row.label, { hint: row.description || undefined, mark: row.current ? '✓ in use' : undefined, current: row.current });
       b.addEventListener('click', () => void this.choose(row));
       list.append(b);
     }
 
-    const effort = el('div', 'sheet-effort');
-    effort.append(el('div', 'sheet-label', 'Effort'));
-    const pills = el('div', 'pills');
+    const pills = el('div', 'flex flex-wrap gap-2');
     for (const level of EFFORT_LEVELS[this.agent]) {
-      const p = el('button', level === currentEffort ? 'pill on' : 'pill', level);
-      p.type = 'button';
-      p.addEventListener('click', () => void this.setEffort(level));
-      pills.append(p);
+      pills.append(chip({ on: level === currentEffort, onClick: () => void this.setEffort(level) }, level));
     }
-    effort.append(pills, el('div', 'sheet-hint', 'Applies to this session only.'));
+    const effort = sheetBlock(sheetLabel('Effort'), pills, sheetHint('Applies to this session only.'));
 
     this.body.replaceChildren(
-      el('div', 'sheet-hint', 'Applies to this session only. Your default for new sessions is not changed.'),
+      sheetHint('Applies to this session only. Your default for new sessions is not changed.'),
       list,
       effort,
     );
@@ -170,22 +145,16 @@ export class ModelPicker {
 
   /** Codex's second step: pick how hard the new model should think. */
   private renderLevels(model: ModelRow, menu: LevelMenu) {
-    const list = el('div', 'sheet-list');
+    const list = sheetList();
     // A row ending in an ellipsis ("More reasoning…") opens yet another menu rather than choosing.
     for (const row of menu.rows.filter((r) => !r.label.endsWith('…'))) {
-      const b = el('button', 'sheet-row');
-      b.type = 'button';
-      const top = el('span', 'sr-top');
-      top.append(el('span', 'sr-label', row.label));
-      if (row.default) top.append(el('span', 'sr-mark', 'default'));
-      b.append(top);
-      if (row.description) b.append(el('span', 'sr-desc', row.description));
+      const b = listRow(row.label, { hint: row.description || undefined, mark: row.default ? 'default' : undefined });
       b.addEventListener('click', () => void this.chooseLevel(model, row));
       list.append(b);
     }
     this.body.replaceChildren(
-      el('div', 'sheet-label', `Reasoning level for ${menu.model}`),
-      el('div', 'sheet-hint', 'Applies to this session only.'),
+      sheetLabel(`Reasoning level for ${menu.model}`),
+      sheetHint('Applies to this session only.'),
       list,
     );
   }

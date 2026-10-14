@@ -5,6 +5,7 @@
 import { el } from './dom';
 import { highlight, languageFor, lineHtml } from './highlight';
 import { Sheet } from './sheet';
+import { button } from './ui/button';
 
 interface FileView {
   path: string;
@@ -61,14 +62,12 @@ export class FileViewer extends Sheet {
     const path = el('span', 'fv-path', v.rel);
     path.title = v.path;
     const meta = el('span', 'fv-meta', `${v.lines} line${v.lines === 1 ? '' : 's'} · ${fmtSize(v.size)}`);
-    const copy = el('button', 'chip', 'Copy path');
-    copy.type = 'button';
-    copy.addEventListener('click', () => {
+    const copy = button({ variant: 'secondary', size: 'sm', onClick: () => {
       void navigator.clipboard.writeText(v.path).then(
         () => (copy.textContent = 'Copied'),
         () => (copy.textContent = 'Blocked'),
       );
-    });
+    } }, 'Copy path');
     head.append(path, meta, copy);
     root.append(head);
 

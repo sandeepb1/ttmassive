@@ -4,6 +4,8 @@
 
 import { el } from './dom';
 import { Sheet } from './sheet';
+import { button } from './ui/button';
+import { sheetHint } from './ui/sheet-parts';
 
 const LINES = 2000;
 
@@ -34,20 +36,18 @@ export class SelectSheet extends Sheet {
 
   private render(text: string) {
     if (this.gone) return;
-    const pre = el('pre', 'sel-text');
+    const pre = el('pre', 'm-0 max-h-[62vh] min-h-0 flex-1 select-text overflow-auto whitespace-pre-wrap break-words rounded-sm bg-background p-2.5 font-mono text-sm leading-snug [-webkit-touch-callout:default]');
     pre.textContent = text;
     pre.tabIndex = 0;
 
-    const all = el('button', 'chip', 'Copy all');
-    all.type = 'button';
-    all.addEventListener('click', () => {
+    const all = button({ variant: 'secondary', size: 'sm', onClick: () => {
       navigator.clipboard.writeText(text).then(
         () => (all.textContent = 'Copied'),
         () => (all.textContent = 'Blocked'),
       );
-    });
-    const bar = el('div', 'sel-bar');
-    bar.append(el('span', 'sheet-hint', 'Touch and hold a word, drag the handles, then Copy.'), all);
+    } }, 'Copy all');
+    const bar = el('div', 'flex items-center justify-between gap-2.5');
+    bar.append(sheetHint('Touch and hold a word, drag the handles, then Copy.'), all);
 
     this.body.replaceChildren(bar, pre);
     // Start at the newest output, which is where the screen is.

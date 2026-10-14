@@ -6,6 +6,10 @@ import { stepEffort } from './chat-model';
 import { el } from './dom';
 import { warn } from './haptics';
 import { Sheet, row } from './sheet';
+import { icon } from './icons';
+import { button } from './ui/button';
+import { cn } from './ui/cn';
+import { sheetActions, sheetBlock, sheetHint, sheetLabel, sheetList } from './ui/sheet-parts';
 
 interface PermRow {
   number: number;
@@ -65,22 +69,14 @@ export class MoreSheet extends Sheet {
   private renderMain(note = '') {
     const { agent, effort, hasLast } = this.state;
     const parts: HTMLElement[] = [];
-    if (note) parts.push(el('div', 'sheet-hint', note));
+    if (note) parts.push(sheetHint(note));
 
     // Reasoning
-    const reasoning = el('div', 'more-block');
-    reasoning.append(el('div', 'sheet-label', 'Reasoning'));
-    const stepper = el('div', 'stepper');
-    const less = el('button', 'step-btn', '−');
-    const more = el('button', 'step-btn', '+');
-    for (const b of [less, more]) b.type = 'button';
-    less.setAttribute('aria-label', 'Less reasoning');
-    more.setAttribute('aria-label', 'More reasoning');
-    less.addEventListener('click', () => void this.step(false));
-    more.addEventListener('click', () => void this.step(true));
-    stepper.append(less, el('span', 'step-value', effort ?? 'unknown'), more);
-    reasoning.append(stepper, el('div', 'sheet-hint', 'Applies to this session only.'));
-    parts.push(reasoning);
+    const stepBtn = (label: string, glyph: 'minus' | 'plus', up: boolean) =>
+      button({ variant: 'secondary', size: 'icon', label, cls: 'size-13 rounded-full', onClick: () => void this.step(up) }, icon(glyph));
+    const stepper = el('div', 'flex items-center justify-center gap-5 py-2');
+    stepper.append(stepBtn('Less reasoning', 'minus', false), el('span', 'min-w-24 text-center text-lg font-bold tabular-nums', effort ?? 'unknown'), stepBtn('More reasoning', 'plus', true));
+    parts.push(sheetBlock(sheetLabel('Reasoning'), stepper, sheetHint('Applies to this session only.')));
 
     // Codex permissions
     if (agent === 'codex') {
@@ -90,9 +86,7 @@ export class MoreSheet extends Sheet {
     }
 
     // Quick commands
-    const cmds = el('div', 'more-block');
-    cmds.append(el('div', 'sheet-label', 'Commands'));
-    const list = el('div', 'sheet-list');
+    const list = sheetList();
     const add = (label: string, hint: string, name: string, confirm?: string) => {
       const b = row(label, { hint });
       b.addEventListener('click', () => (confirm ? this.renderConfirm(label, confirm, () => this.command(name)) : void this.command(name)));
@@ -105,8 +99,7 @@ export class MoreSheet extends Sheet {
     } else {
       add('New conversation', 'Start a new conversation', 'new', 'Start a new conversation? The current one stays in the agent’s history.');
     }
-    cmds.append(list);
-    parts.push(cmds);
+    parts.push(sheetBlock(sheetLabel('Commands'), list));
 
     // Edit last message
     if (hasLast) {
@@ -127,18 +120,9 @@ export class MoreSheet extends Sheet {
     danger = false,
     cancel: () => void = () => this.renderMain(),
   ) {
-    const yes = el('button', danger ? 'confirm-yes danger' : 'confirm-yes', title);
-    const no = el('button', 'confirm-no', 'Cancel');
-    yes.type = 'button';
-    no.type = 'button';
-    yes.addEventListener('click', () => {
-      if (danger) warn();
-      void go();
-    });
-    no.addEventListener('click', cancel);
-    const actions = el('div', 'confirm-actions');
-    actions.append(no, yes);
-    this.body.replaceChildren(el('div', danger ? 'confirm-text danger' : 'confirm-text', text), actions);
+    const yes = button({ variant: danger ? 'destructive' : 'default', onClick: () => { if (danger) warn(); void go(); } }, title);
+    const no = button({ variant: 'secondary', onClick: cancel }, 'Cancel');
+    this.body.replaceChildren(el('div', cn('px-1 py-3.5 leading-relaxed', danger && 'text-danger-text'), text), sheetActions(no, yes));
   }
 
   // ------------------------------------------------------------ reasoning
@@ -199,21 +183,20 @@ export class MoreSheet extends Sheet {
 
   /** The presets, while Codex's own menu is still open behind them. */
   private renderPermList() {
-    const list = el('div', 'sheet-list');
+    const list = sheetList();
     for (const p of this.permRows) {
       const full = /full access/i.test(p.label);
       const b = row(p.label, {
         hint: p.description,
         mark: p.current ? '✓ now' : undefined,
-        cls: full ? 'sheet-danger' : p.current ? 'current' : '',
+        danger: full,
+        current: p.current && !full,
       });
       b.addEventListener('click', () => (full ? this.confirmFull(p) : void this.choosePermission(p, false)));
       list.append(b);
     }
-    const back = el('button', 'confirm-no', 'Back');
-    back.type = 'button';
-    back.addEventListener('click', () => void this.backFromPermissions());
-    this.body.replaceChildren(el('div', 'sheet-hint', 'Applies to this session only.'), list, back);
+    const back = button({ variant: 'secondary', onClick: () => void this.backFromPermissions() }, 'Back');
+    this.body.replaceChildren(sheetHint('Applies to this session only.'), list, back);
   }
 
   private async backFromPermissions() {

@@ -4,9 +4,9 @@ import { el } from '../dom';
 import { cn, tv } from './cn';
 
 const rowStyles = tv({
-  base: 'flex w-full touch-manipulation flex-col gap-0.5 rounded-lg bg-card px-4 py-3 text-left text-foreground transition active:scale-[.99] active:bg-muted focus-visible:outline-2 focus-visible:outline-ring',
+  base: 'flex w-full touch-manipulation flex-col gap-0.5 rounded-lg bg-muted px-4 py-3 text-left text-foreground transition active:scale-[.99] active:bg-secondary focus-visible:outline-2 focus-visible:outline-ring',
   variants: {
-    current: { true: 'bg-accent-bg ring-2 ring-primary', false: '' },
+    current: { true: 'bg-accent-bg ring-2 ring-inset ring-primary', false: '' },
     danger: { true: 'bg-danger-bg', false: '' },
   },
 });
@@ -27,7 +27,7 @@ export function row(label: string, opts: RowOptions = {}): HTMLButtonElement {
   b.className = cn(rowStyles({ current: !!opts.current, danger: !!opts.danger }), opts.cls);
   const top = el('span', 'flex items-center justify-between gap-3');
   top.append(el('span', cn('text-md font-semibold', opts.danger && 'text-danger-text'), label));
-  if (opts.mark) top.append(el('span', 'text-xs text-muted-foreground', opts.mark));
+  if (opts.mark) top.append(el('span', 'text-xs text-accent-text', opts.mark));
   b.append(top);
   if (opts.hint) b.append(el('span', 'text-sm text-muted-foreground', opts.hint));
   return b;

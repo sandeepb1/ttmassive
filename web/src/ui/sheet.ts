@@ -9,8 +9,8 @@ import { icon } from '../icons';
 import { button } from './button';
 import { cn } from './cn';
 
-/** Matches an open sheet, kit or legacy (the model picker still uses the old markup). */
-export const SHEET_SELECTOR = '[data-sheet], .sheet';
+/** Matches an open sheet. */
+export const SHEET_SELECTOR = '[data-sheet]';
 
 export interface SheetShell {
   /** Put the sheet on screen. */

@@ -9,6 +9,10 @@ import {
 } from './dirs';
 import { icon } from './icons';
 import { Sheet } from './sheet';
+import { button } from './ui/button';
+import { chip } from './ui/chip';
+import { input as textInput } from './ui/input';
+import { sheetLabel, sheetMsg } from './ui/sheet-parts';
 
 const AGENT_KEY = 'ttm.new.agent';
 const SHELL = '';
@@ -55,7 +59,7 @@ export class NewSessionSheet extends Sheet {
   private seq = 0;
   private timer = 0;
 
-  private input = el('input', 'ns-input');
+  private input = textInput({ mono: true, cls: 'flex-1' });
   private suggestions = el('div', 'ns-list');
   private crumbs = el('div', 'ns-crumbs');
   private agents = el('div', 'ns-seg');
@@ -65,7 +69,7 @@ export class NewSessionSheet extends Sheet {
   private skipText = el('span');
   private groupBox = el('div', 'ns-groups');
   private err = el('div', 'ns-err');
-  private go = el('button', 'ns-go', 'Start');
+  private go = button({ cls: 'w-full font-bold' }, 'Start');
   private showMore = false;
 
   constructor(host: HTMLElement, private signedOut: () => void, private hooks: NewSessionHooks) {
@@ -75,7 +79,7 @@ export class NewSessionSheet extends Sheet {
   /** Open the sheet. Make a new sheet for every opening. `dir` is the folder to start in, when the caller knows one (a project, the focused pane). */
   async open(dir?: string) {
     if (!this.gone) return;
-    this.body.replaceChildren(el('div', 'sheet-msg', 'Loading…'));
+    this.body.replaceChildren(sheetMsg('Loading…'));
     this.show();
     [this.presets, this.groups, this.recents] = await Promise.all([fetchPresets(), fetchGroups(), fetchRecentDirs()]);
     if (this.gone) return;
@@ -124,21 +128,18 @@ export class NewSessionSheet extends Sheet {
       void this.confirmTyped();
     });
 
-    const browse = el('button', 'ns-browse');
-    browse.type = 'button';
-    browse.append(icon('folder'), el('span', undefined, 'Browse'));
+    const browse = button({ variant: 'secondary', size: 'md', cls: 'aria-pressed:ring-2 aria-pressed:ring-primary' }, icon('folder'), 'Browse');
     browse.setAttribute('aria-pressed', 'false');
     browse.addEventListener('click', () => {
       this.browsing = !this.browsing;
       browse.setAttribute('aria-pressed', String(this.browsing));
-      browse.classList.toggle('on', this.browsing);
       if (this.browsing) void this.browseAt(this.folder?.short ?? '~');
       else {
         this.crumbs.replaceChildren();
         this.showFolders();
       }
     });
-    const folderRow = el('div', 'ns-folder');
+    const folderRow = el('div', 'flex gap-2');
     folderRow.append(this.input, browse);
 
     this.skipBox.type = 'checkbox';
@@ -147,11 +148,10 @@ export class NewSessionSheet extends Sheet {
     });
     this.skipRow.append(this.skipBox, this.skipText);
 
-    this.go.type = 'button';
     this.go.addEventListener('click', () => void this.start());
 
-    const folderLabel = el('div', 'sheet-label', 'Folder');
-    const startLabel = el('div', 'sheet-label', 'Start');
+    const folderLabel = sheetLabel('Folder');
+    const startLabel = sheetLabel('Start');
     this.body.replaceChildren(folderLabel, folderRow, this.crumbs, this.suggestions, startLabel, this.agents, this.moreRow, this.skipRow);
     if (this.groups.length > 0) this.body.append(this.groupBox);
     this.body.append(this.err, this.go);
@@ -208,8 +208,7 @@ export class NewSessionSheet extends Sheet {
     this.moreRow.hidden = !this.showMore || more.length === 0;
     if (!this.moreRow.hidden) {
       for (const p of more) {
-        const b = el('button', this.choice === p.name ? 'chip on' : 'chip', p.name);
-        b.type = 'button';
+        const b = chip({ on: this.choice === p.name }, p.name);
         if (p.command) b.title = p.command;
         b.addEventListener('click', () => this.pick(p.name));
         this.moreRow.append(b);
@@ -243,11 +242,10 @@ export class NewSessionSheet extends Sheet {
 
   private syncGroups() {
     if (this.groups.length === 0) return;
-    this.groupBox.replaceChildren(el('div', 'sheet-label', 'Or start a group'));
-    const row = el('div', 'ns-groupbtns');
+    this.groupBox.replaceChildren(sheetLabel('Or start a group'));
+    const row = el('div', 'flex flex-wrap gap-2');
     for (const g of this.groups) {
-      const b = el('button', 'chip chip-group', `▶ ${g.name}`);
-      b.type = 'button';
+      const b = chip({ cls: 'border border-dashed border-input bg-transparent' }, `▶ ${g.name}`);
       b.title = `Start together: ${g.presets.join(', ')}`;
       b.addEventListener('click', () => void this.startGroup(g.name));
       row.append(b);

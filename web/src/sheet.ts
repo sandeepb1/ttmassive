@@ -3,6 +3,7 @@
 
 import { el } from './dom';
 import { sheetShell, type SheetShell } from './ui/sheet';
+import { sheetMsg } from './ui/sheet-parts';
 
 export type CallResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -49,7 +50,7 @@ export abstract class Sheet {
   protected onClose() {}
 
   protected message(text: string, isError = false) {
-    this.body.replaceChildren(el('div', isError ? 'sheet-msg err' : 'sheet-msg', text));
+    this.body.replaceChildren(sheetMsg(text, isError));
   }
 
   /** POST to `/api/sessions/{id}/{path}`; failures come back as a message to show. */
@@ -70,14 +71,4 @@ export abstract class Sheet {
   }
 }
 
-/** A row button with a title, an optional right-hand mark and a description. */
-export function row(label: string, opts: { hint?: string; mark?: string; cls?: string } = {}): HTMLButtonElement {
-  const b = el('button', ['sheet-row', opts.cls].filter(Boolean).join(' '));
-  b.type = 'button';
-  const top = el('span', 'sr-top');
-  top.append(el('span', 'sr-label', label));
-  if (opts.mark) top.append(el('span', 'sr-mark', opts.mark));
-  b.append(top);
-  if (opts.hint) b.append(el('span', 'sr-desc', opts.hint));
-  return b;
-}
+export { row } from './ui/row';
