@@ -51,6 +51,8 @@ jobs:
         with: { path: dist, merge-multiple: true }
       - name: Release notes and title
         run: |
+          # checkout turns the tag into a plain ref; fetch it again to get its message.
+          git fetch --tags --force
           prev=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)
           range=${prev:+$prev..}${GITHUB_REF_NAME}
           # Commits go straight to main, so list those rather than pull requests.
