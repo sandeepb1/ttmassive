@@ -53,7 +53,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/custom-role", post(custom_role))
         .route("/api/orch/roles", get(roles))
         .route("/api/orch/runs", get(list_runs).post(create_run))
-        .route("/api/orch/runs/{id}", get(get_run))
+        .route("/api/orch/runs/{id}", get(get_run).delete(delete_run))
         .route("/api/orch/runs/{id}/grill", post(grill))
         .route("/api/orch/runs/{id}/start", post(start))
         .route("/api/orch/runs/{id}/approve", post(approve))
@@ -157,6 +157,11 @@ async fn create_run(State(st): St, Json(b): Json<CreateBody>) -> Result<Response
 
 async fn get_run(State(st): St, Path(id): Path<String>) -> Result<Response, Fail> {
     Ok(json_nocache(st.orch.get(&id)?))
+}
+
+async fn delete_run(State(st): St, Path(id): Path<String>) -> Result<Response, Fail> {
+    st.orch.delete_run(&id)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[derive(Deserialize, Default)]

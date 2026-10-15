@@ -337,6 +337,19 @@ impl Service {
         self.get(id)
     }
 
+    /// Forget a run. One that is working is refused: stop it first. Branches and folders its builders made are kept.
+    pub fn delete_run(&self, id: &str) -> Result<(), Fail> {
+        let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(l) = runs.get(id) {
+            if l.driving.load(Ordering::SeqCst) || l.grilling.load(Ordering::SeqCst) {
+                return Err(Fail::Conflict("it is still working: stop it first".into()));
+            }
+        }
+        self.store.delete_run(id).map_err(|_| Fail::Bad("bad id".into()))?;
+        runs.remove(id);
+        Ok(())
+    }
+
     fn spawn_drive(&self, st: Arc<AppState>, live: Arc<Live>) {
         if live.driving.swap(true, Ordering::SeqCst) {
             return;

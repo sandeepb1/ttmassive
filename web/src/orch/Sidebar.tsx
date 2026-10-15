@@ -4,6 +4,7 @@
 
 import { useState } from 'react';
 import { Icon, StatusPill, ago } from './bits';
+import { menuOn, useLongPress, type MenuItem, type MenuState } from './ContextMenu';
 import { fmtTokens, runsLabel, whenLabel, type FlowEntry } from './model';
 import type { Flow, RunSummary } from './types';
 
@@ -29,6 +30,11 @@ interface Props {
   onDesign: () => void;
   onOpenRun: (id: string) => void;
   onNewRun: () => void;
+  onDeleteRun: (r: RunSummary) => void;
+  /** Right-click or long-press menus. */
+  openMenu: (m: MenuState) => void;
+  flowMenu: (e: FlowEntry) => MenuItem[];
+  runMenu: (r: RunSummary) => MenuItem[];
 }
 
 export function Sidebar(p: Props) {
@@ -36,6 +42,7 @@ export function Sidebar(p: Props) {
 }
 
 function FlowList(p: Props) {
+  const press = useLongPress(p.openMenu);
   const [showTemplates, setShowTemplates] = useState(p.entries.length === 0);
   return (
     <>
@@ -57,7 +64,7 @@ function FlowList(p: Props) {
         ) : (
           <ul className="mc-list">
             {p.entries.map((e) => (
-              <li key={e.id} className="mc-li">
+              <li key={e.id} className="mc-li" {...menuOn(p.openMenu, () => p.flowMenu(e))} {...press(() => p.flowMenu(e))}>
                 <button type="button" className="mc-row-btn" aria-current={e.id === p.flowId} onClick={() => p.onOpenFlow(e)}>
                   <span className="mc-row-title">{e.name}</span>
                   <span className="mc-row-sub">
@@ -82,7 +89,9 @@ function FlowList(p: Props) {
                     </button>
                   </span>
                 ) : (
-                  <span />
+                  <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Delete the executions of ${e.name}`} onClick={() => p.onDelete(e)}>
+                    <Icon name="trash" />
+                  </button>
                 )}
               </li>
             ))}
@@ -113,6 +122,7 @@ function FlowList(p: Props) {
 }
 
 function FlowPanel(p: Props) {
+  const press = useLongPress(p.openMenu);
   const mine: RunSummary[] = p.entries.find((e) => e.id === p.flowId)?.runs ?? [];
   const designing = p.runId === null;
   return (
@@ -154,7 +164,7 @@ function FlowPanel(p: Props) {
         ) : (
           <ul className="mc-list">
             {mine.map((r) => (
-              <li key={r.id}>
+              <li key={r.id} className="mc-li" {...menuOn(p.openMenu, () => p.runMenu(r))} {...press(() => p.runMenu(r))}>
                 <button type="button" className="mc-row-btn" aria-current={r.id === p.runId} onClick={() => p.onOpenRun(r.id)}>
                   <span className="mc-row-title">{r.goal}</span>
                   <span className="mc-row-sub">
@@ -164,6 +174,9 @@ function FlowPanel(p: Props) {
                     </span>
                     <StatusPill status={r.status} />
                   </span>
+                </button>
+                <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Delete the execution “${r.goal}”`} disabled={r.status.state === 'running'} title={r.status.state === 'running' ? 'Stop it first' : 'Delete this execution'} onClick={() => p.onDeleteRun(r)}>
+                  <Icon name="trash" />
                 </button>
               </li>
             ))}

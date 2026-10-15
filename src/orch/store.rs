@@ -95,6 +95,13 @@ impl Store {
         serde_json::from_slice(&fs::read(self.file("runs", id).ok()?).ok()?).ok()
     }
 
+    pub fn delete_run(&self, id: &str) -> Result<()> {
+        match fs::remove_file(self.file("runs", id)?) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
     pub fn all_runs(&self) -> Vec<Run> {
         self.read_all("runs")
     }
@@ -175,6 +182,20 @@ mod tests {
         assert!(s.file("runs", "a/b").is_err());
         assert!(s.file("runs", "").is_err());
         assert!(s.load_run("../x").is_none());
+    }
+
+    #[test]
+    fn a_deleted_run_is_gone_and_deleting_twice_is_fine() {
+        let dir = tmp("rundel");
+        let s = Store::new(&dir);
+        let flow = starters::all().remove(0);
+        s.save_run(&Run::new("a".into(), flow.clone(), "x".into(), 1)).unwrap();
+        s.save_run(&Run::new("b".into(), flow, "y".into(), 2)).unwrap();
+        s.delete_run("a").unwrap();
+        s.delete_run("a").unwrap();
+        assert!(s.load_run("a").is_none());
+        assert_eq!(s.list_runs().len(), 1);
+        assert!(s.delete_run("../b").is_err());
     }
 
     #[test]

@@ -7,8 +7,9 @@ import {
   type Connection, type Edge, type FinalConnectionState, type Node, type NodeChange,
 } from '@xyflow/react';
 import { AgentCard, type CardData } from './AgentCard';
-import { addEdge, awaitingApproval, connectionProblem } from './model';
-import type { EdgeKind, Flow, Run } from './types';
+import type { MenuItem, MenuState } from './ContextMenu';
+import { addEdge, awaitingApproval, connectionProblem, duplicateNode, removeNode, roleLabel } from './model';
+import type { EdgeKind, Flow, Role, RoleDef, Run } from './types';
 
 const nodeTypes = { agent: AgentCard };
 
@@ -31,9 +32,13 @@ export interface CanvasProps {
   fitToken: number;
   /** A different key starts a fresh view that fits the agents: a run opens on its own, not on the editor's zoom. */
   viewKey: string;
+  roles: RoleDef[];
+  onAddAt: (role: Role, at: { x: number; y: number }) => void;
+  onTidy: () => void;
+  openMenu: (m: MenuState) => void;
 }
 
-export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, onProblem, fitToken, viewKey }: CanvasProps) {
+export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, onProblem, fitToken, viewKey, roles, onAddAt, onTidy, openMenu }: CanvasProps) {
   const rf = useReactFlow();
   useEffect(() => {
     if (!fitToken) return;
@@ -137,6 +142,42 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
     [onFlow],
   );
 
+  // ---- right-click menus
+  const fit = () => void rf.fitView({ padding: 0.08, maxZoom: 1.1, duration: 250 });
+
+  const onNodeContextMenu = (e: MouseEvent, n: Node) => {
+    e.preventDefault();
+    onSelect(n.id);
+    const items: MenuItem[] = [{ label: 'Details', icon: 'info', onSelect: () => onSelect(n.id) }];
+    if (editable) {
+      items.push(
+        { label: 'Duplicate agent', icon: 'files', onSelect: () => { const d = duplicateNode(flow, n.id); if (d) { onFlow(() => d.flow); onSelect(d.node.id); } } },
+        { kind: 'separator' },
+        { label: 'Remove agent', icon: 'trash', danger: true, onSelect: () => { onFlow((f) => removeNode(f, n.id)); onSelect(null); } },
+      );
+    }
+    openMenu({ x: e.clientX, y: e.clientY, items });
+  };
+
+  const onEdgeContextMenu = (e: MouseEvent, edge: Edge) => {
+    e.preventDefault();
+    if (!editable) return;
+    openMenu({ x: e.clientX, y: e.clientY, items: [{ label: edge.label ? 'Remove send-back' : 'Remove connection', icon: 'trash', danger: true, onSelect: () => onFlow((f) => ({ ...f, edges: f.edges.filter((x) => x.id !== edge.id) })) }] });
+  };
+
+  const onPaneContextMenu = (e: MouseEvent | globalThis.MouseEvent) => {
+    e.preventDefault();
+    const items: MenuItem[] = [];
+    if (editable) {
+      const at = rf.screenToFlowPosition({ x: e.clientX - 116, y: e.clientY - 40 });
+      const add = (r: RoleDef): MenuItem => ({ label: `Add ${r.label}`, icon: 'plus', onSelect: () => onAddAt(r.id, at) });
+      items.push(...roles.filter((r) => r.core).map(add), { kind: 'separator' }, ...roles.filter((r) => !r.core).map(add), { kind: 'separator' });
+      items.push({ label: 'Tidy up', icon: 'grid', disabled: flow.nodes.length < 2, onSelect: onTidy });
+    }
+    items.push({ label: 'Fit to screen', icon: 'columns', disabled: flow.nodes.length === 0, onSelect: fit });
+    openMenu({ x: e.clientX, y: e.clientY, items });
+  };
+
   return (
     <ReactFlow
       key={viewKey}
@@ -161,6 +202,9 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
       onEdgesDelete={onEdgesDelete}
       onNodeClick={(_: MouseEvent, n: Node) => onSelect(n.id)}
       onPaneClick={() => onSelect(null)}
+      onNodeContextMenu={onNodeContextMenu}
+      onEdgeContextMenu={onEdgeContextMenu}
+      onPaneContextMenu={onPaneContextMenu}
     >
       <Background variant={BackgroundVariant.Dots} gap={22} size={1.5} />
       <Controls showInteractive={false} position="bottom-right" />

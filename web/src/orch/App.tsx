@@ -6,13 +6,14 @@ import type { RecentDir } from '../dirs';
 import { orch, watchRun } from './api';
 import { Icon, iconFor } from './bits';
 import { CustomRoleDialog, GrillDialog, NewRunDialog, SuggestDialog, type RoleDraft } from './Dialogs';
+import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
 import { Inspector } from './Inspector';
 import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
 import { Sidebar } from './Sidebar';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
 import type { Flow, FlowLists, Models, Role, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
 
 const PHONE = '(max-width: 699px)';
@@ -394,6 +395,12 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       void refreshLists();
     });
   const removeFlow = (e: FlowEntry) => {
+    if (!e.saved) {
+      // Nothing saved is left of it but its executions.
+      const ids = e.runs.filter((r) => r.status.state !== 'running').map((r) => r.id);
+      if (ids.length && confirm(`Delete ${ids.length === 1 ? 'its execution' : `its ${ids.length} executions`}? There is no saved flow to keep.`)) dropRuns(ids);
+      return;
+    }
     const kept = e.runs.length ? ` Its ${e.runs.length === 1 ? 'execution stays' : `${e.runs.length} executions stay`} in your list, marked “Runs only”.` : '';
     if (!confirm(`Delete the flow “${e.name}”?${kept}`)) return;
     void act(() => orch.deleteFlow(e.id), () => {
@@ -465,6 +472,48 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     );
 
   /** Put an older execution's design back in the editor, as the flow's current design. */
+  // ------------------------------------------------------------------ deleting and quick actions
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  /** Remove executions. The ones the open page shows go with them; any branches their builders made are kept. */
+  const dropRuns = (ids: string[]) =>
+    void act(
+      async () => {
+        for (const id of ids) {
+          const r = await orch.deleteRun(id);
+          if (!r.ok) return r;
+        }
+        return { ok: true as const, data: undefined };
+      },
+      () => {
+        if (runId && ids.includes(runId)) setRunId(null);
+        void refreshRuns();
+      },
+    ).then(() => void refreshRuns());
+  const removeRun = (r: RunSummary) => {
+    if (r.status.state === 'running') return say('Stop it first, then delete it.');
+    if (confirm(`Delete the execution “${r.goal}”?`)) dropRuns([r.id]);
+  };
+  const clearFinished = (e: FlowEntry) => {
+    const ids = e.runs.filter((r) => isFinished(r.status)).map((r) => r.id);
+    if (ids.length && confirm(`Delete ${ids.length === 1 ? 'the finished execution' : `the ${ids.length} finished executions`} of “${e.name}”? Ones still going stay.`)) dropRuns(ids);
+  };
+  const flowMenu = (e: FlowEntry): MenuItem[] => {
+    const items: MenuItem[] = [{ label: 'Open', icon: 'workflow', onSelect: () => void openEntry(e) }];
+    if (e.saved) items.push({ label: 'Duplicate', icon: 'files', onSelect: () => duplicate(e) });
+    if (e.runs.some((r) => isFinished(r.status))) items.push({ label: 'Delete finished executions', icon: 'minus', onSelect: () => clearFinished(e) });
+    items.push({ kind: 'separator' }, e.saved ? { label: 'Delete flow', icon: 'trash', danger: true, onSelect: () => removeFlow(e) } : { label: 'Delete executions', icon: 'trash', danger: true, onSelect: () => removeFlow(e) });
+    return items;
+  };
+  const runMenu = (r: RunSummary): MenuItem[] => {
+    const items: MenuItem[] = [{ label: 'Open', icon: 'workflow', onSelect: () => openRun(r.id) }];
+    if (r.id === runId) items.push({ label: 'Use this version', icon: 'retry', onSelect: () => useThisVersion() });
+    if (r.status.state === 'running') items.push({ label: 'Stop', icon: 'stop', onSelect: () => void act(() => orch.cancel(r.id), (x) => (r.id === runId && setRun(x), void refreshRuns())) });
+    items.push({ kind: 'separator' }, { label: 'Delete execution', icon: 'trash', danger: true, disabled: r.status.state === 'running', onSelect: () => removeRun(r) });
+    return items;
+  };
+
   const useThisVersion = () => {
     if (!run) return;
     if (edited.current && !confirm('Replace your unsaved changes with this older version?')) return;
@@ -565,6 +614,10 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             onDesign={toDesign}
             onOpenRun={openRun}
             onNewRun={() => (setSideOpen(false), setDialog(true))}
+            onDeleteRun={removeRun}
+            openMenu={setMenu}
+            flowMenu={flowMenu}
+            runMenu={runMenu}
           />
           )}
         </aside>
@@ -575,7 +628,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             <NodeList flow={shown} run={run} selected={selected} onSelect={select} />
           ) : (
             <ReactFlowProvider>
-              <FlowCanvas flow={shown} run={run} selected={selected} editable={editable} onFlow={editFlow} onSelect={select} onProblem={say} fitToken={fitToken} viewKey={run ? `run-${run.id}` : flow.id} />
+              <FlowCanvas flow={shown} run={run} selected={selected} editable={editable} onFlow={editFlow} onSelect={select} onProblem={say} fitToken={fitToken} viewKey={run ? `run-${run.id}` : flow.id} roles={roles} onAddAt={addNode} onTidy={() => (editFlow(tidy), fit())} openMenu={setMenu} />
               {editable && <AddAgent roles={roles} count={flow.nodes.length} onAdd={addNode} onCustom={() => (setDraft(null), setCustomError(null), setCustomOpen(true))} />}
             </ReactFlowProvider>
           )}
@@ -636,6 +689,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           />
         </aside>
       </div>
+      {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
     </>
   );
 }

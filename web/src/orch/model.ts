@@ -130,6 +130,17 @@ export function newCustomNode(flow: Flow, role: CustomRole, instructions: string
   };
 }
 
+/** A copy of an agent beside the original, with no connections: the user wires it where it belongs. */
+export function duplicateNode(flow: Flow, id: string): { flow: Flow; node: FlowNode } | null {
+  const src = flow.nodes.find((n) => n.id === id);
+  if (!src) return null;
+  const node: FlowNode = { ...structuredClone(src), id: freeId(flow.nodes.map((n) => n.id), 'n'), name: uniqueName(flow, roleLabel(src)), x: src.x + 40, y: src.y + 40 };
+  return { flow: { ...flow, nodes: [...flow.nodes, node] }, node };
+}
+
+/** An execution that has stopped for good, so it can be removed without stopping anything. */
+export const isFinished = (s: { state: string }) => s.state === 'done' || s.state === 'cancelled';
+
 export function emptyFlow(id: string, name: string): Flow {
   return { id, name, nodes: [], edges: [], maxRetries: 2, budget: { claudePct: 15, codexPct: 10, stopWindowPct: 85 }, downshift: false };
 }

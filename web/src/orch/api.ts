@@ -55,6 +55,7 @@ export const orch = {
   start: (id: string, brief?: string) => send<Run>('POST', `${run(id)}/start`, { brief }),
   approve: (id: string, node: string) => send<Run>('POST', `${run(id)}/approve`, { node }),
   resume: (id: string) => send<Run>('POST', `${run(id)}/resume`),
+  deleteRun: (id: string) => send<void>('DELETE', run(id)),
   cancel: (id: string) => send<Run>('POST', `${run(id)}/cancel`),
   suggest: (goal: string) => send<Flow>('POST', `${base}/flows/suggest`, { goal }),
   popOut: (id: string, node: string) => send<{ session: string }>('POST', `${run(id)}/popout`, { node }),

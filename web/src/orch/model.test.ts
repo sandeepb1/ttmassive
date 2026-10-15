@@ -5,7 +5,7 @@ import {
   flowEntries, runsLabel, runsOf, whenLabel,
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
-  setCatalog, STAGES, statusLabel, tidy, writes,
+  setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished,
 } from './model.ts';
 import type { Flow, Models, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
@@ -430,4 +430,24 @@ test('an execution’s time is told as today, yesterday, or a date', () => {
   assert.equal(whenLabel(at(2025, 11, 31, 23, 59), now), '31 Dec 2025 23:59', 'another year says which');
   // Just after midnight is still "Today" even though it is less than a day ago.
   assert.equal(whenLabel(at(2026, 9, 15, 0, 5), new Date(2026, 9, 15, 0, 30)), 'Today 00:05');
+});
+
+test('a duplicated agent is a separate, unconnected copy beside the original', () => {
+  const f = line();
+  const builder = f.nodes[2]!;
+  const out = duplicateNode(f, builder.id)!;
+  assert.equal(out.flow.nodes.length, f.nodes.length + 1);
+  assert.notEqual(out.node.id, builder.id);
+  assert.equal(out.node.name, 'Builder 2');
+  assert.equal(out.node.role, builder.role);
+  assert.equal(out.node.systemPrompt, builder.systemPrompt);
+  assert.deepEqual([out.node.x, out.node.y], [builder.x + 40, builder.y + 40]);
+  assert.equal(out.flow.edges.length, f.edges.length);
+  assert.equal(duplicateNode(f, 'nope'), null);
+});
+
+test('only an execution that has stopped for good counts as finished', () => {
+  assert.equal(isFinished({ state: 'done' }), true);
+  assert.equal(isFinished({ state: 'cancelled' }), true);
+  for (const s of ['running', 'grilling', 'paused']) assert.equal(isFinished({ state: s }), false);
 });

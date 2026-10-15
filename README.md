@@ -742,6 +742,11 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
   unsaved flow saves it first. Opening an execution shows exactly what ran, read-only; **Back to design** returns to
   the editor and **Use this version** puts that execution's flow back in the editor. Deleting a flow keeps its
   executions, listed as "Runs only". Leaving a flow with unsaved edits asks first.
+  **Deleting:** each flow and each execution has a bin button, and an execution that is still running must be stopped
+  first. Deleting an execution leaves any branches its builders made in your project.
+  **Quick actions:** right-click (or long-press on a touch screen) a flow or an execution in the sidebar for Open,
+  Duplicate, Stop, Delete, and *Delete finished executions*. On the chart, right-click an agent (Details, Duplicate,
+  Remove), a connection (Remove), or empty space (Add any role right there, Tidy up, Fit to screen).
 - **A run** starts with **Run**: say what you want and pick a project folder (a git repository with at least one
   commit). Opus asks up to three rounds of questions, then writes a brief you can edit. Each question offers two to four
   choices with its suggested one already ticked (some let you tick several), and **Something else…** opens a box for
