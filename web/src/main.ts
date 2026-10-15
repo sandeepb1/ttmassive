@@ -27,6 +27,7 @@ import { fetchPresets, launchSession, loadNewSessionData, mainAgents, type Prese
 import { openMenu, type MenuItem } from './menu';
 import { pushOverlay } from './overlays';
 import { watchForUpdates } from './update';
+import { parseLaunch, sameLaunch, startSession, type Launch } from './launch-model';
 import { NewSessionSheet } from './new-session-sheet';
 import { chip } from './ui/chip';
 import { SHEET_SELECTOR } from './ui/sheet';
@@ -59,6 +60,7 @@ let canSplit = false;
 let railOpen = false;
 
 const TILES_KEY = 'ttm.tiles';
+const LAST_KEY = 'ttm.last';
 const OLD_SPLIT_KEY = 'ttm.split';
 const RAIL_W = 64;
 /** Browsers allow only a few WebGL contexts (fewer on a tablet): the busiest panes get one. */
@@ -178,6 +180,22 @@ function focus(p: Pane) {
 
 function updateHash() {
   if (focused && location.hash.slice(1) !== focused.name) history.replaceState(null, '', `#${encodeURIComponent(focused.name)}`);
+  // An installed app is opened from its icon with no address: remember where you were, so it goes back there.
+  if (focused && !focused.isAgent) {
+    try {
+      localStorage.setItem(LAST_KEY, focused.name);
+    } catch {
+      /* not remembered: the app opens on main */
+    }
+  }
+}
+
+function lastSession(): string | null {
+  try {
+    return localStorage.getItem(LAST_KEY);
+  } catch {
+    return null;
+  }
 }
 
 function openAgentSheet(session: string, a: SubAgent) {
@@ -772,13 +790,40 @@ async function logout() {
   showLogin();
 }
 
-/** The home-screen icon's long-press shortcuts open as /?new=claude or /?new=codex: show the sheet once, then tidy the URL. */
-function launchShortcut() {
-  const q = new URLSearchParams(location.search);
-  const agent = q.get('new');
-  if (agent !== 'claude' && agent !== 'codex') return;
-  history.replaceState(null, '', location.pathname + location.hash);
-  void newSession(undefined, agent);
+/**
+ * Act on a launch: the page's own address when it was opened, or the address an already-open installed app is
+ * handed when you tap a shortcut or a notification (the launch queue; the manifest asks for focus-existing).
+ * `fromQueue` launches also switch to the session they name; a cold start has done that already.
+ */
+let lastLaunch: { launch: Launch; at: number } | null = null;
+function handleLaunch(launch: Launch, fromQueue: boolean) {
+  // The page's address and the launch queue both report a cold start: act once.
+  if (lastLaunch && Date.now() - lastLaunch.at < 3000 && sameLaunch(lastLaunch.launch, launch)) return;
+  lastLaunch = { launch, at: Date.now() };
+  if (location.search) history.replaceState(null, '', location.pathname + location.hash); // ?new= must not stick
+  if (fromQueue && launch.session && focused?.name !== launch.session) openSession(launch.session);
+  if (launch.newAgent) void newSession(undefined, launch.newAgent);
+  if (launch.resume) void resumeWhenReady();
+}
+
+/** The conversation list needs the focused session's chat to have loaded; a launch can arrive before that. */
+async function resumeWhenReady() {
+  for (let i = 0; i < 20; i++) {
+    if (focused?.agent && focused.actions) return focused.actions.resume();
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  focused?.say('Open a Claude or Codex session to resume a conversation.');
+}
+
+let launchQueueSet = false;
+function watchLaunches() {
+  handleLaunch(parseLaunch(location.href), false);
+  const queue = (window as { launchQueue?: { setConsumer(cb: (p: { targetURL?: string }) => void): void } }).launchQueue;
+  if (!queue || launchQueueSet) return;
+  launchQueueSet = true;
+  queue.setConsumer((p) => {
+    if (p.targetURL && !$('app').hidden) handleLaunch(parseLaunch(p.targetURL), true);
+  });
 }
 
 async function showApp() {
@@ -787,7 +832,7 @@ async function showApp() {
   $('app').hidden = false;
   void loadNewSessionData();
   watchForUpdates($('app'));
-  launchShortcut();
+  watchLaunches();
   usage ??= new UsageView($('usage'), showLogin);
   sidebar ??= new SessionSidebar(
     $('left'),
@@ -833,7 +878,9 @@ async function showApp() {
   usage.start(); // before syncPanels: start() resets what the sidebar asked the usage view to watch
   syncPanels();
   layouts = await fetchLayouts();
-  const name = sessionName();
+  // The address names a session; failing that (the icon), the last one you had open, if it is still there.
+  const list = await sessionList();
+  const name = startSession(parseLaunch(location.href).session, lastSession(), list.length > 0 ? list.map((s) => s.id) : null);
   const saved = loadTiles();
   if (saved && saved.names.length >= 2 && limit() >= 2 && saved.names.includes(name)) {
     // Bring back the panes you had, focused on the one the address names.

@@ -30,6 +30,12 @@
       "short_name": "Codex",
       "url": "/?new=codex",
       "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Resume a conversation",
+      "short_name": "Resume",
+      "url": "/?resume",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     }
   ]
 }
