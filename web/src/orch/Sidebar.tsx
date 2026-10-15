@@ -13,6 +13,8 @@ interface Props {
   onOpenRun: (id: string) => void;
   onOpenFlow: (f: Flow, starter: boolean) => void;
   onNewFlow: () => void;
+  onSuggest: () => void;
+  onDuplicateFlow: (f: Flow) => void;
   onDeleteFlow: (f: Flow) => void;
 }
 
@@ -55,9 +57,14 @@ export function Sidebar(p: Props) {
           </>
         ) : (
           <>
-            <button type="button" className="mc-btn" style={{ width: '100%', marginBottom: '0.75rem' }} onClick={p.onNewFlow}>
-              <Icon name="plus" /> New flow
-            </button>
+            <div className="mc-grid2" style={{ marginBottom: '0.75rem' }}>
+              <button type="button" className="mc-btn" onClick={p.onNewFlow}>
+                <Icon name="plus" /> New flow
+              </button>
+              <button type="button" className="mc-btn" onClick={p.onSuggest} title="Describe the work and let Sonnet design the team">
+                <Icon name="wand" /> Suggest
+              </button>
+            </div>
             <label className="mc-label">Yours</label>
             {p.flows.saved.length === 0 ? (
               <p className="mc-empty">Flows you save appear here.</p>
@@ -69,9 +76,14 @@ export function Sidebar(p: Props) {
                       <span className="mc-row-title">{f.name}</span>
                       <span className="mc-row-sub">{f.nodes.length} agents</span>
                     </button>
-                    <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Delete ${f.name}`} onClick={() => p.onDeleteFlow(f)}>
-                      <Icon name="trash" />
-                    </button>
+                    <span style={{ display: 'flex' }}>
+                      <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Duplicate ${f.name}`} title="Make a copy to edit" onClick={() => p.onDuplicateFlow(f)}>
+                        <Icon name="files" />
+                      </button>
+                      <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Delete ${f.name}`} onClick={() => p.onDeleteFlow(f)}>
+                        <Icon name="trash" />
+                      </button>
+                    </span>
                   </li>
                 ))}
               </ul>

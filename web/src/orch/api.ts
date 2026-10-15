@@ -53,6 +53,8 @@ export const orch = {
   approve: (id: string, node: string) => send<Run>('POST', `${run(id)}/approve`, { node }),
   resume: (id: string) => send<Run>('POST', `${run(id)}/resume`),
   cancel: (id: string) => send<Run>('POST', `${run(id)}/cancel`),
+  suggest: (goal: string) => send<Flow>('POST', `${base}/flows/suggest`, { goal }),
+  popOut: (id: string, node: string) => send<{ session: string }>('POST', `${run(id)}/popout`, { node }),
   usage: () => send<UsageSnapshot>('GET', '/api/usage'),
   recentDirs: (): Promise<RecentDir[]> => fetchRecentDirs(),
 };

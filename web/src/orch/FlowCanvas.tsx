@@ -38,7 +38,7 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
   useEffect(() => {
     if (!fitToken) return;
     // Give the chart a moment to take the new positions first, or it fits the old ones.
-    const id = window.setTimeout(() => void rf.fitView({ padding: 0.12, maxZoom: 1.1, duration: 250 }), 80);
+    const id = window.setTimeout(() => void rf.fitView({ padding: 0.08, maxZoom: 1.1, duration: 250 }), 80);
     return () => window.clearTimeout(id);
   }, [fitToken, rf]);
 
@@ -134,7 +134,7 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
       nodeTypes={nodeTypes}
       colorMode="dark"
       fitView
-      fitViewOptions={{ padding: 0.12, maxZoom: 1.1 }}
+      fitViewOptions={{ padding: 0.08, maxZoom: 1.1 }}
       minZoom={0.25}
       maxZoom={1.75}
       nodesDraggable={editable}

@@ -30,6 +30,7 @@ function show() {
     m.mountOrch(el, {
       initialRun: runFromHash(),
       onExit: exitOrch,
+      onSession: openSession,
       onRoute: (id) => {
         if (opened) history.replaceState(null, '', `#orch/${id ?? ''}`);
       },
@@ -56,6 +57,15 @@ export function openOrch() {
   history.pushState(null, '', '#orch/');
   pushed = true;
   syncOrchRoute();
+}
+
+/** Leave orchestrator mode for one of the sessions: used when a builder is opened in a live session. */
+export function openSession(id: string) {
+  pushed = false;
+  history.pushState(null, '', `#${encodeURIComponent(id)}`);
+  syncOrchRoute();
+  // pushState raises no event, and the app opens a session when the address changes.
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
 }
 
 export function exitOrch() {

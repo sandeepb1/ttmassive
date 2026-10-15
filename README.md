@@ -712,11 +712,15 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
   analyst, judge or builder from the bar under the chart, drag from one agent's right dot to the next one's left dot,
   and give each a **Claude Code** model (opus, sonnet, haiku) or a **Codex** one (the list is asked of Codex itself).
   A judge's bottom dot drags to an earlier builder to **send work back**. **Write with Sonnet** drafts an agent's
-  instructions. **Save** keeps a flow; two starters are built in.
+  instructions. **Save** keeps a flow; two starters are built in. In the **Flows** tab, **Suggest** takes a description
+  of the work and has Sonnet design the team (it opens for you to change; nothing runs), and the copy button on a
+  saved flow opens a duplicate to edit, so a flow can serve as a template.
 - **A run** starts with **Run**: say what you want and pick a project folder (a git repository with at least one
   commit). Opus asks up to three rounds of questions, each with a suggested answer, then writes a brief you can edit.
   Nothing starts until you press **Start the run**. Agents run in the background, not in terminal sessions, and are
-  handed only the results of the agents wired into them.
+  handed only the results of the agents wired into them. An agent starts as soon as everything wired into it has
+  finished, so branches that do not depend on each other run **at the same time**. If one fails, or a limit is
+  reached, the others finish what they are doing and the run then pauses.
 - **You stay in charge.** An agent marked *approve* waits for you before it starts (builders do by default). If a
   judge sends work back more often than the flow allows, the run stops and asks. **Stop** ends the run and
   the agent that is working, within a few seconds.
@@ -725,6 +729,11 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
   builder looks at that builder's work, and may run commands such as tests and `git status` in a shell the operating
   system confines to that worktree: it cannot change a file or read the rest of your home folder, so tools installed
   under it (`~/.cargo`, `~/.nvm`) are out of its reach. Researchers, searchers and analysts can read and search only.
+- **Take over a builder.** Select a builder that has finished a turn and press **Open in a live session**: ttm
+  starts a Claude Code or Codex session (the first preset in your config for that agent) in the builder's worktree,
+  continuing the builder's own conversation, and switches to it. The headless agent is let go first, so two
+  processes never write to one conversation. The run does not wait for you; if it later sends that builder work
+  again, a fresh agent does it.
 - **Limits protect your plan.** The bar at the top shows the 5-hour Claude and Codex windows, the run's own share,
   and the stop line. A run stops, and asks you, when it has used its share of a window (15% of Claude's and 10% of
   Codex's by default), when any window reaches 85%, or when an agent passes its token cap. Change them in **Flow
@@ -735,7 +744,8 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
 
 Agents are started with your own Claude Code and Codex logins, with your hooks, plugins and MCP servers for Claude
 switched off and Codex's plugins, hooks and apps switched off, so they start from the same small prompt each time and
-the cache holds. Codex MCP servers listed in `~/.codex/config.toml` still load and add to every Codex prompt.
+the cache holds. Claude agents leave nothing in your conversation history, except builders, whose conversations are
+kept so they can be taken over (they appear under their worktree's folder). Codex MCP servers listed in `~/.codex/config.toml` still load and add to every Codex prompt.
 A run's state is saved after every step. If ttm restarts while one is going, it comes back paused, and **Try again**
 continues from the last finished agent.
 

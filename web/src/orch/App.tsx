@@ -5,7 +5,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import type { RecentDir } from '../dirs';
 import { orch, watchRun } from './api';
 import { Icon, ROLE_ICON } from './bits';
-import { GrillDialog, NewRunDialog } from './Dialogs';
+import { GrillDialog, NewRunDialog, SuggestDialog } from './Dialogs';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
 import { Inspector } from './Inspector';
 import { NodeList } from './NodeList';
@@ -45,7 +45,7 @@ function Palette({ count, onAdd }: { count: number; onAdd: (role: Role, at: { x:
   );
 }
 
-export function App({ initialRun, onExit, onRoute }: { initialRun: string | null; onExit: () => void; onRoute: (runId: string | null) => void }) {
+export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: string | null; onExit: () => void; onSession: (id: string) => void; onRoute: (runId: string | null) => void }) {
   const wide = useMedia(WIDE);
   const phone = useMedia(PHONE);
 
@@ -72,6 +72,7 @@ export function App({ initialRun, onExit, onRoute }: { initialRun: string | null
   const [inspOpen, setInspOpen] = useState(false);
   const [view, setView] = useState<'canvas' | 'list'>('canvas');
   const [dialog, setDialog] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +119,18 @@ export function App({ initialRun, onExit, onRoute }: { initialRun: string | null
   }, [refreshRuns]);
 
   // ------------------------------------------------------------------ following a run
+  // A link to another run, or Back and Forward between them, changes the address while the mode is open.
+  useEffect(() => {
+    const follow = () => {
+      const m = /^#orch\/([A-Za-z0-9_-]+)$/.exec(location.hash);
+      if (!m) return;
+      setRunId((now) => (now === m[1] ? now : m[1]!));
+      setSelected(null);
+    };
+    window.addEventListener('hashchange', follow);
+    return () => window.removeEventListener('hashchange', follow);
+  }, []);
+
   useEffect(() => {
     onRoute(runId);
     if (!runId) {
@@ -241,6 +254,27 @@ export function App({ initialRun, onExit, onRoute }: { initialRun: string | null
     if (!confirm(`Delete the flow “${f.name}”?`)) return;
     void act(() => orch.deleteFlow(f.id), () => void refreshLists());
   };
+  const suggest = (goal: string) =>
+    void act(
+      () => orch.suggest(goal),
+      (f) => {
+        setRunId(null);
+        setFlow(f);
+        setDirty(true);
+        setSelected(null);
+        setSuggesting(false);
+        setSideOpen(false);
+        window.setTimeout(() => setFitToken((t) => t + 1), 0);
+        say('Here is a flow for it. Change anything, then run it.');
+      },
+    );
+  const popOut = async (runIdNow: string, node: string) => {
+    const r = await orch.popOut(runIdNow, node);
+    if (r.ok) {
+      say('Opening the live session…');
+      onSession(r.data.session);
+    } else say(r.error);
+  };
   const copyText = (t: string) => void navigator.clipboard?.writeText(t).then(() => say('Copied'), () => say('Could not copy'));
 
   const createRun = (goal: string, project: string, skipGrill: boolean) =>
@@ -332,6 +366,8 @@ export function App({ initialRun, onExit, onRoute }: { initialRun: string | null
             onOpenRun={openRun}
             onOpenFlow={openFlow}
             onNewFlow={() => openFlow(emptyFlow(newFlowId(), 'New flow'), false)}
+            onSuggest={() => (setError(null), setSuggesting(true))}
+            onDuplicateFlow={(f) => openFlow({ ...f, name: `${f.name} copy`.slice(0, 60) }, true)}
             onDeleteFlow={removeFlow}
           />
         </aside>
@@ -347,9 +383,12 @@ export function App({ initialRun, onExit, onRoute }: { initialRun: string | null
             </ReactFlowProvider>
           )}
           {editable && flow.nodes.length === 0 && (
-            <p className="mc-empty" style={{ position: 'absolute', inset: '35% 0 auto', pointerEvents: 'none' }}>
-              An empty flow. Add agents from the bar below, or open a starter from the menu.
-            </p>
+            <div className="mc-empty" style={{ position: 'absolute', inset: '32% 0 auto', zIndex: 3 }}>
+              <p style={{ margin: '0 0 0.75rem' }}>An empty flow. Add agents from the bar below, open a starter, or</p>
+              <button type="button" className="mc-btn" onClick={() => (setError(null), setSuggesting(true))}>
+                <Icon name="wand" /> Suggest a flow
+              </button>
+            </div>
           )}
           {error && !dialog && run?.status.state !== 'grilling' && (
             <p className="mc-error" role="alert" style={{ position: 'absolute', left: '0.75rem', bottom: '0.75rem', right: '0.75rem', margin: 0, zIndex: 6 }}>
@@ -361,6 +400,7 @@ export function App({ initialRun, onExit, onRoute }: { initialRun: string | null
               {toast}
             </div>
           )}
+          {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
           {dialog && <NewRunDialog flow={flow} recents={recents} busy={busy} error={error} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
           {run?.status.state === 'grilling' && (
             <GrillDialog
@@ -393,6 +433,7 @@ export function App({ initialRun, onExit, onRoute }: { initialRun: string | null
               }
               return r.data.systemPrompt;
             }}
+            onPopOut={(n) => (run ? popOut(run.id, n.id) : Promise.resolve())}
             onClose={() => (setSelected(null), setInspOpen(false))}
           />
         </aside>

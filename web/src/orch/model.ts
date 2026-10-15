@@ -18,7 +18,7 @@ export const ROLE_INFO: Record<Role, { label: string; blurb: string }> = {
 };
 
 const MAX_NODES = 24;
-const LAYER_W = 320;
+const LAYER_W = 280;
 const ROW_H = 190;
 
 // ---------------------------------------------------------------------------- flows

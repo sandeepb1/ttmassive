@@ -113,6 +113,47 @@ export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: 
   );
 }
 
+export function SuggestDialog({ busy, error, onSuggest, onClose }: { busy: boolean; error: string | null; onSuggest: (goal: string) => void; onClose: () => void }) {
+  const [goal, setGoal] = useState('');
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => ref.current?.focus(), []);
+  return (
+    <Dialog
+      title="Suggest a flow"
+      onClose={busy ? undefined : onClose}
+      foot={
+        <>
+          <button type="button" className="mc-btn" disabled={busy} onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="mc-btn mc-btn-primary" disabled={busy || !goal.trim()} onClick={() => onSuggest(goal.trim())}>
+            <Icon name="wand" /> {busy ? 'Designing…' : 'Suggest'}
+          </button>
+        </>
+      }
+    >
+      <Field label="What is the work?" hint="Sonnet picks the agents, their models and who hands work to whom. It opens in the editor for you to change; nothing runs.">
+        <textarea
+          ref={ref}
+          className="mc-field"
+          rows={5}
+          value={goal}
+          maxLength={4000}
+          disabled={busy}
+          placeholder="e.g. Find out why the nightly export is slow, fix it, and have it reviewed"
+          onChange={(e) => setGoal(e.target.value)}
+        />
+      </Field>
+      {busy && (
+        <div className="mc-thinking" role="status">
+          <span className="mc-spinner" /> Designing a team for it. This takes up to half a minute.
+        </div>
+      )}
+      {error && <p className="mc-error">{error}</p>}
+    </Dialog>
+  );
+}
+
 export function GrillDialog({ run, thinking, error, onAnswer, onStart, onStop }: {
   run: Run;
   thinking: boolean;

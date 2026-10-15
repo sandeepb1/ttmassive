@@ -17,6 +17,7 @@ interface Props {
   onFlow: (patch: Partial<Flow>) => void;
   onDelete: (id: string) => void;
   onWritePrompt: (node: FlowNode) => Promise<string | null>;
+  onPopOut: (node: FlowNode) => Promise<void>;
   onClose: () => void;
 }
 
@@ -61,9 +62,10 @@ function FlowPanel({ flow, editable, onFlow }: Props) {
   );
 }
 
-function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, onWritePrompt }: Props & { node: FlowNode }) {
+function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, onWritePrompt, onPopOut }: Props & { node: FlowNode }) {
   const nr: NodeRun | undefined = run?.nodes[node.id];
   const [writing, setWriting] = useState(false);
+  const [opening, setOpening] = useState(false);
   const modelList = node.engine === 'claude' ? models.claude : models.codex;
   const options = modelList.includes(node.model) ? modelList : [node.model, ...modelList];
   const setEngine = (engine: Engine) => {
@@ -86,6 +88,29 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
       </div>
 
       {nr && <RunDetail nr={nr} feedback={feedback} />}
+
+      {nr && node.role === 'builder' && (
+        <div className="mc-section">
+          <button
+            type="button"
+            className="mc-btn"
+            disabled={!nr.session || nr.status === 'running' || opening}
+            onClick={() => {
+              setOpening(true);
+              void onPopOut(node).finally(() => setOpening(false));
+            }}
+          >
+            <Icon name="shell" /> {opening ? 'Opening…' : 'Open in a live session'}
+          </button>
+          <p className="mc-hint">
+            {nr.session
+              ? 'Carry on with this builder’s conversation yourself, in its own copy of the project. The run does not wait for you; if it sends this builder work again, that starts a fresh agent.'
+              : nr.status === 'running'
+                ? 'Available once it has finished its turn.'
+                : 'Available once it has finished a turn.'}
+          </p>
+        </div>
+      )}
 
       <Field label="Name">
         <input className="mc-field" disabled={!editable} value={node.name} maxLength={60} onChange={(e) => onNode(node.id, { name: e.target.value })} />

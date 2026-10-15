@@ -73,7 +73,7 @@ test('layers and tidy lay a flow out left to right', () => {
   const f = line();
   assert.deepEqual(layers(f), [['n1'], ['n2'], ['n3'], ['n4']]);
   const t = tidy(f);
-  assert.deepEqual(t.nodes.map((n) => n.x), [0, 320, 640, 960]);
+  assert.deepEqual(t.nodes.map((n) => n.x), [0, 280, 560, 840]);
   assert.deepEqual(runOrder(f).map((n) => n.id), ['n1', 'n2', 'n3', 'n4']);
 });
 

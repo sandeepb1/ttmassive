@@ -55,6 +55,8 @@ export interface NodeRun {
   error: string | null;
   tokens: Tokens;
   transcript: string[];
+  /** The agent's conversation id after its latest finished turn; present once it has finished one. */
+  session?: string | null;
 }
 
 export type Pause =
