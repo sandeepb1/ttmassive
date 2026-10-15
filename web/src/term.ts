@@ -11,7 +11,7 @@ import { el } from './dom';
 import { KeyBar } from './keybar';
 import type { Analysis, ClientMsg, ServerMsg } from './protocol';
 import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
-import { cleanTitle, linkAction, progressView, type Progress } from './term-addons';
+import { cleanTitle, linkAction, mayFocusTerminal, progressView, type Progress } from './term-addons';
 import { skewFromDate } from './activity-chip';
 import { findPaths } from './paths';
 import { markedTurns, type TurnRef } from './turn-marks';
@@ -173,7 +173,7 @@ export class TerminalSession {
       keybarEl,
       (b) => this.sendInput(b),
       () => this.term.modes.applicationCursorKeysMode,
-      () => this.term.focus(),
+      () => this.focus(),
       (anchor) => this.hooks.onLaunch(anchor),
     );
     this.term.loadAddon(this.fit);
@@ -738,7 +738,10 @@ export class TerminalSession {
     this.setScrolled(null);
   }
 
+  /** Move focus into the terminal, unless that would raise the soft keyboard unasked (see mayFocusTerminal). */
   focus() {
+    const keyboardUp = document.documentElement.style.getPropertyValue('--vvh') !== ''; // main.ts sets it while the keyboard shrinks the viewport
+    if (!mayFocusTerminal({ coarsePointer: window.matchMedia('(pointer: coarse)').matches, keyboardUp })) return;
     this.term.focus();
   }
 

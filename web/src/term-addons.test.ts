@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { bellRings, cleanTitle, linkAction, progressView } from './term-addons.ts';
+import { bellRings, cleanTitle, linkAction, mayFocusTerminal, progressView } from './term-addons.ts';
 
 test('progress: hidden when off', () => {
   assert.equal(progressView({ state: 0, value: 0 }), null);
@@ -59,4 +59,14 @@ test('a bell rings for an unfocused or hidden pane, at most once per gap', () =>
   assert.equal(bellRings({ ...base, focused: true, hidden: true }), true);
   assert.equal(bellRings({ ...base, last: 95_000 }), false);
   assert.equal(bellRings({ ...base, last: 90_000 }), true);
+});
+
+test('a mouse or keyboard user always gets the terminal focused', () => {
+  assert.equal(mayFocusTerminal({ coarsePointer: false, keyboardUp: false }), true);
+  assert.equal(mayFocusTerminal({ coarsePointer: false, keyboardUp: true }), true);
+});
+
+test('on a touch screen the keyboard is not raised by the app, only kept', () => {
+  assert.equal(mayFocusTerminal({ coarsePointer: true, keyboardUp: false }), false);
+  assert.equal(mayFocusTerminal({ coarsePointer: true, keyboardUp: true }), true);
 });

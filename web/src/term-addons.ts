@@ -80,3 +80,13 @@ export function bellRings(o: { now: number; last: number; focused: boolean; hidd
   if (o.focused && !o.hidden) return false;
   return o.now - o.last >= o.gapMs;
 }
+
+/**
+ * Whether the app may move focus into the terminal by itself. On a touch screen that raises the soft keyboard, which
+ * covers half the screen: it must not happen because a session opened, a header button was tapped or the menu was
+ * opened. It is fine when the keyboard is already up (switching session mid-typing keeps typing). A tap on the
+ * terminal itself focuses it natively, so the person can always ask for the keyboard.
+ */
+export function mayFocusTerminal(o: { coarsePointer: boolean; keyboardUp: boolean }): boolean {
+  return !o.coarsePointer || o.keyboardUp;
+}
