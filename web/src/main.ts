@@ -27,6 +27,7 @@ import { fetchPresets, launchSession, loadNewSessionData, mainAgents, type Prese
 import { openMenu, type MenuItem } from './menu';
 import { pushOverlay } from './overlays';
 import { watchForUpdates } from './update';
+import { readSessionCache } from './sessions-cache';
 import { parseLaunch, sameLaunch, startSession, type Launch } from './launch-model';
 import { NewSessionSheet } from './new-session-sheet';
 import { chip } from './ui/chip';
@@ -880,7 +881,8 @@ async function showApp() {
   layouts = await fetchLayouts();
   // The address names a session; failing that (the icon), the last one you had open, if it is still there.
   const list = await sessionList();
-  const name = startSession(parseLaunch(location.href).session, lastSession(), list.length > 0 ? list.map((s) => s.id) : null);
+  const known = (list.length > 0 ? list : readSessionCache())?.map((s) => s.id) ?? null; // offline: what we knew
+  const name = startSession(parseLaunch(location.href).session, lastSession(), known);
   const saved = loadTiles();
   if (saved && saved.names.length >= 2 && limit() >= 2 && saved.names.includes(name)) {
     // Bring back the panes you had, focused on the one the address names.
@@ -1037,6 +1039,9 @@ async function boot() {
   const r = await fetch('/api/me').catch(() => null);
   if (r?.ok) return void showApp();
   if (r?.status === 401) return showLogin();
+  // Signed in before (there is a list from last time): open the app on it. Its panes reconnect and the sidebar
+  // refreshes on their own once the server answers; a session that has expired shows the login then.
+  if (readSessionCache()) return void showApp();
   $('login').hidden = true;
   $('offline').hidden = false;
   offlineTimer = window.setTimeout(() => void boot(), 5000);

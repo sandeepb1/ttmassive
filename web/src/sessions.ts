@@ -8,6 +8,7 @@ import { asTree, elapsedSecs, fmtElapsed, stateOf, type SubAgent } from './agent
 import { warn } from './haptics';
 import { renderInline } from './chat-render';
 import { icon } from './icons';
+import { readSessionCache, writeSessionCache } from './sessions-cache';
 import { previewInlines } from './markdown';
 import { openMenu, type MenuItem } from './menu';
 import { DOT_LABEL, dotState, groupSessions, PINNED_KEY, railLabel } from './session-groups';
@@ -110,6 +111,8 @@ export class SessionSidebar {
   private msg = el('div', 'drawer-msg');
   private timer = 0;
   private active = false;
+  /** A list from the server has been drawn: an offline fallback must not replace it. */
+  private shown = false;
   private presetList: PresetInfo[] | null = null;
   /** Project sections the user folded away. Remembered. */
   private collapsed = loadCollapsed();
@@ -180,10 +183,22 @@ export class SessionSidebar {
 
   private async refresh() {
     await this.guard(async () => {
-      const r = await api('/api/sessions');
+      let r: Response;
+      try {
+        r = await api('/api/sessions');
+      } catch (e) {
+        if (e instanceof Error && e.message === 'unauthorized') throw e;
+        // No answer. Rather than an empty sidebar, show the list as it last was, and say so.
+        const cached = this.shown ? null : readSessionCache();
+        if (cached) this.renderList(cached);
+        return this.say(cached ? "Can't reach ttm. Showing your sessions as they were." : 'Server unreachable');
+      }
       if (!r.ok) return this.say(await r.text());
       this.say('');
-      this.renderList((await r.json()) as SessionView[]);
+      const list = (await r.json()) as SessionView[];
+      writeSessionCache(list);
+      this.shown = true;
+      this.renderList(list);
       for (const id of this.agentsOpen) void this.loadAgents(id);
     });
   }
