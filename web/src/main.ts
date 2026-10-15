@@ -25,7 +25,7 @@ import { defaultLayouts, fetchLayouts, MAX_PANES_LIMIT, paneLimit, updateLayouts
 import { AgentSheet } from './agent-sheet';
 import { fetchPresets, launchSession, loadNewSessionData, mainAgents, type PresetInfo } from './dirs';
 import { openMenu, type MenuItem } from './menu';
-import { pushOverlay } from './overlays';
+import { isOverlayTraversal, onAddressRestore, pushOverlay } from './overlays';
 import { watchForUpdates } from './update';
 import { readSessionCache } from './sessions-cache';
 import { parseLaunch, sameLaunch, startSession, type Launch } from './launch-model';
@@ -974,8 +974,11 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('online', nudgeAll);
 window.addEventListener('hashchange', () => {
+  if (isOverlayTraversal()) return; // an overlay's history entry going away, not a request to open another session
   if (focused && sessionName() !== focused.name && !$('app').hidden) openSession(sessionName());
 });
+// After an overlay's entry goes away the address can name the session from before it opened: make it name this one.
+onAddressRestore(updateHash);
 $('usage').addEventListener('pointerdown', (e) => e.preventDefault());
 $('usage').addEventListener('click', () => layout.set('right', true));
 $('scrim').addEventListener('click', () => layout.dismissOverlays());

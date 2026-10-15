@@ -14,8 +14,12 @@ export interface HistoryLike {
 export interface OverlayStack {
   /** Note that an overlay is open. `close` closes it. Returns the function to call when it is closed by anything else. */
   push(close: () => void): () => void;
-  /** The browser went back (wire to `popstate`). */
-  popped(): void;
+  /**
+   * The browser went back (wire to `popstate`). Returns true when the step was ours: our own entry going away, or the
+   * user's Back closing an overlay. The address may then be the one the page had before the overlay opened, so the
+   * caller must not treat the traversal as navigation and should restore the address.
+   */
+  popped(): boolean;
   /** Overlays currently registered. */
   readonly depth: number;
 }
@@ -55,9 +59,9 @@ export function createOverlayStack(history: HistoryLike): OverlayStack {
       if (backPending) {
         backPending = false;
         reconcile();
-        return;
+        return true;
       }
-      if (!pushed) return; // not ours: some other navigation
+      if (!pushed) return false; // not ours: some other navigation
       pushed = false; // Back took our entry
       const top = stack[stack.length - 1];
       if (top) {
@@ -67,6 +71,7 @@ export function createOverlayStack(history: HistoryLike): OverlayStack {
         if (at >= 0) stack.splice(at, 1);
       }
       reconcile();
+      return true;
     },
     get depth() {
       return stack.length;

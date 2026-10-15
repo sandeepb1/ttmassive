@@ -87,3 +87,21 @@ test('an overlay that ignores close is still dropped, so Back cannot stick on it
   s.popped();
   assert.equal(s.depth, 0);
 });
+
+test('popped says whether the step was ours, so the page can tell overlay history from navigation', () => {
+  const { history } = fake();
+  const s = createOverlayStack(history);
+  assert.equal(s.popped(), false); // nothing open: someone else's navigation
+  let release = () => {};
+  release = s.push(() => release());
+  assert.equal(s.popped(), true); // the user's Back closed the overlay
+});
+
+test('our own back going away is reported as ours', async () => {
+  const { history } = fake();
+  const s = createOverlayStack(history);
+  const release = s.push(() => {});
+  release();
+  await settle(); // back is in flight
+  assert.equal(s.popped(), true);
+});
