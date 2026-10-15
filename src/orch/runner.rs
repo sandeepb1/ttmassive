@@ -212,10 +212,21 @@ impl NodeRunner for EngineRunner {
     async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
         let cwd = self.cwd(node).await?;
         let prompt = with_folder_note(prompt, &cwd, limits(node));
-        match node.engine {
+        let folder = cwd.clone();
+        let result = match node.engine {
             Engine::Claude => self.run_claude(node, cwd, &prompt, log).await,
             Engine::Codex => self.run_codex(node, cwd, &prompt, log).await,
+        };
+        // Whatever the builder got done is kept on its branch, even if its turn then failed: the work is not lost.
+        if node.writes() {
+            let msg = format!("{} (ttm run {})", node.name, self.run_id);
+            match worktree::commit_all(&folder, &msg).await {
+                Ok(true) => log(format!("Committed its changes to {}", worktree::branch_name(&self.run_id, &node.id))),
+                Ok(false) => {}
+                Err(e) => log(format!("Could not commit its changes: {e:#}")),
+            }
         }
+        result
     }
 }
 

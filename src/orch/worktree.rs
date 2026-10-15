@@ -64,15 +64,30 @@ pub async fn init(project: &Path) -> Result<RepoState> {
         git(project, &["init"]).await?;
     }
     git(project, &["add", "-A"]).await?;
-    // A machine with no git identity would refuse to commit, so give this one commit a stand-in.
-    let has_identity = git(project, &["config", "user.email"]).await.is_ok_and(|e| !e.is_empty());
-    let mut args = vec![];
-    if !has_identity {
-        args.extend(["-c", "user.name=ttm", "-c", "user.email=ttm@localhost"]);
-    }
+    let mut args = identity(project).await;
     args.extend(["commit", "--allow-empty", "--no-verify", "-m", "Starting point, made by ttm so agents can work on copies"]);
     git(project, &args).await?;
     Ok(repo_state(project).await)
+}
+
+/// A machine with no git identity would refuse to commit, so give ttm's own commits a stand-in.
+async fn identity(dir: &Path) -> Vec<&'static str> {
+    let has = git(dir, &["config", "user.email"]).await.is_ok_and(|e| !e.is_empty());
+    if has { vec![] } else { vec!["-c", "user.name=ttm", "-c", "user.email=ttm@localhost"] }
+}
+
+/// Commit everything a builder changed in its copy, so its branch holds the work: the diff and merge commands the
+/// page offers, and the user's own `git merge`, depend on it. `node_modules` is left out even when the project does
+/// not ignore it. Returns whether anything was committed.
+pub async fn commit_all(dir: &Path, message: &str) -> Result<bool> {
+    git(dir, &["add", "-A", "--", ".", ":(exclude,glob)**/node_modules/**"]).await?;
+    if git(dir, &["diff", "--cached", "--name-only"]).await?.is_empty() {
+        return Ok(false);
+    }
+    let mut args = identity(dir).await;
+    args.extend(["commit", "--no-verify", "-m", message]);
+    git(dir, &args).await?;
+    Ok(true)
 }
 
 /// The worktree for `node_id` in `run_id`, created from the project's current commit. Asking again
@@ -126,6 +141,31 @@ mod tests {
         git(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "first"])
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_builders_work_is_committed_to_its_branch_and_nothing_else_is() {
+        let root = tmp("commit");
+        let (project, base) = (root.join("project"), root.join("wt"));
+        std::fs::create_dir_all(&project).unwrap();
+        repo(&project).await;
+        let dir = ensure(&project, &base, "r", "b").await.unwrap();
+        std::fs::write(dir.join("app.ts"), "export {}").unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/x")).unwrap();
+        std::fs::write(dir.join("node_modules/x/i.js"), "x").unwrap();
+        assert!(commit_all(&dir, "Builder").await.unwrap());
+        assert_eq!(git(&dir, &["ls-files"]).await.unwrap(), "app.ts", "dependencies stay out of the branch");
+        // The work is on the branch, so the project can see and merge it.
+        let shown = git(&project, &["diff", "--stat", "HEAD...ttm-orch/r-b"]).await.unwrap();
+        assert!(shown.contains("app.ts"), "{shown}");
+        // Nothing new: no empty commit.
+        assert!(!commit_all(&dir, "Builder again").await.unwrap());
+        assert_eq!(git(&dir, &["rev-list", "--count", "HEAD"]).await.unwrap(), "2");
+        // Later changes make a second commit.
+        std::fs::write(dir.join("more.ts"), "1").unwrap();
+        assert!(commit_all(&dir, "Builder, second go").await.unwrap());
+        git(&project, &["-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "ttm-orch/r-b"]).await.unwrap();
+        assert!(project.join("app.ts").exists() && project.join("more.ts").exists());
     }
 
     #[tokio::test]

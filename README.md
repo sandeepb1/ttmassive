@@ -768,7 +768,9 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   judge sends work back more often than the flow allows, the run stops and asks. **Stop** ends the run and
   the agent that is working, within a few seconds.
 - **Builders never touch your checkout.** Each works in its own git worktree on its own branch,
-  `ttm-orch/<run>-<agent>`; a finished run gives you the diff and merge commands to copy. A judge that comes after a
+  `ttm-orch/<run>-<agent>`, so your project folder stays as it was until you merge. When a builder's turn ends, ttm
+  commits what it changed to that branch (leaving out `node_modules`), and a finished run gives you the diff and merge
+  commands to copy. Until then the files exist only in the worktree, under ttm's data folder. A judge that comes after a
   builder looks at that builder's work, and may run commands such as tests and `git status` in a shell the operating
   system confines to that worktree: it cannot change a file or read the rest of your home folder, so tools installed
   under it (`~/.cargo`, `~/.nvm`) are out of its reach. Researchers, searchers and analysts can read and search only.
