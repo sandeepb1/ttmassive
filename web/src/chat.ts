@@ -243,6 +243,12 @@ export class ChatView {
           return;
         }
       }
+      // Like Claude Code's own prompt: Tab (or Right arrow) takes the greyed-out suggestion shown in the empty box.
+      if ((e.key === 'Tab' || e.key === 'ArrowRight') && !e.shiftKey && !e.isComposing && !e.altKey && !e.ctrlKey && !e.metaKey && this.suggestionShown()) {
+        e.preventDefault();
+        this.useSuggestedReply();
+        return;
+      }
       // With a physical keyboard Enter sends and Shift+Enter breaks the line; on a touch
       // keyboard Enter always breaks the line and the arrow button sends.
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && matchMedia('(pointer: fine)').matches) {
@@ -675,6 +681,11 @@ export class ChatView {
     if (this.input.scrollHeight > 0) this.input.style.height = `${Math.min(this.input.scrollHeight, 160)}px`;
   }
 
+  /** The suggestion is on offer: it is the placeholder of an empty box that nothing is blocking. */
+  private suggestionShown(): boolean {
+    return !!this.store.suggestion && this.input.value === '' && !this.blocked;
+  }
+
   /** Put Claude's suggested reply in the box, to send as it is or change first. */
   private useSuggestedReply() {
     const text = this.store.suggestion;
@@ -690,11 +701,12 @@ export class ChatView {
   private syncControls() {
     const empty = this.input.value.trim() === '';
     const reply = this.store.suggestion;
-    this.replyChip.hidden = !reply || !empty || this.blocked;
+    // With a keyboard the placeholder is the offer (Tab takes it); the chip is the way to take it by touch.
+    this.replyChip.hidden = !reply || !empty || this.blocked || matchMedia('(pointer: fine)').matches;
     if (reply) this.replyChip.textContent = `↳ ${reply}`;
     this.sendBtn.disabled = empty || this.blocked || this.sending;
     this.stopBtn.hidden = !this.working;
-    this.input.placeholder = this.blocked ? 'Answer the question above first' : 'Message';
+    this.input.placeholder = this.blocked ? 'Answer the question above first' : reply ?? 'Message';
   }
 
   private loadDraft(): string {

@@ -2,7 +2,7 @@
 //!
 //! It is drawn with the "faint" attribute right after the `❯` prompt, which plain screen text
 //! can't tell apart from something you typed, so this reads a capture that keeps the escape codes.
-//! An empty Enter in the terminal would accept it; the chat offers it as a chip instead.
+//! An empty Enter in the terminal would accept it; the chat shows it as the input's placeholder instead.
 
 /// The faint text after the prompt on the input line, if there is any.
 pub fn faint_input(styled_screen: &str) -> Option<String> {
@@ -21,8 +21,12 @@ pub fn faint_input(styled_screen: &str) -> Option<String> {
     let text = &rest[start + "\x1b[2m".len()..];
     let end = text.find("\x1b[").unwrap_or(text.len());
     let text = text[..end].trim();
-    // Claude's own idle hint on a fresh conversation is not a suggestion.
-    (!text.is_empty() && !text.starts_with("Try \"")).then(|| text.to_owned())
+    // The starter example on a fresh conversation is wrapped as `Try "..."`; Tab fills in what is inside.
+    let text = text
+        .strip_prefix("Try \"")
+        .and_then(|t| t.strip_suffix('"'))
+        .unwrap_or(text);
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 /// `s` without ANSI escape sequences (CSI only: all tmux emits for text).
@@ -73,9 +77,9 @@ mod tests {
     }
 
     #[test]
-    fn the_fresh_conversation_hint_is_ignored() {
+    fn the_fresh_conversation_example_is_unwrapped() {
         let s = screen("\x1b[39m❯ \x1b[2mTry \"how does <filepath> work?\"\x1b[0m");
-        assert_eq!(faint_input(&s), None);
+        assert_eq!(faint_input(&s).as_deref(), Some("how does <filepath> work?"));
     }
 
     #[test]
