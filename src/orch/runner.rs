@@ -241,6 +241,7 @@ mod tests {
             system_prompt: String::new(),
             checkpoint: false,
             token_cap: None,
+            keep_model: false,
             x: 0.0,
             y: 0.0,
         }

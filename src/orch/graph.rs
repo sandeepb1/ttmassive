@@ -62,6 +62,9 @@ pub struct Node {
     /// Most tokens (input, output, cache writes) this node may use. `None` means no node cap.
     #[serde(default)]
     pub token_cap: Option<u64>,
+    /// Never switch this agent to a cheaper model, whatever the plan windows say.
+    #[serde(default)]
+    pub keep_model: bool,
     /// Canvas position, kept so a saved flow opens the way it was laid out.
     #[serde(default)]
     pub x: f64,
@@ -109,6 +112,9 @@ pub struct Flow {
     pub max_retries: u8,
     #[serde(default)]
     pub budget: Budget,
+    /// Give agents that have not started yet a cheaper model as the plan windows fill up. Never a dearer one.
+    #[serde(default)]
+    pub downshift: bool,
 }
 
 fn default_retries() -> u8 {
@@ -305,6 +311,7 @@ mod tests {
             system_prompt: String::new(),
             checkpoint: false,
             token_cap: None,
+            keep_model: false,
             x: 0.0,
             y: 0.0,
         }
@@ -332,6 +339,7 @@ mod tests {
             ],
             max_retries: 2,
             budget: Budget::default(),
+            downshift: false,
         }
     }
 

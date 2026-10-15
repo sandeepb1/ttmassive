@@ -42,6 +42,7 @@ fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: us
         system_prompt: default_prompt(role).into(),
         checkpoint: false,
         token_cap: None,
+        keep_model: false,
         x: layer as f64 * 280.0,
         y: row as f64 * 180.0,
     }
@@ -70,6 +71,7 @@ pub fn all() -> Vec<Flow> {
         ],
         max_retries: 2,
         budget: Budget::default(),
+        downshift: false,
     };
     // Approve the plan before anything starts, and approve again before files change.
     build.nodes[1].checkpoint = true;
@@ -94,6 +96,7 @@ pub fn all() -> Vec<Flow> {
         ],
         max_retries: 1,
         budget: Budget { claude_pct: 10.0, codex_pct: 5.0, stop_window_pct: 85.0 },
+        downshift: false,
     };
     vec![build, report]
 }

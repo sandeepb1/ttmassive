@@ -11,9 +11,10 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 
 use super::Outcome;
-use super::graph::{EdgeKind, Node, Role};
+use super::downshift;
+use super::graph::{EdgeKind, Engine, Node, Role};
 use super::handoff::{self, Verdict};
-use super::run::{NodeStatus, Pause, Run, RunStatus};
+use super::run::{NodeStatus, Pause, Run, RunStatus, now_secs};
 
 /// Whatever actually runs a node: the Claude or Codex driver in production, a script in tests.
 pub trait NodeRunner {
@@ -27,6 +28,8 @@ pub struct Control<'a> {
     pub changed: &'a (dyn Fn(&Run) + Sync),
     /// A reason to stop before the next node starts, from the plan-limit windows. `None` to go on.
     pub limit: &'a (dyn Fn(&Run) -> Option<String> + Sync),
+    /// How close the run is to stopping on an engine's plan windows: 0 is far, 1 is a limit reached.
+    pub pressure: &'a (dyn Fn(&Run, Engine) -> f64 + Sync),
 }
 
 fn edit<T>(shared: &Mutex<Run>, ctl: &Control, f: impl FnOnce(&mut Run) -> T) -> T {
@@ -50,7 +53,7 @@ struct Ready {
     waiting: Option<String>,
 }
 
-fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>) -> Ready {
+fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: &dyn Fn(&Run, Engine) -> f64) -> Ready {
     let mut out = Ready { starts: Vec::new(), halt: None, waiting: None };
     for id in order(run) {
         if matches!(run.nodes[&id].status, NodeStatus::Done | NodeStatus::Running) {
@@ -59,7 +62,7 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>) -> Ready {
         if !run.flow.inputs_of(&id).iter().all(|i| run.nodes[*i].status == NodeStatus::Done) {
             continue;
         }
-        let node = run.flow.node(&id).expect("ordered ids come from the flow").clone();
+        let mut node = run.flow.node(&id).expect("ordered ids come from the flow").clone();
         if node.checkpoint && !run.approved.contains(&id) {
             out.waiting.get_or_insert(id);
             continue;
@@ -68,8 +71,25 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>) -> Ready {
             out.halt = Some(Pause::Budget { message });
             break;
         }
+        // The model is decided when an agent first starts and then kept, so a send-back carries on in the same
+        // conversation with its cache warm instead of starting over on another model.
+        let model = match run.nodes[&id].model_used.clone() {
+            Some(m) => m,
+            None if run.flow.downshift && !node.keep_model => {
+                downshift::choose(node.engine, &node.model, pressure(run, node.engine)).unwrap_or_else(|| node.model.clone())
+            }
+            None => node.model.clone(),
+        };
+        let note = (model != node.model).then(|| format!("Using {model} instead of {}: the plan is filling up", node.model));
+        node.model = model;
         let prompt = handoff::build_prompt(run, &node);
         let n = run.nodes.get_mut(&id).expect("every node has a state");
+        if let Some(note) = note {
+            if n.model_used.is_none() {
+                n.log(note);
+            }
+        }
+        n.model_used = Some(node.model.clone());
         n.status = NodeStatus::Running;
         n.attempts += 1;
         n.error = None;
@@ -85,12 +105,34 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>) -> Ready {
 fn settle(run: &mut Run, halt: Option<Pause>, waiting: Option<String>) {
     run.status = match (halt, waiting) {
         (Some(pause), _) => RunStatus::Paused { pause },
-        (None, _) if run.nodes.values().all(|n| n.status == NodeStatus::Done) => RunStatus::Done,
+        (None, _) if run.nodes.values().all(|n| n.status == NodeStatus::Done) => {
+            run.finished = Some(now_secs());
+            RunStatus::Done
+        }
         (None, Some(node)) => RunStatus::Paused { pause: Pause::Approval { node } },
         (None, None) => RunStatus::Paused {
             pause: Pause::Failed { node: String::new(), message: "no agent is able to start".into() },
         },
     };
+}
+
+/// A turn that got under this share of its input from the cache, after one that got at least `WAS`, is a break.
+const BROKE_BELOW: f64 = 0.2;
+const WAS_AT_LEAST: f64 = 0.6;
+/// Below this much input, a low share means little: a small prompt has little to cache.
+const MIN_INPUT: u64 = 2000;
+
+/// Notice when an agent's cache stopped working between two turns, and say so in its transcript.
+fn watch_cache(n: &mut super::run::NodeRun, turn: &super::usage::Tokens) {
+    let Some(now) = turn.cache_hit() else { return };
+    let input = turn.input + turn.cache_read + turn.cache_write;
+    if let Some(was) = n.last_hit {
+        if was >= WAS_AT_LEAST && now < BROKE_BELOW && input >= MIN_INPUT {
+            n.cache_breaks += 1;
+            n.log(format!("Cache break: only {:.0}% of the input came from the cache, after {:.0}% last turn", now * 100.0, was * 100.0));
+        }
+    }
+    n.last_hit = Some(now);
 }
 
 /// Record how a node ended. Returns a reason to stop starting new agents, if there is one.
@@ -107,6 +149,7 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
     };
     let n = run.nodes.get_mut(&node.id).expect("every node has a state");
     n.tokens.add(&outcome.tokens);
+    watch_cache(n, &outcome.tokens);
     if let Some(id) = &outcome.session {
         n.session = Some(id.clone());
     }
@@ -190,12 +233,13 @@ pub async fn drive<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control
                     n.status = NodeStatus::Interrupted;
                 }
                 r.status = RunStatus::Cancelled;
+                r.finished = Some(now_secs());
             });
             return;
         }
         let mut waiting = None;
         if halt.is_none() {
-            let ready = edit(shared, ctl, |r| start_ready(r, ctl.limit));
+            let ready = edit(shared, ctl, |r| start_ready(r, ctl.limit, ctl.pressure));
             halt = ready.halt;
             waiting = ready.waiting;
             for (node, prompt) in ready.starts {
@@ -233,6 +277,7 @@ mod tests {
             system_prompt: String::new(),
             checkpoint: false,
             token_cap: None,
+            keep_model: false,
             x: 0.0,
             y: 0.0,
         }
@@ -261,6 +306,7 @@ mod tests {
             ],
             max_retries: 2,
             budget: Budget::default(),
+            downshift: false,
         }
     }
 
@@ -290,6 +336,10 @@ mod tests {
         prompts: Mutex<Vec<(String, String)>>,
         /// Agents that wait here until all of them have started: this deadlocks unless they run together.
         meet: Option<(std::sync::Arc<tokio::sync::Barrier>, Vec<String>)>,
+        /// The model each agent was started on, in start order.
+        models: Mutex<Vec<(String, String)>>,
+        /// Set when a judge runs, so a test can make the plan pressure ease partway through.
+        calm: Option<std::sync::Arc<AtomicBool>>,
     }
 
     impl Fake {
@@ -305,6 +355,11 @@ mod tests {
             self.prompts.lock().unwrap().iter().map(|(id, _)| id.clone()).collect()
         }
 
+        /// The model the `nth` start of this agent used.
+        fn model_of(&self, id: &str, nth: usize) -> String {
+            self.models.lock().unwrap().iter().filter(|(i, _)| i == id).nth(nth).unwrap().1.clone()
+        }
+
         fn prompt(&self, id: &str, nth: usize) -> String {
             self.prompts.lock().unwrap().iter().filter(|(i, _)| i == id).nth(nth).unwrap().1.clone()
         }
@@ -313,6 +368,12 @@ mod tests {
     impl NodeRunner for Fake {
         async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> anyhow::Result<Outcome> {
             self.prompts.lock().unwrap().push((node.id.clone(), prompt.to_string()));
+            self.models.lock().unwrap().push((node.id.clone(), node.model.clone()));
+            if node.role == Role::Judge {
+                if let Some(c) = &self.calm {
+                    c.store(true, Ordering::SeqCst);
+                }
+            }
             log(format!("working on {}", node.id));
             if let Some((barrier, ids)) = &self.meet {
                 if ids.contains(&node.id) {
@@ -330,7 +391,7 @@ mod tests {
 
     async fn go_limited(run: &Mutex<Run>, fake: &Fake, limit: &(dyn Fn(&Run) -> Option<String> + Sync)) {
         let cancelled = AtomicBool::new(false);
-        drive(run, fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit }).await;
+        drive(run, fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit, pressure: &|_, _| 0.0 }).await;
     }
 
     fn new_run(f: Flow) -> Mutex<Run> {
@@ -497,7 +558,7 @@ mod tests {
         let run = new_run(flow());
         let fake = Fake::default();
         let cancelled = AtomicBool::new(true);
-        drive(&run, &fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None }).await;
+        drive(&run, &fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure: &|_, _| 0.0 }).await;
         assert_eq!(status(&run), RunStatus::Cancelled);
         assert!(fake.ran().is_empty());
     }
@@ -511,7 +572,7 @@ mod tests {
         let changed = |_: &Run| {
             count.fetch_add(1, Ordering::Relaxed);
         };
-        drive(&run, &fake, &Control { cancelled: &cancelled, changed: &changed, limit: &|_| None }).await;
+        drive(&run, &fake, &Control { cancelled: &cancelled, changed: &changed, limit: &|_| None, pressure: &|_, _| 0.0 }).await;
         // At least a start and a finish for each of the four nodes.
         assert!(count.load(Ordering::Relaxed) >= 8);
     }
@@ -530,6 +591,7 @@ mod tests {
             ],
             max_retries: 2,
             budget: Budget::default(),
+            downshift: false,
         }
     }
 
@@ -606,5 +668,146 @@ mod tests {
         assert_eq!(status(&run), RunStatus::Done);
         assert_eq!(fake.ran().iter().filter(|i| *i == "build").count(), 2);
         assert_eq!(fake.ran().iter().filter(|i| *i == "a-aside").count(), 1, "its work was kept: {:?}", fake.ran());
+    }
+
+    async fn go_at(run: &Mutex<Run>, fake: &Fake, pressure: &(dyn Fn(&Run, Engine) -> f64 + Sync)) {
+        let cancelled = AtomicBool::new(false);
+        drive(run, fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure }).await;
+    }
+
+    /// orch (opus) -> res (sonnet) -> build (opus) -> judge (sonnet), downshift on.
+    fn priced() -> Flow {
+        let mut f = flow();
+        f.downshift = true;
+        f.nodes[0].model = "opus".into();
+        f.nodes[2].model = "opus".into();
+        f
+    }
+
+    #[tokio::test]
+    async fn models_stay_as_they_are_unless_the_flow_asks_for_downshift() {
+        let mut f = priced();
+        f.downshift = false;
+        let run = new_run(f);
+        let fake = Fake::with(vec![("judge", approve())]);
+        go_at(&run, &fake, &|_, _| 0.95).await;
+        assert_eq!(fake.model_of("orch", 0), "opus");
+        assert_eq!(fake.model_of("build", 0), "opus");
+        assert_eq!(run.lock().unwrap().nodes["orch"].model_used.as_deref(), Some("opus"));
+    }
+
+    #[tokio::test]
+    async fn a_filling_plan_steps_models_down_once_then_all_the_way() {
+        let run = new_run(priced());
+        go_at(&run, &Fake::with(vec![("judge", approve())]), &|_, _| 0.6).await;
+        assert_eq!(run.lock().unwrap().nodes["orch"].model_used.as_deref(), Some("sonnet"));
+        assert_eq!(run.lock().unwrap().nodes["res"].model_used.as_deref(), Some("haiku"), "sonnet is one step above haiku");
+        assert!(run.lock().unwrap().nodes["orch"].transcript.iter().any(|l| l.contains("sonnet instead of opus")));
+
+        let run = new_run(priced());
+        let fake = Fake::with(vec![("judge", approve())]);
+        go_at(&run, &fake, &|_, _| 0.9).await;
+        for id in ["orch", "res", "build", "judge"] {
+            assert_eq!(fake.model_of(id, 0), "haiku", "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pinned_agent_keeps_its_model() {
+        let mut f = priced();
+        f.nodes[2].keep_model = true; // the builder
+        let run = new_run(f);
+        let fake = Fake::with(vec![("judge", approve())]);
+        go_at(&run, &fake, &|_, _| 0.95).await;
+        assert_eq!(fake.model_of("build", 0), "opus");
+        assert_eq!(fake.model_of("orch", 0), "haiku");
+    }
+
+    #[tokio::test]
+    async fn a_send_back_carries_on_with_the_model_already_chosen() {
+        // Pressure is high when the builder first starts and low by the time the judge sends it back.
+        let calm = std::sync::Arc::new(AtomicBool::new(false));
+        let mut fake = Fake::with(vec![("judge", reject("No tests")), ("judge", approve())]);
+        fake.calm = Some(calm.clone());
+        let run = new_run(priced());
+        go_at(&run, &fake, &move |_, _| if calm.load(Ordering::SeqCst) { 0.0 } else { 0.9 }).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        assert_eq!(fake.model_of("build", 0), "haiku");
+        assert_eq!(fake.model_of("build", 1), "haiku", "a different model would start a new conversation and lose the cache");
+    }
+
+    #[tokio::test]
+    async fn it_never_goes_up_and_leaves_unknown_models_alone() {
+        let mut f = priced();
+        f.nodes[1].model = "haiku".into();
+        f.nodes[3].model = "mystery-1".into();
+        let run = new_run(f);
+        let fake = Fake::with(vec![("judge", approve())]);
+        go_at(&run, &fake, &|_, _| 0.95).await;
+        assert_eq!(fake.model_of("res", 0), "haiku");
+        assert_eq!(fake.model_of("judge", 0), "mystery-1");
+    }
+
+    #[tokio::test]
+    async fn a_finished_run_records_when() {
+        let run = new_run(fan());
+        go(&run, &Fake::default()).await;
+        assert!(run.lock().unwrap().finished.is_some());
+        let run = new_run(fan());
+        let cancelled = AtomicBool::new(true);
+        drive(&run, &Fake::default(), &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure: &|_, _| 0.0 }).await;
+        assert!(run.lock().unwrap().finished.is_some(), "a cancelled run has finished too");
+        // One that merely paused has not.
+        let run = new_run(flow());
+        go(&run, &Fake::with(vec![("res", Err(anyhow::anyhow!("x")))])).await;
+        assert_eq!(run.lock().unwrap().finished, None);
+    }
+
+    fn ok_with(v: serde_json::Value, tokens: Tokens) -> anyhow::Result<Outcome> {
+        Ok(Outcome { structured: Some(v), text: String::new(), tokens, cost_usd: 0.0, is_error: false, session: None })
+    }
+
+    fn tok(input: u64, cache_read: u64) -> Tokens {
+        Tokens { input, output: 10, cache_read, cache_write: 0 }
+    }
+
+    /// The builder runs twice (the judge sends it back once) with these two turns' token use.
+    async fn builder_turns(first: Tokens, second: Tokens) -> Mutex<Run> {
+        let run = new_run(flow());
+        let body = json!({"summary": "built"});
+        let fake = Fake::with(vec![
+            ("build", ok_with(body.clone(), first)),
+            ("build", ok_with(body, second)),
+            ("judge", reject("No tests")),
+            ("judge", approve()),
+        ]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        run
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_loses_the_cache_is_flagged() {
+        // 97% from the cache, then 2%: the prompt had to be paid for again.
+        let run = builder_turns(tok(100, 4000), tok(3900, 100)).await;
+        let r = run.lock().unwrap();
+        assert_eq!(r.nodes["build"].cache_breaks, 1);
+        assert!(r.nodes["build"].transcript.iter().any(|l| l.contains("Cache break: only 2%")), "{:?}", r.nodes["build"].transcript);
+    }
+
+    #[tokio::test]
+    async fn a_cache_that_keeps_working_is_not_flagged() {
+        let run = builder_turns(tok(100, 4000), tok(150, 4500)).await;
+        assert_eq!(run.lock().unwrap().nodes["build"].cache_breaks, 0);
+    }
+
+    #[tokio::test]
+    async fn a_cold_first_turn_and_a_small_prompt_are_not_breaks() {
+        // The first turn has nothing before it to compare with.
+        let run = builder_turns(tok(4000, 0), tok(3900, 100)).await;
+        assert_eq!(run.lock().unwrap().nodes["build"].cache_breaks, 0);
+        // Under the minimum input, a low share means little.
+        let run = builder_turns(tok(10, 900), tok(900, 10)).await;
+        assert_eq!(run.lock().unwrap().nodes["build"].cache_breaks, 0);
     }
 }

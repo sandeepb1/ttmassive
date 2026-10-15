@@ -94,6 +94,16 @@ pub struct NodeRun {
     /// The agent's own conversation id after its latest finished turn, for opening it in a live session.
     #[serde(default)]
     pub session: Option<String>,
+    /// The model this agent actually ran on: the flow's, or a cheaper one if the plan was filling up.
+    #[serde(default)]
+    pub model_used: Option<String>,
+    /// Share of the previous turn's input that came from the prompt cache.
+    #[serde(default)]
+    pub last_hit: Option<f64>,
+    /// Times a turn got far less from the cache than the one before it: something made the agent pay for its
+    /// prompt again.
+    #[serde(default)]
+    pub cache_breaks: u32,
 }
 
 impl NodeRun {
@@ -106,6 +116,9 @@ impl NodeRun {
             tokens: Tokens::default(),
             transcript: Vec::new(),
             session: None,
+            model_used: None,
+            last_hit: None,
+            cache_breaks: 0,
         }
     }
 
@@ -146,6 +159,13 @@ pub struct Run {
     pub feedback: HashMap<String, String>,
     pub retries_used: u8,
     pub created: i64,
+    /// When it reached done or cancelled; `None` while it can still go on.
+    #[serde(default)]
+    pub finished: Option<i64>,
+}
+
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 impl Run {
@@ -166,6 +186,7 @@ impl Run {
             feedback: HashMap::new(),
             retries_used: 0,
             created,
+            finished: None,
         }
     }
 
@@ -208,6 +229,7 @@ mod tests {
             system_prompt: String::new(),
             checkpoint: false,
             token_cap: None,
+            keep_model: false,
             x: 0.0,
             y: 0.0,
         };
@@ -218,6 +240,7 @@ mod tests {
             edges: vec![],
             max_retries: 2,
             budget: Budget::default(),
+            downshift: false,
         };
         Run::new("r1".into(), flow, "brief".into(), 100)
     }

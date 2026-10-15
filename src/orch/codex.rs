@@ -29,7 +29,33 @@ pub fn initialize_params() -> Value {
     json!({"clientInfo": {"name": "ttm-orch", "title": "ttm", "version": env!("CARGO_PKG_VERSION")}})
 }
 
-pub fn thread_start_params(spec: &Spec) -> Value {
+/// Codex features that an agent in a flow does not need and should not have. The first three bring the user's
+/// own plugins, hooks and apps into the prompt. The rest add tools the flow does not use: some cost tokens
+/// (together about 700 per prompt), and several are a risk in an unattended agent: it could drive the user's
+/// browser or computer, or start agents of its own outside the flow.
+const FEATURES_OFF: [&str; 12] = [
+    "plugins", "hooks", "apps", "multi_agent", "goals", "image_generation", "browser_use", "computer_use", "in_app_browser",
+    "tool_suggest", "skill_search", "sleep_tool",
+];
+
+/// Names of the MCP servers the user's own Codex config defines, from a `config/read` result.
+pub fn mcp_names(config_read: &Value) -> Vec<String> {
+    let cfg = config_read.get("config").unwrap_or(config_read);
+    cfg.get("mcp_servers")
+        .or_else(|| cfg.get("mcpServers"))
+        .and_then(Value::as_object)
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// `mcp_off` are servers to switch off for this thread: each one lists its tools in every prompt, which
+/// costs tokens and changes the cached prefix, and an agent in a flow does not need them.
+pub fn thread_start_params(spec: &Spec, mcp_off: &[String]) -> Value {
+    let features: serde_json::Map<String, Value> = FEATURES_OFF.iter().map(|f| (f.to_string(), Value::Bool(false))).collect();
+    let mut config = json!({ "features": features });
+    if !mcp_off.is_empty() {
+        config["mcp_servers"] = mcp_off.iter().map(|n| (n.clone(), json!({"enabled": false}))).collect::<serde_json::Map<_, _>>().into();
+    }
     json!({
         "cwd": spec.cwd,
         "model": spec.model,
@@ -40,7 +66,7 @@ pub fn thread_start_params(spec: &Spec) -> Value {
         "sandbox": if spec.read_only { "read-only" } else { "workspace-write" },
         // Keep the user's own plugins, hooks and apps out of the agent: they start MCP servers and
         // add tools to every prompt, which costs tokens and changes the cached prefix.
-        "config": {"features": {"plugins": false, "hooks": false, "apps": false}},
+        "config": config,
     })
 }
 
@@ -126,6 +152,8 @@ pub struct Server {
     pending: Pending,
     next: AtomicU64,
     notes: broadcast::Sender<Value>,
+    /// The user's own MCP servers, switched off in every thread.
+    mcp_servers: Vec<String>,
 }
 
 impl Server {
@@ -181,9 +209,13 @@ impl Server {
             }
         });
 
-        let server = Server { _child: child, stdin, pending, next: AtomicU64::new(1), notes };
+        let mut server = Server { _child: child, stdin, pending, next: AtomicU64::new(1), notes, mcp_servers: Vec::new() };
         server.request("initialize", initialize_params()).await?;
         server.send(&json!({"method": "initialized"})).await?;
+        // Which MCP servers there are is the user's business; if it cannot be read, nothing is switched off.
+        if let Ok(cfg) = server.request("config/read", json!({"includeLayers": false})).await {
+            server.mcp_servers = mcp_names(&cfg);
+        }
         Ok(server)
     }
 
@@ -214,7 +246,7 @@ impl Server {
     }
 
     pub async fn start_thread(&self, spec: &Spec) -> Result<Thread> {
-        let r = self.request("thread/start", thread_start_params(spec)).await?;
+        let r = self.request("thread/start", thread_start_params(spec, &self.mcp_servers)).await?;
         let id = r.pointer("/thread/id").and_then(Value::as_str).context("no thread id")?.to_string();
         Ok(Thread { id, total: Tokens::default() })
     }
@@ -365,6 +397,16 @@ mod tests {
     }
 
     #[test]
+    fn mcp_server_names_come_from_the_config_read() {
+        let r = json!({"config": {"model": "x", "mcp_servers": {"homelab": {"command": "a"}, "node_repl": {}}}});
+        let mut names = mcp_names(&r);
+        names.sort();
+        assert_eq!(names, vec!["homelab", "node_repl"]);
+        assert!(mcp_names(&json!({"config": {"model": "x"}})).is_empty());
+        assert!(mcp_names(&json!({})).is_empty());
+    }
+
+    #[test]
     fn the_transcript_names_what_the_agent_did() {
         let done = |item: Value| note("item/completed", json!({"threadId": "t1", "turnId": "u", "item": item}));
         assert_eq!(
@@ -384,7 +426,7 @@ mod tests {
             read_only: true,
             cwd: PathBuf::from("/work"),
         };
-        let t = thread_start_params(&spec);
+        let t = thread_start_params(&spec, &[]);
         assert_eq!(t["sandbox"], "read-only");
         assert_eq!(t["approvalPolicy"], "never");
         assert_eq!(t["developerInstructions"], "You search.");
@@ -393,7 +435,16 @@ mod tests {
 
         let mut b = spec.clone();
         b.read_only = false;
-        assert_eq!(thread_start_params(&b)["sandbox"], "workspace-write");
+        assert_eq!(thread_start_params(&b, &[])["sandbox"], "workspace-write");
+
+        // The user's own MCP servers are switched off by name, and only when there are some.
+        assert!(t["config"].get("mcp_servers").is_none());
+        let off = thread_start_params(&spec, &["homelab".to_string(), "node_repl".to_string()]);
+        assert_eq!(off["config"]["mcp_servers"], json!({"homelab": {"enabled": false}, "node_repl": {"enabled": false}}));
+        assert_eq!(off["config"]["features"]["plugins"], false, "the other switches stay");
+        for f in ["computer_use", "browser_use", "multi_agent"] {
+            assert_eq!(t["config"]["features"][f], false, "{f} must be off in an unattended agent");
+        }
 
         let s = json!({"type": "object"});
         let turn = turn_start_params("t1", "go", &s);
@@ -402,11 +453,22 @@ mod tests {
         assert_eq!(initialize_params()["clientInfo"]["name"], "ttm-orch");
     }
 
-    /// A fresh empty folder for a live test to work in, so nothing lands in the shared temp folder.
-    fn scratch_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ttm-orch-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// A fresh empty folder for a live test to work in, removed when the test ends, so nothing lingers in the
+    /// shared temp folder.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let d = std::env::temp_dir().join(format!("ttm-orch-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&d).unwrap();
+            Scratch(d)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     /// Makes one small real turn, so it uses a little of the plan: `cargo test -- --ignored codex_turn`.
@@ -414,11 +476,12 @@ mod tests {
     #[ignore]
     async fn codex_turn_returns_structured_output_and_usage() {
         let server = Server::start().await.unwrap();
+        let scratch = Scratch::new("codex");
         let spec = Spec {
             model: "gpt-6-luna".into(),
             system_prompt: "Answer tersely.".into(),
             read_only: true,
-            cwd: scratch_dir("codex"),
+            cwd: scratch.0.clone(),
         };
         let mut thread = server.start_thread(&spec).await.unwrap();
         let schema = json!({

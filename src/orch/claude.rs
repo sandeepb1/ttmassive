@@ -373,11 +373,22 @@ mod tests {
         assert_eq!(parse(r#"{"type":"assistant","message":{"content":[{"type":"thinking"}]}}"#), Event::Other);
     }
 
-    /// A fresh empty folder for a live test to work in, so nothing lands in the shared temp folder.
-    fn scratch_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ttm-orch-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// A fresh empty folder for a live test to work in, removed when the test ends, so nothing lingers in the
+    /// shared temp folder.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let d = std::env::temp_dir().join(format!("ttm-orch-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&d).unwrap();
+            Scratch(d)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     /// Talks to the real `claude`, so it uses a little of the plan: `cargo test -- --ignored two_turns`.
@@ -387,7 +398,8 @@ mod tests {
         let mut s = spec(Access::ReadOnly);
         s.model = "haiku".into();
         s.schema = json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]});
-        s.cwd = scratch_dir("claude");
+        let scratch = Scratch::new("claude");
+        s.cwd = scratch.0.clone();
         let mut agent = Agent::start(&s).await.unwrap();
         let first = agent.turn("Answer with n = 1.", |_| {}).await.unwrap();
         let second = agent.turn("Now answer with n = 2.", |_| {}).await.unwrap();

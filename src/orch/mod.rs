@@ -3,6 +3,7 @@
 pub mod api;
 pub mod claude;
 pub mod codex;
+pub mod downshift;
 pub mod exec;
 pub mod gate;
 pub mod graph;

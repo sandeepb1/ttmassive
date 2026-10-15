@@ -319,6 +319,7 @@ impl Service {
             let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
             if run.status != RunStatus::Done {
                 run.status = RunStatus::Cancelled;
+                run.finished = Some(super::run::now_secs());
                 self.persist(&run);
             }
         }
@@ -344,8 +345,10 @@ impl Service {
             };
             let windows = svc.windows.clone();
             let limit = move |r: &Run| gate::check(r, &windows.lock().unwrap_or_else(|e| e.into_inner()));
+            let windows = svc.windows.clone();
+            let pressure = move |r: &Run, e: super::graph::Engine| gate::pressure(r, &windows.lock().unwrap_or_else(|x| x.into_inner()), e);
             let changed = |r: &Run| svc.persist(r);
-            let ctl = Control { cancelled: &live.cancelled, changed: &changed, limit: &limit };
+            let ctl = Control { cancelled: &live.cancelled, changed: &changed, limit: &limit, pressure: &pressure };
             tokio::select! {
                 _ = exec::drive(&live.shared, &live.runner, &ctl) => {}
                 _ = live.cancel.notified() => {
@@ -356,6 +359,7 @@ impl Service {
                         n.status = NodeStatus::Interrupted;
                     }
                     run.status = RunStatus::Cancelled;
+                    run.finished = Some(super::run::now_secs());
                     svc.persist(&run);
                 }
             }

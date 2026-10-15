@@ -94,6 +94,7 @@ mod tests {
             system_prompt: String::new(),
             checkpoint: false,
             token_cap: None,
+            keep_model: false,
             x: 0.0,
             y: 0.0,
         }
@@ -107,6 +108,7 @@ mod tests {
             edges: vec![Edge { id: "e".into(), from: "r".into(), to: "b".into(), kind: EdgeKind::Forward }],
             max_retries: 2,
             budget: Budget::default(),
+            downshift: false,
         };
         Run::new("run1".into(), flow, "Add a login page".into(), 0)
     }

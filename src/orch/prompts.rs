@@ -119,6 +119,7 @@ pub fn flow_from_suggestion(v: &Value, flow_id: &str, codex_models: &[String]) -
             system_prompt: if prompt.is_empty() { starters::default_prompt(role).into() } else { prompt },
             checkpoint: n.get("checkpoint").and_then(Value::as_bool).unwrap_or(false),
             token_cap: None,
+            keep_model: false,
             x: 0.0,
             y: 0.0,
         });
@@ -138,6 +139,7 @@ pub fn flow_from_suggestion(v: &Value, flow_id: &str, codex_models: &[String]) -
         edges,
         max_retries: 2,
         budget: Budget::default(),
+        downshift: false,
     };
     flow.validate().map_err(anyhow::Error::msg).context("the suggested flow is not valid")?;
     lay_out(&mut flow);
