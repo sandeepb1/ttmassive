@@ -325,13 +325,25 @@ export class ChatView {
     await this.poll();
   }
 
+  /** Resolves once the chat has loaded and scrolled to where it opens (the end, or where you left it). */
+  private settled: Promise<void> = Promise.resolve();
+
+  whenSettled(): Promise<void> {
+    return this.settled;
+  }
+
   show() {
     this.shown = true;
     this.host.hidden = false;
     this.grow(); // a draft written while hidden needs its height now that it can be measured
     const saved = scrollMemory.get(this.session);
     this.stuck = saved === undefined;
-    void this.poll().then(() => (saved === undefined ? this.scrollToBottom() : this.restoreScroll(saved)));
+    this.settled = this.poll().then(() => {
+      if (saved === undefined) this.scrollToBottom();
+      else this.restoreScroll(saved);
+      // Both of those land on the next frame; resolve after it, when the scroll position is final.
+      return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
     window.clearInterval(this.timer);
     this.timer = window.setInterval(() => {
       if (!document.hidden) void this.poll();

@@ -478,7 +478,8 @@ export class Pane {
     const go = () => this.chat?.jumpTo(id);
     if (this.view === 'chat') return void go();
     this.setView('chat', true);
-    window.setTimeout(go, 700); // the chat scrolls to the end once loaded: land after that
+    // The chat scrolls to the end once it has loaded: land after that, not on a guess of how long it takes.
+    void (this.chat?.whenSettled() ?? Promise.resolve()).then(go);
   }
 
   get terminalFont() {
