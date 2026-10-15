@@ -286,10 +286,17 @@ fn find_plain_menu(screen: &str) -> Option<Prompt> {
     // it anywhere), else the nearest line of text.
     let above: Vec<&String> = lines[..lo].iter().rev().filter(|l| !l.is_empty()).take(8).collect();
     let q_at = above.iter().position(|l| l.contains('?')).unwrap_or(0);
-    let question = above.get(q_at).map(|s| s.to_string()).unwrap_or_default();
+    let mut question = above.get(q_at).map(|s| s.to_string()).unwrap_or_default();
     let mut context: Vec<String> =
         above.iter().enumerate().filter(|(i, _)| *i != q_at).take(MAX_CONTEXT).map(|(_, l)| l.to_string()).collect();
     context.reverse();
+    // Claude's folder-trust dialog is what this exists for, and its text wraps at whatever width the terminal has, so
+    // the line found above can be a fragment ("created or one you trust? (Like your own code,"). Say the question
+    // whole, and show which folder it is about instead of whatever line happened to sit above the options.
+    if choices.iter().any(|c| c.label.to_ascii_lowercase().contains("trust this folder")) {
+        "Do you trust this folder?".clone_into(&mut question);
+        context = lines[..lo].iter().rev().find(|l| l.starts_with('/') || l.starts_with('~')).cloned().into_iter().collect();
+    }
     Some(Prompt { kind: PromptKind::Menu, id: prompt_id(&question, &choices), question, context, choices })
 }
 
@@ -467,6 +474,39 @@ Enter to confirm · Esc to cancel
         // The cursor starts on "No, exit": yes is one Down then Enter, no is just Enter.
         assert_eq!(steps_for(&p, 2), Some(vec![Step::Key("Down"), Step::Key("Enter")]));
         assert_eq!(steps_for(&p, 1), Some(vec![Step::Key("Enter")]));
+    }
+
+    #[test]
+    fn trust_dialog_asks_the_question_whole_and_names_the_folder() {
+        let p = analyze(CLAUDE_TRUST).prompt.unwrap();
+        assert_eq!(p.question, "Do you trust this folder?");
+        assert_eq!(p.context, vec!["/Users/sandeep".to_string()]);
+    }
+
+    #[test]
+    fn trust_question_does_not_depend_on_how_the_terminal_wrapped_it() {
+        // A narrow terminal wraps the paragraph differently; the question and folder must not change.
+        let narrow = CLAUDE_TRUST
+            .replace("Quick safety check: Is this a project you\ncreated or one you trust? (Like your own code,\n", "Quick safety check: Is this a\nproject you created or one you\ntrust? (Like your own code,\n");
+        let p = analyze(&narrow).prompt.unwrap();
+        assert_eq!(p.question, "Do you trust this folder?");
+        assert_eq!(p.context, vec!["/Users/sandeep".to_string()]);
+        // Same prompt id as the wide layout: the id tracks the question and choices, not the wrapping.
+        assert_eq!(p.id, analyze(CLAUDE_TRUST).prompt.unwrap().id);
+    }
+
+    #[test]
+    fn other_plain_menus_keep_the_generic_question() {
+        let other = "\
+Pick a theme?
+
+❯ Dark
+  Light
+
+Enter to confirm · Esc to cancel
+";
+        let p = analyze(other).prompt.unwrap();
+        assert_eq!(p.question, "Pick a theme?");
     }
 
     #[test]
