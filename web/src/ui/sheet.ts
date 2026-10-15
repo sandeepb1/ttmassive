@@ -59,6 +59,7 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
   });
 
   let returnTo: Element | null = null;
+  let finishRemoval: (() => void) | null = null; // set while a removal is still sliding out
   let releaseOverlay: (() => void) | null = null; // Back closes the sheet; see overlay-stack.ts
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
@@ -77,6 +78,18 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
       dialog.classList.replace('w-[min(100%,35rem)]', 'w-[min(100%,68.75rem)]');
     },
     open(host) {
+      // One shell serves every opening of a sheet (Settings is made once and opened again and again), so undo what
+      // remove() and a drag-to-dismiss left on it: a removal still sliding out, the inert and exit-animation state.
+      finishRemoval?.();
+      finishRemoval = null;
+      dialog.dataset.sheet = '';
+      dialog.inert = false;
+      dialog.classList.remove('dragging', 'animate-[kit-sheet-out_.2s_var(--ease)_forwards]');
+      dialog.classList.add('animate-[kit-sheet-in_.28s_var(--ease)]');
+      dialog.style.transform = '';
+      backdrop.style.pointerEvents = '';
+      backdrop.classList.remove('animate-[kit-fade-out_.2s_ease_forwards]');
+      backdrop.classList.add('animate-[kit-fade-in_.2s_ease]');
       returnTo = document.activeElement;
       host.append(backdrop, dialog);
       // Not dialog.show(): its focusing steps focus the first control inside the sheet while it is still parked below
@@ -109,6 +122,7 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
       };
       dialog.addEventListener('animationend', finish, { once: true });
       window.setTimeout(finish, 300);
+      finishRemoval = finish;
       if (returnTo instanceof HTMLElement && returnTo.isConnected) returnTo.focus({ preventScroll: true });
       returnTo = null;
     },
