@@ -10,7 +10,8 @@ import '@xterm/xterm/css/xterm.css';
 import { el } from './dom';
 import { KeyBar } from './keybar';
 import type { Analysis, ClientMsg, ServerMsg } from './protocol';
-import { MONO_FALLBACK, MONO_FONT, onThemeChange, xtermTheme } from './theme';
+import { MONO_FALLBACK, onThemeChange, xtermTheme } from './theme';
+import { blockLocalFontPrompt, hasLigatures, prepareFont } from './term-fonts';
 import { cleanTitle, linkAction, mayFocusTerminal, progressView, type Progress } from './term-addons';
 import { skewFromDate } from './activity-chip';
 import { findPaths } from './paths';
@@ -31,7 +32,19 @@ import {
 } from './touch-scroll';
 import { filesOf, pathsToPaste } from './term-drop';
 import { UnauthorizedError, uploadFile } from './term-upload';
-import { getOptionMeta, onPrefsChange } from './prefs';
+import {
+  getBoldBright,
+  getCursorBlink,
+  getCursorStyle,
+  getLetterSpacing,
+  getLigatures,
+  getLineHeight,
+  getMinContrast,
+  getOptionMeta,
+  getTermCustomFont,
+  getTermFont,
+  onPrefsChange,
+} from './prefs';
 import { SHEET_SELECTOR } from './ui/sheet';
 import { toast } from './ui/toast';
 
@@ -105,7 +118,12 @@ function initialFontSize(): number {
 
 export class TerminalSession {
   private term = new Terminal({
-    cursorBlink: true,
+    cursorBlink: getCursorBlink(),
+    cursorStyle: getCursorStyle(),
+    lineHeight: getLineHeight(),
+    letterSpacing: getLetterSpacing(),
+    minimumContrastRatio: getMinContrast(),
+    drawBoldTextInBrightColors: getBoldBright(),
     fontSize: initialFontSize(),
     scrollback: 0, // tmux owns scrollback
     allowProposedApi: true,
@@ -219,13 +237,10 @@ export class TerminalSession {
     const offTheme = onThemeChange(() => {
       this.term.options.theme = xtermTheme();
     });
-    void document.fonts?.load("14px 'JetBrains Mono Variable'").then(() => {
-      if (this.closed) return;
-      this.term.options.fontFamily = MONO_FONT;
-      this.fit.fit();
-    });
+    void this.applyFont();
     const offPrefs = onPrefsChange(() => {
       this.term.options.macOptionIsMeta = getOptionMeta();
+      this.applyAppearance();
     });
     this.cleanup = () => {
       offTheme();
@@ -261,6 +276,65 @@ export class TerminalSession {
       this.gl = gl;
     } catch {
       /* no WebGL here: the DOM renderer stays */
+    }
+  }
+
+  private fontKey = '';
+  private fontSeq = 0;
+  private ligatures: { dispose(): void } | null = null;
+
+  /** Load the chosen font, then draw with it (and re-measure, since its cells differ from the fallback's). */
+  private async applyFont() {
+    const seq = ++this.fontSeq;
+    const id = getTermFont();
+    const custom = getTermCustomFont();
+    this.fontKey = `${id}|${custom}`;
+    const stack = await prepareFont(id, custom);
+    if (this.closed || seq !== this.fontSeq) return; // closed, or another choice came in while this one loaded
+    this.term.options.fontFamily = stack;
+    await this.syncLigatures();
+    this.fit.fit();
+  }
+
+  /** The look preferences from Settings: the ones xterm applies at once, then the font if it changed. */
+  private applyAppearance() {
+    const o = this.term.options;
+    o.cursorStyle = getCursorStyle();
+    o.cursorBlink = getCursorBlink();
+    o.lineHeight = getLineHeight();
+    o.letterSpacing = getLetterSpacing();
+    o.minimumContrastRatio = getMinContrast();
+    o.drawBoldTextInBrightColors = getBoldBright();
+    if (this.fontKey !== `${getTermFont()}|${getTermCustomFont()}`) void this.applyFont();
+    else void this.syncLigatures();
+    this.fit.fit(); // line height and letter spacing change the cell size
+  }
+
+  /** Ligatures on or off to match the preference. The addon is fetched only when first wanted. */
+  private async syncLigatures() {
+    const want = getLigatures() && hasLigatures(getTermFont(), getTermCustomFont());
+    if (!want) {
+      if (this.ligatures) {
+        this.ligatures.dispose();
+        this.ligatures = null;
+        this.term.clearTextureAtlas();
+      }
+      return;
+    }
+    if (this.ligatures) {
+      this.term.clearTextureAtlas(); // the font changed under it
+      return;
+    }
+    try {
+      blockLocalFontPrompt();
+      const { LigaturesAddon } = await import('@xterm/addon-ligatures');
+      if (this.closed || this.ligatures) return;
+      const addon = new LigaturesAddon();
+      this.term.loadAddon(addon);
+      this.ligatures = addon;
+      this.term.clearTextureAtlas();
+    } catch {
+      /* the addon could not load (offline): text draws without ligatures */
     }
   }
 
