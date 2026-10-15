@@ -176,6 +176,22 @@ impl Service {
         Ok(flow)
     }
 
+    /// Change a flow as the user asks. Returns the changed flow and what was done; nothing is saved.
+    pub async fn edit_flow(&self, flow: Flow, request: &str, engine: super::graph::Engine) -> Result<(Flow, String), Fail> {
+        if request.trim().is_empty() {
+            return Err(Fail::Bad("say what to change".into()));
+        }
+        if request.len() > 2000 {
+            return Err(Fail::Bad("that request is too long".into()));
+        }
+        let models = self.codex_models().await;
+        if engine == super::graph::Engine::Codex && models.is_empty() {
+            return Err(Fail::Bad("Codex has no model available right now".into()));
+        }
+        let (flow, summary, _) = prompts::edit_flow(&flow, request, engine, &models, &self.codex, &self.scratch).await?;
+        Ok((flow, summary))
+    }
+
     pub async fn node_prompt(&self, label: &str, capability: super::roles::Capability, output: super::roles::Output, name: &str, goal: &str) -> Result<String, Fail> {
         Ok(prompts::node_prompt(label, capability, output, name, goal, &self.scratch).await?.0)
     }

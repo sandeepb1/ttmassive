@@ -729,6 +729,13 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   different-vendor judge catches more bugs in code, so those two are sensible precautions, not guarantees
   (`docs/research/judge-evidence.md`). The five starters (Feature, Bug fix,
   Refactor, Code review, Research report) are those flow shapes.
+- **Design assistant.** In the design view, **Ask AI** (top left of the chart) opens a small chat. Say how the flow should
+  change ("add a security reviewer after the builder", "use cheaper models where that is safe") and **Claude** (Sonnet)
+  or **Codex** (its smallest model), whichever you pick at the top of the box, changes the flow: it adds, removes and
+  changes agents and rewires them by the same rules as **Suggest**. Agents it leaves alone keep their position, token
+  cap and any custom role, new agents get a free spot, and the change is applied at once and marked *unsaved* until you
+  press **Save**. **Undo** puts the flow back. It will not overwrite edits you make while it is working. On an empty flow
+  it builds one from your description.
 - **Custom roles.** **More roles → Custom role…**: describe a job in your own words and Sonnet picks what it may do and
   what it hands back and writes its instructions; you check and change all of it before it is added. The rules are
   enforced on what it may do, not on its name: an agent that changes files always reports a change and asks first, and

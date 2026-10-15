@@ -55,7 +55,13 @@ fn suggest_system() -> String {
 goes to which (edges), and a system prompt for each agent.\n\
 Roles:\n{}\n\
 Engines: claude (models opus, sonnet, haiku) or codex (models are given with the goal).\n\
-Rules: use as few agents as the goal needs. Most flows are 3 to 5 agents; over 6 needs a real reason. Start with one \
+{DESIGN_RULES}",
+        role_lines()
+    )
+}
+
+/// How a good team is built, from the research. Shared by the designer and the editor.
+const DESIGN_RULES: &str = "Rules: use as few agents as the goal needs. Most flows are 3 to 5 agents; over 6 needs a real reason. Start with one \
 orchestrator. Add an agent only for a different kind of work (reading, running checks, changing files), a clean-context \
 check, or a part that can run in parallel with another. Agents that read can run at the same time; never have two agents \
 change the same files, one agent that changes files per piece of work. Anything that changes files is followed by a judge \
@@ -64,10 +70,7 @@ judge may also have a retry edge to that earlier agent (the architect, say). A f
 judge; sonnet (or a small codex model) for researchers, debuggers and reporters; haiku or a small codex model for simple \
 lookups. Use a different model for the judge than for the agent whose work it checks. Mark checkpoint true on every agent \
 that changes files, so the user approves before files change. Each system_prompt is 2 to 5 sentences: the agent's job, \
-what to hand back, what not to do. Never put the user's goal in a system_prompt; the goal is given to every agent separately.",
-        role_lines()
-    )
-}
+what to hand back, what not to do. Never put the user's goal in a system_prompt; the goal is given to every agent separately.";
 
 const GRILL_SYSTEM: &str = "You are the orchestrator of a team of AI agents, about to start work for the user. Before \
 you start, ask the user the questions whose answers would change what the team builds. Ask only what you cannot \
@@ -314,6 +317,225 @@ pub async fn suggest_flow(goal: &str, flow_id: &str, codex_models: &[String], cw
     Ok((flow_from_suggestion(&v, flow_id, codex_models)?, outcome))
 }
 
+// ---------------------------------------------------------------------------- editing a flow from a request
+
+fn edit_system() -> String {
+    format!(
+        "You change a team of AI agents to match what the user asks. You are given the team as it is now (agents and \
+the edges between them) and the user's request. Return the whole team as it should be afterwards, and a summary.\n\
+Roles:\n{}\n\
+Engines: claude (models opus, sonnet, haiku) or codex (models are given with the request). An agent whose role is \
+\"custom\" is one the user wrote: keep it exactly as given unless asked to change it, and never create a new one.\n\
+Keep the id of every agent that stays, and give a new agent an id nobody has used. Change only what the request needs: \
+leave every other agent's name, prompt, model and checkpoint exactly as given, and remove an agent only when asked or \
+when the change cannot work without it. When you add or remove an agent, rewire the edges so the flow still makes \
+sense (a new agent in the middle is joined to what comes before and after it). summary is one or two plain sentences \
+saying what you changed and why, as you would tell the user. If the request cannot be done or is not about the team, \
+return the team unchanged and say so in summary.\n\
+When you add or change an agent, follow these rules for a good team.\n{DESIGN_RULES}",
+        role_lines()
+    )
+}
+
+fn edit_schema() -> Value {
+    let mut s = suggest_schema();
+    // The editor also tells the user what it did, and an agent the user wrote may appear in the team it is given.
+    s["required"] = json!(["name", "nodes", "edges", "summary"]);
+    s["properties"]["summary"] = text();
+    let mut ids: Vec<Value> = super::roles::catalog().iter().map(|d| json!(role_id(d.id))).collect();
+    ids.push(json!("custom"));
+    s["properties"]["nodes"]["items"]["properties"]["role"] = json!({"type": "string", "enum": ids});
+    s
+}
+
+/// The flow as the editor sees it: the same shape it answers in, without positions.
+fn edit_view(flow: &Flow) -> Value {
+    json!({
+        "name": flow.name,
+        "nodes": flow.nodes.iter().map(|n| json!({
+            "id": n.id, "name": n.name, "role": role_id(n.role),
+            "engine": match n.engine { Engine::Claude => "claude", Engine::Codex => "codex" },
+            "model": n.model, "system_prompt": n.system_prompt, "checkpoint": n.checkpoint,
+        })).collect::<Vec<_>>(),
+        "edges": flow.edges.iter().map(|e| json!({"from": e.from, "to": e.to, "retry": e.kind == EdgeKind::Retry})).collect::<Vec<_>>(),
+    })
+}
+
+pub fn edit_prompt(flow: &Flow, request: &str, codex_models: &[String]) -> String {
+    format!(
+        "# The team now\n\n```json\n{}\n```\n\n# Codex models available\n\n{}\n\n# The user's request\n\n{}\n",
+        serde_json::to_string_pretty(&edit_view(flow)).unwrap_or_default(),
+        codex_models.join(", "),
+        request.trim()
+    )
+}
+
+/// Apply the editor's answer to the flow it was given. Agents it kept stay the same agents (position, token cap and
+/// a custom role are theirs, not the model's to change); new ones get ids of ours and a free spot on the canvas.
+/// Edges are rebuilt. The result must be a valid flow, or nothing changes.
+pub fn flow_from_edit(base: &Flow, v: &Value, codex_models: &[String]) -> Result<(Flow, String)> {
+    let raw: Vec<Value> = v.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default();
+    if raw.is_empty() {
+        bail!("the change would leave the flow with no agents");
+    }
+    if raw.len() > MAX_SUGGESTED_NODES {
+        bail!("the change would make {} agents; the most is {MAX_SUGGESTED_NODES}", raw.len());
+    }
+    let mut taken: Vec<String> = base.nodes.iter().map(|n| n.id.clone()).collect();
+    let mut ids: HashMap<String, String> = HashMap::new();
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut added: Vec<String> = Vec::new();
+    for n in &raw {
+        let s = |k: &str| n.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let said = s("id");
+        if ids.contains_key(&said) {
+            bail!("two agents were given the same id, so the edges cannot be told apart");
+        }
+        let existing = base.nodes.iter().find(|b| b.id == said);
+        let engine: Engine = serde_json::from_value(n.get("engine").cloned().unwrap_or_default()).context("unknown engine")?;
+        let mut model = s("model");
+        let known = match engine {
+            Engine::Claude => CLAUDE_MODELS.iter().any(|m| *m == model),
+            Engine::Codex => codex_models.contains(&model),
+        };
+        if !known {
+            // An agent that already has a model keeps it when the editor invents one; a new one gets a sensible default.
+            model = match (existing, engine) {
+                (Some(e), _) if e.engine == engine => e.model.clone(),
+                (_, Engine::Claude) => "sonnet".into(),
+                (_, Engine::Codex) => codex_models.first().cloned().context("no Codex model to fall back to")?,
+            };
+        }
+        let role: Role = serde_json::from_value(n.get("role").cloned().unwrap_or_default()).context("unknown role")?;
+        let (id, mut node) = match existing {
+            Some(e) => (e.id.clone(), e.clone()),
+            None => {
+                if role == Role::Custom {
+                    bail!("a new agent cannot have a custom role; add it yourself with More roles, Custom role");
+                }
+                let id = free_id(&taken);
+                taken.push(id.clone());
+                added.push(id.clone());
+                let blank = Node {
+                    id: id.clone(),
+                    name: String::new(),
+                    role,
+                    custom: None,
+                    engine,
+                    model: model.clone(),
+                    system_prompt: String::new(),
+                    checkpoint: false,
+                    token_cap: None,
+                    keep_model: false,
+                    x: 0.0,
+                    y: 0.0,
+                };
+                (id, blank)
+            }
+        };
+        ids.insert(said, id);
+        // A kept custom agent keeps its role; any other agent may be given a different built-in one.
+        if node.role != Role::Custom && role != Role::Custom {
+            node.role = role;
+        }
+        node.engine = engine;
+        node.model = model;
+        if !s("name").is_empty() {
+            node.name = s("name").chars().take(60).collect();
+        } else if node.name.is_empty() {
+            node.name = format!("{:?}", node.role);
+        }
+        if !s("system_prompt").is_empty() {
+            node.system_prompt = s("system_prompt");
+        } else if node.system_prompt.is_empty() {
+            node.system_prompt = starters::default_prompt(node.role).into();
+        }
+        node.checkpoint = n.get("checkpoint").and_then(Value::as_bool).unwrap_or(node.checkpoint);
+        nodes.push(node);
+    }
+    let mut edges = Vec::new();
+    for e in v.get("edges").and_then(Value::as_array).cloned().unwrap_or_default() {
+        let end = |k: &str| e.get(k).and_then(Value::as_str).and_then(|x| ids.get(x)).cloned();
+        let (Some(from), Some(to)) = (end("from"), end("to")) else { bail!("an edge points at an agent that does not exist") };
+        let kind = if e.get("retry").and_then(Value::as_bool) == Some(true) { EdgeKind::Retry } else { EdgeKind::Forward };
+        edges.push(Edge { id: format!("e{}", edges.len() + 1), from, to, kind });
+    }
+    let name = v.get("name").and_then(Value::as_str).unwrap_or("").trim();
+    let mut flow = Flow {
+        id: base.id.clone(),
+        name: if name.is_empty() { base.name.clone() } else { name.chars().take(60).collect() },
+        nodes,
+        edges,
+        max_retries: base.max_retries,
+        budget: base.budget,
+        downshift: base.downshift,
+    };
+    flow.validate().map_err(anyhow::Error::msg).context("the changed flow is not valid")?;
+    place_new(&mut flow, &added);
+    let summary = v.get("summary").and_then(Value::as_str).unwrap_or("").trim();
+    Ok((flow, if summary.is_empty() { "Changed the flow.".into() } else { summary.chars().take(600).collect() }))
+}
+
+/// `n1`, `n2`, ... the first one no agent has.
+fn free_id(taken: &[String]) -> String {
+    (1..).map(|i| format!("n{i}")).find(|id| !taken.contains(id)).expect("an unused id exists")
+}
+
+/// Put each added agent where the flow's order says it belongs (its column left to right, a free row), without
+/// moving any agent that was already placed.
+fn place_new(flow: &mut Flow, added: &[String]) {
+    if added.is_empty() {
+        return;
+    }
+    let layers = flow.layers().unwrap_or_default();
+    for id in added {
+        let col = layers.iter().position(|l| l.contains(id)).unwrap_or(0) as f64;
+        let x = col * 280.0;
+        let mut y = layers.iter().find(|l| l.contains(id)).and_then(|l| l.iter().position(|i| i == id)).unwrap_or(0) as f64 * 180.0;
+        let busy = |flow: &Flow, y: f64| flow.nodes.iter().any(|n| n.id != *id && (n.x - x).abs() < 240.0 && (n.y - y).abs() < 150.0);
+        while busy(flow, y) {
+            y += 180.0;
+        }
+        if let Some(n) = flow.nodes.iter_mut().find(|n| n.id == *id) {
+            n.x = x;
+            n.y = y;
+        }
+    }
+}
+
+/// Change a flow as the user asks, using Claude or Codex for the one call. Nothing is saved.
+pub async fn edit_flow(
+    base: &Flow,
+    request: &str,
+    engine: Engine,
+    codex_models: &[String],
+    hub: &super::codex::Hub,
+    cwd: &Path,
+) -> Result<(Flow, String, Outcome)> {
+    let (system, prompt, schema) = (edit_system(), edit_prompt(base, request, codex_models), edit_schema());
+    let (v, outcome) = match engine {
+        Engine::Claude => one_shot("sonnet", &system, &prompt, schema, cwd).await?,
+        Engine::Codex => {
+            // The smallest Codex model on offer does this well enough, and is the cheap one.
+            let model = codex_models.iter().find(|m| m.contains("luna")).or(codex_models.first()).context("no Codex model is available")?;
+            one_shot_codex(hub, model, &system, &prompt, &schema, cwd).await?
+        }
+    };
+    let (flow, summary) = flow_from_edit(base, &v, codex_models)?;
+    Ok((flow, summary, outcome))
+}
+
+/// One no-tools-needed call to Codex in a read-only sandbox, answering in the given shape.
+async fn one_shot_codex(hub: &super::codex::Hub, model: &str, system: &str, prompt: &str, schema: &Value, cwd: &Path) -> Result<(Value, Outcome)> {
+    tokio::fs::create_dir_all(cwd).await?;
+    let server = hub.get().await?;
+    let spec = super::codex::Spec { model: model.into(), system_prompt: system.into(), read_only: true, cwd: cwd.to_path_buf() };
+    let mut thread = server.start_thread(&spec).await?;
+    let outcome = server.turn(&mut thread, prompt, schema, |_| {}).await?;
+    let answer = outcome.structured.clone().context("codex did not answer in the required shape")?;
+    Ok((answer, outcome))
+}
+
 /// What a role is, in words an instruction-writer can use.
 pub fn describe_role(label: &str, capability: Capability, output: Output) -> String {
     let can = match capability {
@@ -434,6 +656,194 @@ mod tests {
 
     fn models() -> Vec<String> {
         vec!["gpt-6.1-sol".into(), "gpt-6-luna".into()]
+    }
+
+    /// A flow as a person would have left it: laid out by hand, one agent with a token cap, one of their own roles.
+    fn base() -> Flow {
+        let mut f = flow_from_suggestion(&suggestion(), "mine", &models()).unwrap();
+        f.nodes[0].x = 11.0;
+        f.nodes[1].y = 222.0;
+        f.nodes[1].token_cap = Some(50_000);
+        f.nodes[1].keep_model = true;
+        f.nodes.push(Node {
+            id: "n9".into(),
+            name: "Security".into(),
+            role: Role::Custom,
+            custom: Some(CustomRole { label: "Security reviewer".into(), capability: Capability::Read, output: Output::Report }),
+            engine: Engine::Claude,
+            model: "sonnet".into(),
+            system_prompt: "Look for holes.".into(),
+            checkpoint: false,
+            token_cap: None,
+            keep_model: false,
+            x: 900.0,
+            y: 0.0,
+        });
+        f.edges.push(Edge { id: "e9".into(), from: "n2".into(), to: "n9".into(), kind: EdgeKind::Forward });
+        f
+    }
+
+    /// What the editor would answer for `base()` with the given changes applied by hand to its view.
+    fn edit_answer(change: impl FnOnce(&mut Value)) -> Value {
+        let mut v = edit_view(&base());
+        v["summary"] = json!("Did it.");
+        change(&mut v);
+        v
+    }
+
+    /// Asks the real Claude and Codex to edit a flow, so it uses a little of each plan:
+    /// `cargo test -- --ignored live_flow_edit --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_flow_edit_works_with_claude_and_with_codex() {
+        let hub = super::super::codex::Hub::default();
+        let models = vec!["gpt-6.1-sol".to_string(), "gpt-6-luna".to_string()];
+        let cwd = std::env::temp_dir().join(format!("ttm-orch-edit-{}", std::process::id()));
+        let b = base();
+        for engine in [Engine::Claude, Engine::Codex] {
+            let (f, summary, _) = edit_flow(&b, "Add a reporter at the end that writes up what was done.", engine, &models, &hub, &cwd).await.unwrap();
+            eprintln!("{engine:?}: {} agents -> {}; summary: {summary}", b.nodes.len(), f.nodes.len());
+            assert!(f.nodes.iter().any(|n| n.role == Role::Reporter), "{engine:?} added no reporter");
+            for old in &b.nodes {
+                let now = f.node(&old.id).unwrap_or_else(|| panic!("{engine:?} dropped {}", old.name));
+                assert_eq!((now.x, now.y), (old.x, old.y));
+            }
+            assert_eq!(f.node("n9").unwrap().role, Role::Custom);
+        }
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_keeps_every_agent_as_it_was() {
+        let b = base();
+        let (f, summary) = flow_from_edit(&b, &edit_answer(|_| {}), &models()).unwrap();
+        assert_eq!(summary, "Did it.");
+        assert_eq!(f.nodes, b.nodes, "same agents, positions, caps and custom role");
+        let wires = |f: &Flow| f.edges.iter().map(|e| (e.from.clone(), e.to.clone(), e.kind)).collect::<Vec<_>>();
+        assert_eq!(wires(&f), wires(&b), "same connections (their ids are renumbered)");
+        assert_eq!((f.id.as_str(), f.max_retries, f.downshift), ("mine", b.max_retries, b.downshift));
+    }
+
+    #[test]
+    fn a_changed_agent_keeps_its_place_and_what_the_editor_cannot_touch() {
+        let b = base();
+        let (f, _) = flow_from_edit(&b, &edit_answer(|v| {
+            v["nodes"][1]["model"] = json!("gpt-6-luna");
+            v["nodes"][1]["system_prompt"] = json!("Build it carefully.");
+            v["nodes"][1]["name"] = json!("Coder");
+        }), &models())
+        .unwrap();
+        let n = f.nodes.iter().find(|n| n.id == "n2").unwrap();
+        assert_eq!((n.name.as_str(), n.model.as_str(), n.system_prompt.as_str()), ("Coder", "gpt-6-luna", "Build it carefully."));
+        assert_eq!((n.y, n.token_cap, n.keep_model), (222.0, Some(50_000), true));
+    }
+
+    #[test]
+    fn a_new_agent_gets_a_fresh_id_and_a_free_spot_and_the_others_stay_put() {
+        let b = base();
+        let (f, _) = flow_from_edit(&b, &edit_answer(|v| {
+            v["nodes"].as_array_mut().unwrap().push(json!({"id": "docs", "name": "Docs", "role": "reporter", "engine": "claude",
+                "model": "sonnet", "system_prompt": "Write the docs.", "checkpoint": false}));
+            v["edges"].as_array_mut().unwrap().push(json!({"from": "n3", "to": "docs", "retry": false}));
+        }), &models())
+        .unwrap();
+        // The editor's own id for it is not ours: it gets one that no agent has.
+        assert_eq!(f.nodes.len(), b.nodes.len() + 1);
+        let new = f.nodes.last().unwrap();
+        assert!(!b.nodes.iter().any(|n| n.id == new.id), "{}", new.id);
+        assert_eq!(new.name, "Docs");
+        for old in &b.nodes {
+            let now = f.nodes.iter().find(|n| n.id == old.id).unwrap();
+            assert_eq!((now.x, now.y), (old.x, old.y), "{} did not move", old.name);
+        }
+        assert!(f.nodes.iter().filter(|n| n.id != new.id).all(|n| (n.x - new.x).abs() >= 240.0 || (n.y - new.y).abs() >= 150.0), "no overlap");
+    }
+
+    #[test]
+    fn removing_an_agent_drops_it_and_its_edges() {
+        let b = base();
+        let (f, _) = flow_from_edit(&b, &edit_answer(|v| {
+            let nodes = v["nodes"].as_array_mut().unwrap();
+            nodes.retain(|n| n["id"] != "n9");
+            let edges = v["edges"].as_array_mut().unwrap();
+            edges.retain(|e| e["to"] != "n9" && e["from"] != "n9");
+        }), &models())
+        .unwrap();
+        assert!(f.node("n9").is_none());
+        assert!(f.edges.iter().all(|e| e.from != "n9" && e.to != "n9"));
+    }
+
+    #[test]
+    fn a_kept_custom_agent_stays_custom_and_a_new_one_cannot_be() {
+        let b = base();
+        // The editor says "reporter" for the custom agent: it stays the user's own role.
+        let (f, _) = flow_from_edit(&b, &edit_answer(|v| v["nodes"][3]["role"] = json!("reporter")), &models()).unwrap();
+        let c = f.node("n9").unwrap();
+        assert_eq!(c.role, Role::Custom);
+        assert_eq!(c.custom.as_ref().unwrap().label, "Security reviewer");
+        let err = flow_from_edit(&b, &edit_answer(|v| {
+            v["nodes"].as_array_mut().unwrap().push(json!({"id": "z", "name": "Mine", "role": "custom", "engine": "claude",
+                "model": "sonnet", "system_prompt": "x", "checkpoint": false}));
+        }), &models())
+        .unwrap_err();
+        assert!(err.to_string().contains("custom role"), "{err}");
+    }
+
+    #[test]
+    fn a_model_the_editor_invents_is_replaced_by_one_that_exists() {
+        let b = base();
+        let (f, _) = flow_from_edit(&b, &edit_answer(|v| v["nodes"][1]["model"] = json!("gpt-99")), &models()).unwrap();
+        assert_eq!(f.node("n2").unwrap().model, "gpt-6.1-sol", "kept the model it had");
+        let (f, _) = flow_from_edit(&b, &edit_answer(|v| {
+            v["nodes"].as_array_mut().unwrap().push(json!({"id": "q", "name": "Checker", "role": "judge", "engine": "claude",
+                "model": "claude-imaginary", "system_prompt": "Check.", "checkpoint": false}));
+        }), &models())
+        .unwrap();
+        assert_eq!(f.nodes.last().unwrap().model, "sonnet");
+    }
+
+    #[test]
+    fn a_bad_answer_changes_nothing() {
+        let b = base();
+        // An edge to nowhere.
+        let e = flow_from_edit(&b, &edit_answer(|v| v["edges"].as_array_mut().unwrap().push(json!({"from": "n1", "to": "ghost", "retry": false}))), &models()).unwrap_err();
+        assert!(e.to_string().contains("does not exist"), "{e}");
+        // No agents left.
+        assert!(flow_from_edit(&b, &edit_answer(|v| v["nodes"] = json!([])), &models()).is_err());
+        // A loop with no judge to send work back.
+        let e = flow_from_edit(&b, &edit_answer(|v| v["edges"].as_array_mut().unwrap().push(json!({"from": "n3", "to": "n1", "retry": false}))), &models()).unwrap_err();
+        assert!(format!("{e:#}").contains("not valid"), "{e:#}");
+        // Two agents with one id.
+        let e = flow_from_edit(&b, &edit_answer(|v| v["nodes"][1]["id"] = json!("n1")), &models()).unwrap_err();
+        assert!(e.to_string().contains("same id"), "{e}");
+        // Too many agents.
+        let many = |v: &mut Value| {
+            for i in 0..12 {
+                v["nodes"].as_array_mut().unwrap().push(json!({"id": format!("x{i}"), "name": format!("A{i}"), "role": "search",
+                    "engine": "claude", "model": "haiku", "system_prompt": "Find.", "checkpoint": false}));
+            }
+        };
+        assert!(flow_from_edit(&b, &edit_answer(many), &models()).is_err());
+    }
+
+    #[test]
+    fn an_empty_flow_can_be_built_from_a_request() {
+        let blank = Flow { nodes: vec![], edges: vec![], ..base() };
+        let (f, _) = flow_from_edit(&blank, &suggestion(), &models()).unwrap();
+        assert_eq!(f.nodes.len(), 3);
+        assert_eq!(f.id, "mine", "it is still the same flow");
+        assert!(f.nodes.iter().all(|n| n.id.starts_with('n')));
+    }
+
+    #[test]
+    fn the_editor_is_shown_the_flow_and_the_request_and_may_use_custom_roles_in_its_answer() {
+        let p = edit_prompt(&base(), "  add a docs writer  ", &models());
+        assert!(p.contains("\"id\": \"n9\"") && p.contains("add a docs writer") && p.contains("gpt-6-luna"));
+        assert!(!p.contains("\"x\""), "positions are not the model's business");
+        let roles = edit_schema()["properties"]["nodes"]["items"]["properties"]["role"]["enum"].clone();
+        assert!(roles.as_array().unwrap().contains(&json!("custom")));
+        assert!(edit_schema()["required"].as_array().unwrap().contains(&json!("summary")));
+        assert!(!suggest_schema()["properties"]["nodes"]["items"]["properties"]["role"]["enum"].as_array().unwrap().contains(&json!("custom")));
     }
 
     fn suggestion() -> Value {

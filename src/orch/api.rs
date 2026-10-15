@@ -48,6 +48,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/models", get(models))
         .route("/api/orch/flows", get(flows))
         .route("/api/orch/flows/suggest", post(suggest))
+        .route("/api/orch/flows/edit", post(edit_flow))
         .route("/api/orch/flows/{id}", axum::routing::put(save_flow).delete(delete_flow))
         .route("/api/orch/node-prompt", post(node_prompt))
         .route("/api/orch/custom-role", post(custom_role))
@@ -81,6 +82,20 @@ struct GoalBody {
 
 async fn suggest(State(st): St, Json(b): Json<GoalBody>) -> Result<Response, Fail> {
     Ok(json_nocache(st.orch.suggest_flow(&st, &b.goal).await?))
+}
+
+#[derive(Deserialize)]
+struct EditBody {
+    flow: Flow,
+    request: String,
+    engine: super::graph::Engine,
+}
+
+/// Change a flow from a plain request, with Claude or Codex. The flow is not saved: the page shows it and the user
+/// can undo.
+async fn edit_flow(State(st): St, Json(b): Json<EditBody>) -> Result<Response, Fail> {
+    let (flow, summary) = st.orch.edit_flow(b.flow, &b.request, b.engine).await?;
+    Ok(json_nocache(json!({ "flow": flow, "summary": summary })))
 }
 
 #[derive(Deserialize)]

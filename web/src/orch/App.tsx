@@ -6,6 +6,7 @@ import type { RecentDir } from '../dirs';
 import { orch, watchRun } from './api';
 import { Icon, iconFor } from './bits';
 import { CustomRoleDialog, GrillDialog, NewRunDialog, SuggestDialog, type RoleDraft } from './Dialogs';
+import { Assistant } from './Assistant';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
 import { LogPanel, LogToggle } from './LogPanel';
@@ -680,6 +681,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               {editable && <AddAgent roles={roles} count={flow.nodes.length} onAdd={addNode} onCustom={() => (setDraft(null), setCustomError(null), setCustomOpen(true))} />}
             </ReactFlowProvider>
           )}
+          {editable && <Assistant flow={flow} onReplace={(f) => (editFlow(() => f), fit())} />}
           {editable && flow.nodes.length === 0 && (
             <div className="mc-empty" style={{ position: 'absolute', inset: '32% 0 auto', zIndex: 3 }}>
               <p style={{ margin: '0 0 0.75rem' }}>An empty flow. Add agents from the bar below, open a starter, or</p>
