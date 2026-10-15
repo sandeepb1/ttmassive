@@ -32,6 +32,49 @@ async fn git(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Whether a folder is ready for builders, which work on copies made from its latest commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RepoState {
+    Ready,
+    /// A git repository with nothing committed yet.
+    NoCommits,
+    NotARepo,
+}
+
+pub async fn repo_state(project: &Path) -> RepoState {
+    if git(project, &["rev-parse", "--is-inside-work-tree"]).await.is_err() {
+        RepoState::NotARepo
+    } else if git(project, &["rev-parse", "--verify", "HEAD"]).await.is_err() {
+        RepoState::NoCommits
+    } else {
+        RepoState::Ready
+    }
+}
+
+/// Make a folder ready: `git init` if it is not a repository, then commit what is in it so builders have something to
+/// copy. Does nothing to a repository that already has a commit. Everything in the folder that its ignore rules do not
+/// exclude goes into that first commit.
+pub async fn init(project: &Path) -> Result<RepoState> {
+    let state = repo_state(project).await;
+    if state == RepoState::Ready {
+        return Ok(state);
+    }
+    if state == RepoState::NotARepo {
+        git(project, &["init"]).await?;
+    }
+    git(project, &["add", "-A"]).await?;
+    // A machine with no git identity would refuse to commit, so give this one commit a stand-in.
+    let has_identity = git(project, &["config", "user.email"]).await.is_ok_and(|e| !e.is_empty());
+    let mut args = vec![];
+    if !has_identity {
+        args.extend(["-c", "user.name=ttm", "-c", "user.email=ttm@localhost"]);
+    }
+    args.extend(["commit", "--allow-empty", "--no-verify", "-m", "Starting point, made by ttm so agents can work on copies"]);
+    git(project, &args).await?;
+    Ok(repo_state(project).await)
+}
+
 /// The worktree for `node_id` in `run_id`, created from the project's current commit. Asking again
 /// for one that exists returns it, which is how a resumed run finds its builder's work.
 pub async fn ensure(project: &Path, base: &Path, run_id: &str, node_id: &str) -> Result<PathBuf> {
@@ -83,6 +126,47 @@ mod tests {
         git(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "first"])
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_plain_folder_is_set_up_with_its_files_in_a_first_commit() {
+        let root = tmp("init");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("main.txt"), "hello").unwrap();
+        assert_eq!(repo_state(&project).await, RepoState::NotARepo);
+        assert_eq!(init(&project).await.unwrap(), RepoState::Ready);
+        assert_eq!(git(&project, &["ls-files"]).await.unwrap(), "main.txt");
+        // Builders can now get a copy, and it has the file.
+        let dir = ensure(&project, &root.join("wt"), "r", "b").await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("main.txt")).unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn an_empty_folder_and_a_repository_with_no_commits_can_be_set_up_too() {
+        let root = tmp("init2");
+        let (empty, bare) = (root.join("empty"), root.join("fresh"));
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(init(&empty).await.unwrap(), RepoState::Ready);
+        git(&bare, &["init", "-q"]).await.unwrap();
+        std::fs::write(bare.join("a.txt"), "x").unwrap();
+        assert_eq!(repo_state(&bare).await, RepoState::NoCommits);
+        assert_eq!(init(&bare).await.unwrap(), RepoState::Ready);
+        assert_eq!(git(&bare, &["ls-files"]).await.unwrap(), "a.txt");
+    }
+
+    #[tokio::test]
+    async fn setting_up_a_ready_repository_changes_nothing() {
+        let root = tmp("init3");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        repo(&project).await;
+        std::fs::write(project.join("later.txt"), "x").unwrap();
+        let before = git(&project, &["rev-parse", "HEAD"]).await.unwrap();
+        assert_eq!(init(&project).await.unwrap(), RepoState::Ready);
+        assert_eq!(git(&project, &["rev-parse", "HEAD"]).await.unwrap(), before);
+        assert!(git(&project, &["status", "--porcelain"]).await.unwrap().contains("later.txt"), "uncommitted work is left alone");
     }
 
     #[tokio::test]

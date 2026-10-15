@@ -127,6 +127,19 @@ export interface Grill {
   brief: string | null;
 }
 
+export type LogKind = 'decision' | 'request' | 'response' | 'skill' | 'subagent' | 'event' | 'error';
+
+/** One line of a run's log: what was sent, what came back, what was decided and why. */
+export interface LogEntry {
+  at: number;
+  node: string | null;
+  kind: LogKind;
+  title: string;
+  body?: string | null;
+}
+
+export type RepoState = 'ready' | 'noCommits' | 'notARepo' | 'missing';
+
 export interface Run {
   id: string;
   flow: Flow;
@@ -144,6 +157,7 @@ export interface Run {
   created: number;
   /** When it reached done or cancelled, in Unix seconds. */
   finished?: number | null;
+  log?: LogEntry[];
 }
 
 export interface RunSummary {

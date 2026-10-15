@@ -12,6 +12,44 @@ use super::usage::Tokens;
 /// Most transcript lines kept for each node. The page shows these live; they are not the handoff.
 const MAX_TRANSCRIPT: usize = 200;
 
+/// Most entries kept in a run's log, and the longest body kept for each. The log is shown live and is saved with
+/// the run on every change, so both stay small.
+const MAX_LOG: usize = 300;
+const MAX_BODY: usize = 5000;
+
+/// A line an agent's driver writes when the agent calls a skill, and when it starts a sub-agent. The executor
+/// notices them and adds an entry to the run log.
+pub const SKILL_PREFIX: &str = "Skill: ";
+pub const SUBAGENT_PREFIX: &str = "Sub-agent: ";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogKind {
+    /// The executor chose something: what starts next, why work was sent back, why the run stopped.
+    Decision,
+    /// What an agent was sent.
+    Request,
+    /// What an agent answered.
+    Response,
+    /// An agent used a skill.
+    Skill,
+    /// An agent started a sub-agent.
+    Subagent,
+    Event,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub at: i64,
+    /// The agent it is about, if any.
+    pub node: Option<String>,
+    pub kind: LogKind,
+    pub title: String,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeStatus {
@@ -170,6 +208,9 @@ pub struct Run {
     /// When it reached done or cancelled; `None` while it can still go on.
     #[serde(default)]
     pub finished: Option<i64>,
+    /// What happened and why, oldest first: requests, answers, decisions, skills and sub-agents.
+    #[serde(default)]
+    pub log: Vec<LogEntry>,
 }
 
 pub fn now_secs() -> i64 {
@@ -195,7 +236,24 @@ impl Run {
             retries_used: 0,
             created,
             finished: None,
+            log: Vec::new(),
         }
+    }
+
+    /// Add a line to the run's log.
+    pub fn note(&mut self, node: Option<&str>, kind: LogKind, title: impl Into<String>, body: Option<String>) {
+        if self.log.len() >= MAX_LOG {
+            self.log.remove(0);
+        }
+        let body = body.map(|b| {
+            let n = b.chars().count();
+            if n <= MAX_BODY {
+                b
+            } else {
+                format!("{}\n… ({} more characters)", b.chars().take(MAX_BODY).collect::<String>(), n - MAX_BODY)
+            }
+        });
+        self.log.push(LogEntry { at: now_secs(), node: node.map(String::from), kind, title: title.into(), body });
     }
 
     /// Use by every node so far, and by the grilling.
@@ -279,6 +337,20 @@ mod tests {
         assert_eq!(r.nodes["a"].status, NodeStatus::Done);
         assert_eq!(r.nodes["b"].status, NodeStatus::Interrupted);
         assert!(matches!(r.status, RunStatus::Paused { .. }));
+    }
+
+    #[test]
+    fn the_log_keeps_the_latest_entries_and_cuts_long_bodies() {
+        let mut r = run();
+        for i in 0..(MAX_LOG + 3) {
+            r.note(None, LogKind::Event, format!("e{i}"), None);
+        }
+        assert_eq!(r.log.len(), MAX_LOG);
+        assert_eq!(r.log[0].title, "e3");
+        r.note(Some("a"), LogKind::Request, "long", Some("x".repeat(MAX_BODY + 10)));
+        let body = r.log.last().unwrap().body.clone().unwrap();
+        assert!(body.ends_with("… (10 more characters)"));
+        assert_eq!(r.log.last().unwrap().node.as_deref(), Some("a"));
     }
 
     #[test]

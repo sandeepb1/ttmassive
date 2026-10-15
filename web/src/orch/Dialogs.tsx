@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
+import { orch } from './api';
 import { Icon, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, choose, consistent, hasChoices, startingAnswer, writeInstead, type Answer } from './model';
-import type { Capability, Flow, Output, Question, Run } from './types';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
+import type { Capability, Flow, Output, Question, RepoState, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
 
@@ -72,7 +73,37 @@ export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: 
   const [skip, setSkip] = useState(false);
   const goalRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => goalRef.current?.focus(), []);
-  const ready = goal.trim() !== '' && project.trim() !== '';
+
+  // Agents that change files work on copies made from the folder's latest commit, so the folder must be a git
+  // repository with one. Say so as soon as a folder is chosen, and offer to set it up.
+  const needsGit = flow.nodes.some(writes);
+  const [repo, setRepo] = useState<RepoState | 'checking'>('checking');
+  const [settingUp, setSettingUp] = useState(false);
+  const [repoError, setRepoError] = useState<string | null>(null);
+  useEffect(() => {
+    const path = project.trim();
+    setRepoError(null);
+    if (!path) return setRepo('missing');
+    setRepo('checking');
+    let stale = false;
+    const id = window.setTimeout(async () => {
+      const r = await orch.projectState(path);
+      if (!stale) setRepo(r.ok ? r.data.state : 'missing');
+    }, 350);
+    return () => {
+      stale = true;
+      window.clearTimeout(id);
+    };
+  }, [project]);
+  const setUpGit = async () => {
+    setSettingUp(true);
+    setRepoError(null);
+    const r = await orch.projectInit(project.trim());
+    setSettingUp(false);
+    if (r.ok) setRepo(r.data.state);
+    else setRepoError(r.error);
+  };
+  const ready = goal.trim() !== '' && project.trim() !== '' && (!needsGit || repo === 'ready');
   const go = () => {
     if (!ready || busy) return;
     try {
@@ -110,7 +141,7 @@ export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: 
           onKeyDown={(e) => (e.metaKey || e.ctrlKey) && e.key === 'Enter' && go()}
         />
       </Field>
-      <Field label="Project folder" hint="A git repository with at least one commit. Builders work in their own copy of it.">
+      <Field label="Project folder" hint={needsGit ? 'Builders work in their own copy of this folder, so it needs to be a git repository with a commit.' : 'The folder the agents work in.'}>
         <input className="mc-field mc-mono" value={project} placeholder="/path/to/project" onChange={(e) => setProject(e.target.value)} />
         {recents.length > 0 && (
           <div className="mc-chips" style={{ marginTop: '0.5rem' }}>
@@ -121,6 +152,24 @@ export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: 
             ))}
           </div>
         )}
+        <div className="mc-repo" data-state={repo} role="status">
+          {repo === 'ready' && <span><Icon name="check" /> Git repository, ready.</span>}
+          {repo === 'checking' && <span className="mc-hint">Checking the folder…</span>}
+          {repo === 'missing' && <span className="mc-hint">{project.trim() ? 'That folder was not found.' : 'Choose a folder.'}</span>}
+          {(repo === 'notARepo' || repo === 'noCommits') && (
+            <>
+              <span>
+                <Icon name="alert" /> {repo === 'notARepo' ? 'This folder is not a git repository.' : 'This repository has no commits yet.'}{' '}
+                {needsGit ? 'Builders need one to work on a copy.' : 'This flow changes no files, so you can go on without.'}
+              </span>
+              <button type="button" className="mc-btn mc-btn-sm" disabled={settingUp} onClick={() => void setUpGit()}>
+                {settingUp ? 'Setting up…' : 'Set up git here'}
+              </button>
+              <span className="mc-hint">{repo === 'notARepo' ? 'Runs git init, then commits' : 'Commits'} what is in the folder now as the starting point, leaving anything your ignore rules exclude.</span>
+            </>
+          )}
+          {repoError && <span className="mc-error">{repoError}</span>}
+        </div>
       </Field>
       <Switch on={skip} onChange={setSkip} label="Skip the questions" hint="Use what you typed as the brief." />
       <p className="mc-hint">
@@ -351,23 +400,26 @@ export function GrillDialog({ run, thinking, error, onAnswer, onStart, onStop }:
   useEffect(() => setBrief(g?.brief ?? ''), [g?.brief]);
   const pending = g?.pending ?? [];
 
+  // Waiting on the orchestrator: just a small box with a spinner, no header, until there is something to answer.
+  if (thinking || (!pending.length && !g?.brief && !error)) {
+    return (
+      <div className="mc-scrim">
+        <div className="mc-thinking-box" role="status" aria-live="polite">
+          <span className="mc-spinner" />
+          <span className="mc-thinking-text">The orchestrator is thinking…</span>
+          <button type="button" className="mc-btn mc-btn-quiet mc-btn-sm" onClick={onStop}>
+            Stop
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   let title = 'The orchestrator has some questions';
   let body: ReactNode;
   let foot: ReactNode;
 
-  if (thinking || (!pending.length && !g?.brief && !error)) {
-    title = 'The orchestrator is thinking';
-    body = (
-      <div className="mc-thinking" role="status">
-        <span className="mc-spinner" /> Reading your request{g && g.round > 0 ? ' and your answers' : ''}…
-      </div>
-    );
-    foot = (
-      <button type="button" className="mc-btn" onClick={onStop}>
-        Stop
-      </button>
-    );
-  } else if (pending.length) {
+  if (pending.length) {
     body = (
       <>
         <p className="mc-hint" style={{ margin: '0 0 1rem' }}>

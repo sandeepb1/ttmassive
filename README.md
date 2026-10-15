@@ -744,11 +744,19 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
   executions, listed as "Runs only". Leaving a flow with unsaved edits asks first.
   **Deleting:** each flow and each execution has a bin button, and an execution that is still running must be stopped
   first. Deleting an execution leaves any branches its builders made in your project.
+  **Logs:** while a run is shown, **Logs** at the bottom of the chart opens a drawer with the run's story, oldest
+  first: what each agent was sent (the full prompt), what it answered (with its token use), and a line for every
+  decision the orchestrator made and why (what starts because what finished, why work was sent back and what the judge
+  said, why the run stopped). Skills an agent uses and sub-agents it starts get their own lines. Filter to one agent
+  to see its step-by-step working lines, or to skills and sub-agents only. Agents run with skills switched off, and only
+  an agent that changes files can start sub-agents, so expect those lines to be rare.
   **Quick actions:** right-click (or long-press on a touch screen) a flow or an execution in the sidebar for Open,
   Duplicate, Stop, Delete, and *Delete finished executions*. On the chart, right-click an agent (Details, Duplicate,
   Remove), a connection (Remove), or empty space (Add any role right there, Tidy up, Fit to screen).
-- **A run** starts with **Run**: say what you want and pick a project folder (a git repository with at least one
-  commit). Opus asks up to three rounds of questions, then writes a brief you can edit. Each question offers two to four
+- **A run** starts with **Run**: say what you want and pick a project folder. If any agent changes files, the folder
+  must be a git repository with a commit (builders work on copies of it); the dialog says so as soon as you choose the
+  folder and offers **Set up git here**, which runs `git init` if needed and commits what is in the folder as the
+  starting point. Opus asks up to three rounds of questions, then writes a brief you can edit. Each question offers two to four
   choices with its suggested one already ticked (some let you tick several), and **Something else…** opens a box for
   your own words, so continuing without touching anything takes every suggestion.
   Nothing starts until you press **Start the run**. Agents run in the background, not in terminal sessions, and are

@@ -15,6 +15,7 @@ use super::codex;
 use super::exec::NodeRunner;
 use super::graph::{Engine, Flow, Node};
 use super::roles::Capability;
+use super::run::{SKILL_PREFIX, SUBAGENT_PREFIX};
 use super::handoff;
 use super::worktree;
 
@@ -165,6 +166,9 @@ impl EngineRunner {
             .turn(prompt, |ev| match ev {
                 Event::Said(t) => log(preview(t)),
                 Event::Tool(t) => log(format!("→ {t}")),
+                Event::Skill(s) => log(format!("{SKILL_PREFIX}{s}")),
+                Event::Subagent(s) => log(format!("{SUBAGENT_PREFIX}{s}")),
+                Event::Nested(t) => log(format!("    ↳ {}", preview(t))),
                 _ => {}
             })
             .await?;

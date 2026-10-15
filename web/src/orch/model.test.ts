@@ -5,9 +5,9 @@ import {
   flowEntries, runsLabel, runsOf, whenLabel,
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
-  setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished,
+  setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
 } from './model.ts';
-import type { Flow, Models, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
+import type { Flow, FlowNode, Models, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
 const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'] };
 const at = { x: 0, y: 0 };
@@ -450,4 +450,31 @@ test('only an execution that has stopped for good counts as finished', () => {
   assert.equal(isFinished({ state: 'done' }), true);
   assert.equal(isFinished({ state: 'cancelled' }), true);
   for (const s of ['running', 'grilling', 'paused']) assert.equal(isFinished({ state: s }), false);
+});
+
+const entry = (kind: string, node: string | null, title = 't') => ({ at: 0, node, kind, title }) as import('./types.ts').LogEntry;
+
+test('the log can be narrowed to skills and sub-agents, or to one agent', () => {
+  const log = [entry('request', 'a'), entry('skill', 'a', 'a used the skill pdf'), entry('decision', null), entry('subagent', 'b'), entry('response', 'b')];
+  assert.equal(logView(log, 'all').length, 5);
+  assert.deepEqual(logView(log, 'skills').map((e) => e.kind), ['skill', 'subagent']);
+  assert.deepEqual(logView(log, 'node:b').map((e) => e.kind), ['subagent', 'response']);
+  assert.equal(logView(log, 'node:zzz').length, 0);
+  assert.equal(skillCount(log), 2);
+  assert.equal(skillCount([]), 0);
+});
+
+test('a log time is shown as the time of day', () => {
+  const t = new Date(2026, 9, 15, 4, 5, 9).getTime() / 1000;
+  assert.equal(clock(t), '04:05:09');
+});
+
+test('the log shows what each working agent last did, and nothing for the rest', () => {
+  const f = line();
+  const [a, b] = f.nodes as [FlowNode, FlowNode];
+  const state = (status: string, transcript: string[]) => ({ status, attempts: 1, output: null, error: null, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, transcript }) as unknown as Run['nodes'][string];
+  const run = { flow: f, nodes: { [a.id]: state('done', ['x']), [b.id]: state('running', ['→ Read a.rs', '→ Grep foo']) } } as unknown as Run;
+  assert.deepEqual(liveLines(run), [{ node: b.id, line: '→ Grep foo' }]);
+  run.nodes[b.id] = state('running', []);
+  assert.deepEqual(liveLines(run), [{ node: b.id, line: 'starting…' }]);
 });

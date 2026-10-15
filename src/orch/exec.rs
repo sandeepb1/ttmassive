@@ -14,7 +14,7 @@ use super::Outcome;
 use super::downshift;
 use super::graph::{Engine, Node};
 use super::handoff::{self, Verdict};
-use super::run::{NodeStatus, Pause, Run, RunStatus, now_secs};
+use super::run::{LogKind, NodeStatus, Pause, Run, RunStatus, SKILL_PREFIX, SUBAGENT_PREFIX, now_secs};
 
 /// Whatever actually runs a node: the Claude or Codex driver in production, a script in tests.
 pub trait NodeRunner {
@@ -37,6 +37,19 @@ fn edit<T>(shared: &Mutex<Run>, ctl: &Control, f: impl FnOnce(&mut Run) -> T) ->
     let out = f(&mut run);
     (ctl.changed)(&run);
     out
+}
+
+fn name_of(run: &Run, id: &str) -> String {
+    run.flow.node(id).map(|n| n.name.clone()).unwrap_or_else(|| id.to_string())
+}
+
+/// "A", "A and B", "A, B and C".
+fn list(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
 }
 
 /// Node ids in the order they can run.
@@ -83,16 +96,31 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: 
         let note = (model != node.model).then(|| format!("Using {model} instead of {}: the plan is filling up", node.model));
         node.model = model;
         let prompt = handoff::build_prompt(run, &node);
+        let inputs: Vec<String> = run.flow.inputs_of(&id).iter().map(|i| name_of(run, i)).collect();
+        let why = if run.feedback.contains_key(&id) {
+            format!("{} starts again with the feedback it was sent back with", node.name)
+        } else if inputs.is_empty() {
+            format!("{} starts first: nothing feeds it", node.name)
+        } else {
+            format!("{} starts: {} finished", node.name, list(&inputs))
+        };
         let n = run.nodes.get_mut(&id).expect("every node has a state");
-        if let Some(note) = note {
-            if n.model_used.is_none() {
-                n.log(note);
-            }
-        }
+        let first_time = n.model_used.is_none();
         n.model_used = Some(node.model.clone());
         n.status = NodeStatus::Running;
         n.attempts += 1;
         n.error = None;
+        let attempt = n.attempts;
+        if let Some(note) = note.filter(|_| first_time) {
+            n.log(note.clone());
+            run.note(Some(&id), LogKind::Decision, note, None);
+        }
+        let engine = match node.engine {
+            Engine::Claude => "Claude",
+            Engine::Codex => "Codex",
+        };
+        run.note(Some(&id), LogKind::Decision, why, None);
+        run.note(Some(&id), LogKind::Request, format!("→ {} · attempt {attempt} · {engine} {}", node.name, node.model), Some(prompt.clone()));
         out.starts.push((node, prompt));
     }
     if !out.starts.is_empty() {
@@ -103,6 +131,22 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: 
 
 /// Nothing is running and nothing more will start: the run is done, or it needs the user.
 fn settle(run: &mut Run, halt: Option<Pause>, waiting: Option<String>) {
+    settle_status(run, halt, waiting);
+    let line = match run.status.clone() {
+        RunStatus::Done => "Every agent has finished: the run is done".to_string(),
+        RunStatus::Paused { pause } => match pause {
+            Pause::Approval { node } => format!("Waiting for your approval before {} starts", name_of(run, &node)),
+            Pause::RetriesExhausted { node } => format!("{} has sent work back as many times as the flow allows, so the run stopped for you to decide", name_of(run, &node)),
+            Pause::Budget { message } => format!("Stopped: {message}"),
+            Pause::Failed { node, message } if node.is_empty() => format!("Stopped: {message}"),
+            Pause::Failed { node, message } => format!("Stopped: {} failed ({message})", name_of(run, &node)),
+        },
+        _ => return,
+    };
+    run.note(None, LogKind::Decision, line, None);
+}
+
+fn settle_status(run: &mut Run, halt: Option<Pause>, waiting: Option<String>) {
     run.status = match (halt, waiting) {
         (Some(pause), _) => RunStatus::Paused { pause },
         (None, _) if run.nodes.values().all(|n| n.status == NodeStatus::Done) => {
@@ -141,6 +185,7 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
         let n = run.nodes.get_mut(&node.id).expect("every node has a state");
         n.status = NodeStatus::Failed;
         n.error = Some(message.clone());
+        run.note(Some(&node.id), LogKind::Error, format!("✕ {} failed", node.name), Some(message.clone()));
         Some(Pause::Failed { node: node.id.clone(), message })
     };
     let outcome = match result {
@@ -161,7 +206,15 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
     };
     n.status = NodeStatus::Done;
     n.output = Some(output.clone());
+    let t = outcome.tokens;
+    let shown = serde_json::to_string_pretty(&output).unwrap_or_default();
     run.feedback.remove(&node.id);
+    run.note(
+        Some(&node.id),
+        LogKind::Response,
+        format!("← {} answered", node.name),
+        Some(format!("{} in · {} out · {} read from cache · {} written to cache\n\n{shown}", t.input, t.output, t.cache_read, t.cache_write)),
+    );
 
     if let Some(cap) = node.token_cap {
         let spent = run.nodes[&node.id].tokens.spent();
@@ -178,10 +231,18 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
 
 /// A judge has answered: either carry on, or send work back to the builder it points at.
 fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pause> {
-    let Verdict::Reject { feedback, send_back_to } = handoff::verdict(output) else { return None };
+    let (feedback, send_back_to) = match handoff::verdict(output) {
+        Verdict::Approve => {
+            run.note(Some(&judge.id), LogKind::Decision, format!("{} approved the work: carrying on", judge.name), None);
+            return None;
+        }
+        Verdict::Reject { feedback, send_back_to } => (feedback, send_back_to),
+    };
     let targets: Vec<String> = run.flow.send_back_targets(&judge.id).into_iter().map(String::from).collect();
     if targets.is_empty() {
-        return None; // no way back drawn: the judge is advisory
+        // No way back drawn: the judge is advisory.
+        run.note(Some(&judge.id), LogKind::Decision, format!("{} rejected the work, but no send-back is drawn from it, so the flow carries on", judge.name), Some(feedback));
+        return None;
     }
     if run.retries_used >= run.flow.max_retries {
         return Some(Pause::RetriesExhausted { node: judge.id.clone() });
@@ -196,6 +257,7 @@ fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pau
             n.status = NodeStatus::Failed;
             n.output = None;
             n.error = Some(message.clone());
+            run.note(Some(&judge.id), LogKind::Error, format!("✕ {} did not say where to send the work", judge.name), Some(message.clone()));
             return Some(Pause::Failed { node: judge.id.clone(), message });
         }
     };
@@ -203,6 +265,14 @@ fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pau
     run.feedback.insert(target.clone(), feedback);
     // Redo what lies between the builder and the judge, and nothing else: a branch running beside them keeps its work.
     let redo: Vec<String> = run.flow.between(&target, &judge.id).into_iter().map(String::from).collect();
+    let (used, max) = (run.retries_used, run.flow.max_retries);
+    let again: Vec<String> = redo.iter().map(|i| name_of(run, i)).collect();
+    run.note(
+        Some(&judge.id),
+        LogKind::Decision,
+        format!("{} rejected the work and sent it back to {} (send-back {used} of {max}); {} run again", judge.name, name_of(run, &target), list(&again)),
+        Some(feedback_for_log(run, &target)),
+    );
     for id in redo {
         let n = run.nodes.get_mut(&id).expect("every node has a state");
         n.status = NodeStatus::Pending;
@@ -212,10 +282,20 @@ fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pau
     None
 }
 
+fn feedback_for_log(run: &Run, target: &str) -> String {
+    run.feedback.get(target).cloned().unwrap_or_default()
+}
+
 async fn run_node<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control<'_>, node: Node, prompt: String) -> (Node, anyhow::Result<Outcome>) {
     let result = runner
         .run(&node, &prompt, &mut |line| {
             edit(shared, ctl, |r| {
+                // Skills and sub-agents are worth a line of their own in the run's log, not only the node's transcript.
+                if let Some(what) = line.strip_prefix(SKILL_PREFIX) {
+                    r.note(Some(&node.id), LogKind::Skill, format!("{} used the skill {what}", node.name), None);
+                } else if let Some(what) = line.strip_prefix(SUBAGENT_PREFIX) {
+                    r.note(Some(&node.id), LogKind::Subagent, format!("{} started a sub-agent: {what}", node.name), None);
+                }
                 if let Some(n) = r.nodes.get_mut(&node.id) {
                     n.log(line);
                 }
@@ -242,6 +322,7 @@ pub async fn drive<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control
                 }
                 r.status = RunStatus::Cancelled;
                 r.finished = Some(now_secs());
+                r.note(None, LogKind::Event, "The run was stopped", None);
             });
             return;
         }
@@ -349,6 +430,8 @@ mod tests {
         models: Mutex<Vec<(String, String)>>,
         /// Set when a judge runs, so a test can make the plan pressure ease partway through.
         calm: Option<std::sync::Arc<AtomicBool>>,
+        /// Extra progress lines every agent writes as it works.
+        lines: Vec<String>,
     }
 
     impl Fake {
@@ -384,6 +467,9 @@ mod tests {
                 }
             }
             log(format!("working on {}", node.id));
+            for l in &self.lines {
+                log(l.clone());
+            }
             if let Some((barrier, ids)) = &self.meet {
                 if ids.contains(&node.id) {
                     barrier.wait().await;
@@ -458,6 +544,53 @@ mod tests {
         assert_eq!(r.retries_used, 1);
         assert_eq!(r.nodes["build"].attempts, 2);
         assert!(r.feedback.is_empty(), "feedback is used up once the builder has seen it");
+    }
+
+    #[tokio::test]
+    async fn the_log_tells_what_was_sent_what_came_back_and_why_each_step_happened() {
+        let run = new_run(flow());
+        let fake = Fake::with(vec![("judge", reject("No tests")), ("judge", approve())]);
+        go(&run, &fake).await;
+        let r = run.lock().unwrap();
+        let of = |k: LogKind| r.log.iter().filter(|e| e.kind == k).collect::<Vec<_>>();
+        // Six turns ran, and each has a request and an answer.
+        assert_eq!(of(LogKind::Request).len(), 6);
+        assert_eq!(of(LogKind::Response).len(), 6);
+        assert!(of(LogKind::Request)[0].body.as_deref().unwrap().contains("Build a thing"));
+        assert!(of(LogKind::Request)[0].title.contains("attempt 1"));
+        assert!(of(LogKind::Response)[0].body.as_deref().unwrap().contains("10 in"));
+        let why: Vec<&str> = of(LogKind::Decision).iter().map(|e| e.title.as_str()).collect();
+        assert!(why.iter().any(|t| t.contains("orch starts first")), "{why:?}");
+        assert!(why.iter().any(|t| t.contains("res starts: orch finished")), "{why:?}");
+        assert!(why.iter().any(|t| t.contains("judge rejected the work and sent it back to build (send-back 1 of 2)")), "{why:?}");
+        assert!(why.iter().any(|t| t.contains("build starts again with the feedback")), "{why:?}");
+        assert!(why.iter().any(|t| t.contains("judge approved")), "{why:?}");
+        assert!(why.last().unwrap().contains("the run is done"));
+        let sent_back = of(LogKind::Decision).into_iter().find(|e| e.title.contains("sent it back")).unwrap();
+        assert_eq!(sent_back.body.as_deref(), Some("No tests"));
+    }
+
+    #[tokio::test]
+    async fn a_failure_and_a_pause_are_logged_with_the_reason() {
+        let run = new_run(flow());
+        let fake = Fake::with(vec![("res", Err(anyhow::anyhow!("boom")))]);
+        go(&run, &fake).await;
+        let r = run.lock().unwrap();
+        let err = r.log.iter().find(|e| e.kind == LogKind::Error).expect("an error entry");
+        assert!(err.title.contains("res failed") && err.body.as_deref() == Some("boom"));
+        assert!(r.log.last().unwrap().title.contains("Stopped: res failed (boom)"));
+    }
+
+    #[tokio::test]
+    async fn skills_and_sub_agents_get_their_own_log_entries() {
+        let run = new_run(flow());
+        let fake = Fake { lines: vec![format!("{SKILL_PREFIX}pdf"), format!("{SUBAGENT_PREFIX}Explore: look around")], ..Fake::default() };
+        go(&run, &fake).await;
+        let r = run.lock().unwrap();
+        assert!(r.log.iter().any(|e| e.kind == LogKind::Skill && e.title == "orch used the skill pdf" && e.node.as_deref() == Some("orch")));
+        assert!(r.log.iter().any(|e| e.kind == LogKind::Subagent && e.title == "build started a sub-agent: Explore: look around"));
+        // They stay in the agent's own transcript as well.
+        assert!(r.nodes["orch"].transcript.iter().any(|l| l == &format!("{SKILL_PREFIX}pdf")));
     }
 
     #[tokio::test]

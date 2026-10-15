@@ -8,6 +8,7 @@ import { Icon, iconFor } from './bits';
 import { CustomRoleDialog, GrillDialog, NewRunDialog, SuggestDialog, type RoleDraft } from './Dialogs';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
+import { LogPanel, LogToggle } from './LogPanel';
 import { Inspector } from './Inspector';
 import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
@@ -473,6 +474,22 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
 
   /** Put an older execution's design back in the editor, as the flow's current design. */
   // ------------------------------------------------------------------ deleting and quick actions
+  const [logOpen, setLogOpen] = useState(() => {
+    try {
+      return localStorage.getItem('ttm.orch.log') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleLog = () =>
+    setLogOpen((o) => {
+      try {
+        localStorage.setItem('ttm.orch.log', o ? '0' : '1');
+      } catch {
+        /* the choice is simply not remembered */
+      }
+      return !o;
+    });
   const [menu, setMenu] = useState<MenuState | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
 
@@ -640,8 +657,14 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               </button>
             </div>
           )}
+          {run && run.status.state !== 'grilling' && (
+            <>
+              <LogToggle open={logOpen} count={run.log?.length ?? 0} live={run.status.state === 'running'} onToggle={toggleLog} />
+              {logOpen && <LogPanel run={run} onClose={toggleLog} />}
+            </>
+          )}
           {error && !dialog && run?.status.state !== 'grilling' && (
-            <p className="mc-error" role="alert" style={{ position: 'absolute', left: '0.75rem', bottom: '0.75rem', right: '0.75rem', margin: 0, zIndex: 6 }}>
+            <p className="mc-error" role="alert" style={{ position: 'absolute', left: '0.75rem', bottom: run ? '3.5rem' : '0.75rem', right: '0.75rem', margin: 0, zIndex: 6 }}>
               {error}
             </p>
           )}

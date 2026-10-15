@@ -1,7 +1,7 @@
 // Calls to /api/orch. A failure comes back as a message to show; a 401 reloads the page to the login.
 
 import { fetchRecentDirs, type RecentDir } from '../dirs';
-import type { Capability, CustomRole, Flow, FlowLists, Models, Output, Role, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
+import type { Capability, CustomRole, Flow, FlowLists, Models, Output, Role, RepoState, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -55,6 +55,8 @@ export const orch = {
   start: (id: string, brief?: string) => send<Run>('POST', `${run(id)}/start`, { brief }),
   approve: (id: string, node: string) => send<Run>('POST', `${run(id)}/approve`, { node }),
   resume: (id: string) => send<Run>('POST', `${run(id)}/resume`),
+  projectState: (path: string) => send<{ state: RepoState }>('GET', `${base}/project?path=${encodeURIComponent(path)}`),
+  projectInit: (path: string) => send<{ state: RepoState }>('POST', `${base}/project/init`, { path }),
   deleteRun: (id: string) => send<void>('DELETE', run(id)),
   cancel: (id: string) => send<Run>('POST', `${run(id)}/cancel`),
   suggest: (goal: string) => send<Flow>('POST', `${base}/flows/suggest`, { goal }),

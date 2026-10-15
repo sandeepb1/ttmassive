@@ -204,6 +204,12 @@ impl Service {
         if !project.is_dir() {
             return Err(Fail::Bad("the project must be a folder".into()));
         }
+        // Builders work on copies made from the latest commit, so say so now rather than when one reaches its turn.
+        if flow.nodes.iter().any(|n| n.writes()) && super::worktree::repo_state(&project).await != super::worktree::RepoState::Ready {
+            return Err(Fail::Bad(
+                "agents that change files need a git repository with at least one commit to work on copies of. Choose \"Set up git here\" in the run dialog, or run `git init` and make a first commit".into(),
+            ));
+        }
         let w = self.refresh_windows(st).await;
         let mut run = Run::new(new_id(), flow, goal.trim().to_string(), now());
         run.project = project.to_string_lossy().into_owned();

@@ -116,6 +116,12 @@ pub enum Event {
     Said(String),
     /// A tool the agent called, for the live transcript ("Read src/main.rs").
     Tool(String),
+    /// The agent called a skill: its name, and the arguments if it gave any.
+    Skill(String),
+    /// The agent started a sub-agent: "Explore: what it was asked".
+    Subagent(String),
+    /// Something a sub-agent did or said while it worked for this agent.
+    Nested(String),
     Done(Outcome),
     Other,
 }
@@ -128,17 +134,37 @@ pub fn parse(line: &str) -> Event {
             Event::Init { session_id: s(&v, "session_id"), model: s(&v, "model") }
         }
         Some("assistant") => {
+            // Everything a sub-agent does is tagged with the call that started it.
+            let nested = v.get("parent_tool_use_id").is_some_and(|p| !p.is_null());
             let blocks = v.pointer("/message/content").and_then(Value::as_array);
             for b in blocks.into_iter().flatten() {
                 match b.get("type").and_then(Value::as_str) {
-                    Some("text") if !s(b, "text").trim().is_empty() => return Event::Said(s(b, "text")),
+                    Some("text") if !s(b, "text").trim().is_empty() => {
+                        return if nested { Event::Nested(s(b, "text")) } else { Event::Said(s(b, "text")) };
+                    }
                     Some("tool_use") => {
                         let name = s(b, "name");
+                        let input = |k: &str| b.pointer(&format!("/input/{k}")).and_then(Value::as_str).unwrap_or("").trim().to_string();
+                        if !nested {
+                            match name.as_str() {
+                                "Agent" | "Task" => {
+                                    let kind = Some(input("subagent_type")).filter(|k| !k.is_empty()).unwrap_or_else(|| "general-purpose".into());
+                                    let task = Some(input("description")).filter(|d| !d.is_empty()).unwrap_or_else(|| input("prompt"));
+                                    return Event::Subagent(format!("{kind}: {task}").trim_end_matches(": ").to_string());
+                                }
+                                "Skill" => {
+                                    let (skill, args) = (input("skill"), input("args"));
+                                    return Event::Skill(if args.is_empty() { skill } else { format!("{skill} {args}") });
+                                }
+                                _ => {}
+                            }
+                        }
                         let hint = ["file_path", "path", "pattern", "command", "query", "url"]
                             .iter()
                             .find_map(|k| b.pointer(&format!("/input/{k}")).and_then(Value::as_str))
                             .unwrap_or("");
-                        return Event::Tool(format!("{name} {hint}").trim().to_string());
+                        let line = format!("{name} {hint}").trim().to_string();
+                        return if nested { Event::Nested(line) } else { Event::Tool(line) };
                     }
                     _ => {}
                 }
@@ -362,6 +388,39 @@ mod tests {
         assert_eq!(
             parse(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/a.rs"}}]}}"#),
             Event::Tool("Read src/a.rs".into())
+        );
+    }
+
+    #[test]
+    fn skills_and_sub_agents_are_told_apart_from_ordinary_tools() {
+        assert_eq!(
+            parse(r#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Agent","input":{"subagent_type":"Explore","description":"Read a.txt","prompt":"long"}}]}}"#),
+            Event::Subagent("Explore: Read a.txt".into())
+        );
+        // An older name for the same tool, and no type given.
+        assert_eq!(
+            parse(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Task","input":{"description":"Find it"}}]}}"#),
+            Event::Subagent("general-purpose: Find it".into())
+        );
+        assert_eq!(
+            parse(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"pdf","args":"report.pdf"}}]}}"#),
+            Event::Skill("pdf report.pdf".into())
+        );
+        assert_eq!(
+            parse(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"pdf"}}]}}"#),
+            Event::Skill("pdf".into())
+        );
+    }
+
+    #[test]
+    fn what_a_sub_agent_does_is_marked_as_nested() {
+        assert_eq!(
+            parse(r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"a.txt"}}]}}"#),
+            Event::Nested("Read a.txt".into())
+        );
+        assert_eq!(
+            parse(r#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"It says hi"}]}}"#),
+            Event::Nested("It says hi".into())
         );
     }
 

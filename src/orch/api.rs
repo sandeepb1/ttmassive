@@ -60,6 +60,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/runs/{id}/resume", post(resume))
         .route("/api/orch/runs/{id}/cancel", post(cancel))
         .route("/api/orch/runs/{id}/popout", post(pop_out))
+        .route("/api/orch/project", get(project))
+        .route("/api/orch/project/init", post(project_init))
         .route("/api/orch/events", get(events))
 }
 
@@ -205,6 +207,30 @@ async fn cancel(State(st): St, Path(id): Path<String>) -> Result<Response, Fail>
 async fn pop_out(State(st): St, Path(id): Path<String>, Json(b): Json<ApproveBody>) -> Result<Response, Fail> {
     let session = st.orch.pop_out(&st, &id, &b.node).await?;
     Ok(json_nocache(json!({ "session": session })))
+}
+
+#[derive(Deserialize)]
+struct ProjectQuery {
+    path: String,
+}
+
+fn project_dir(path: &str) -> Result<std::path::PathBuf, Fail> {
+    let dir = std::fs::canonicalize(path.trim()).map_err(|_| Fail::Bad("that folder does not exist".into()))?;
+    if dir.is_dir() { Ok(dir) } else { Err(Fail::Bad("that is not a folder".into())) }
+}
+
+/// Is this folder ready for builders: a git repository with a commit?
+async fn project(Query(q): Query<ProjectQuery>) -> Result<Response, Fail> {
+    // A folder that is not there is an answer, not a failure: the page asks as the user types.
+    let Ok(dir) = project_dir(&q.path) else { return Ok(json_nocache(json!({ "state": "missing" }))) };
+    Ok(json_nocache(json!({ "state": super::worktree::repo_state(&dir).await })))
+}
+
+/// Make a folder ready for builders: `git init` and a first commit of what is in it.
+async fn project_init(Json(q): Json<ProjectQuery>) -> Result<Response, Fail> {
+    let dir = project_dir(&q.path)?;
+    let state = super::worktree::init(&dir).await.map_err(|e| Fail::Bad(format!("could not set up git there: {e:#}")))?;
+    Ok(json_nocache(json!({ "state": state })))
 }
 
 #[derive(Deserialize)]

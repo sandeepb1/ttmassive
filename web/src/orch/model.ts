@@ -3,7 +3,7 @@
 // The server checks everything again; these rules exist so the page can say no before asking.
 
 import type {
-  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
+  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
 // ---------------------------------------------------------------------------- roles
@@ -136,6 +136,38 @@ export function duplicateNode(flow: Flow, id: string): { flow: Flow; node: FlowN
   if (!src) return null;
   const node: FlowNode = { ...structuredClone(src), id: freeId(flow.nodes.map((n) => n.id), 'n'), name: uniqueName(flow, roleLabel(src)), x: src.x + 40, y: src.y + 40 };
   return { flow: { ...flow, nodes: [...flow.nodes, node] }, node };
+}
+
+/** What the log panel shows: everything, only skills and sub-agents, or one agent's lines. */
+export type LogFilter = 'all' | 'skills' | `node:${string}`;
+
+export function logView(log: LogEntry[], filter: LogFilter): LogEntry[] {
+  if (filter === 'all') return log;
+  if (filter === 'skills') return log.filter((e) => e.kind === 'skill' || e.kind === 'subagent');
+  const id = filter.slice(5);
+  return log.filter((e) => e.node === id);
+}
+
+/** How many skills were used and sub-agents started, for the filter's badge. */
+export function skillCount(log: LogEntry[]): number {
+  return log.filter((e) => e.kind === 'skill' || e.kind === 'subagent').length;
+}
+
+/** The time of day a log line happened, "14:03:09". */
+export function clock(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
+}
+
+/** What each agent that is working right now last said it was doing, for the end of the log. */
+export function liveLines(run: Run): { node: string; line: string }[] {
+  const out: { node: string; line: string }[] = [];
+  for (const n of run.flow.nodes) {
+    const s = run.nodes[n.id];
+    if (s?.status !== 'running') continue;
+    out.push({ node: n.id, line: s.transcript[s.transcript.length - 1] ?? 'starting…' });
+  }
+  return out;
 }
 
 /** An execution that has stopped for good, so it can be removed without stopping anything. */
