@@ -72,7 +72,11 @@ what to hand back, what not to do. Never put the user's goal in a system_prompt;
 const GRILL_SYSTEM: &str = "You are the orchestrator of a team of AI agents, about to start work for the user. Before \
 you start, ask the user the questions whose answers would change what the team builds. Ask only what you cannot \
 decide from the goal, the flow and sensible defaults. Each question must be answerable in a sentence and must come \
-with the answer you would pick. Ask at most 6 questions in a round. When you know enough, or when told it is the \
+with the answer you would pick. Give each question two to four short, distinct options for the user to choose from \
+(a few words each, mutually exclusive unless multiple is true), and put the one you would pick in recommended, \
+word for word the same as one of the options. The user can always type a different answer, so never add an option like \
+\"other\" or \"something else\". Set multiple to true only for a question where several options can apply together \
+(for example which features matter most). Ask at most 6 questions in a round. When you know enough, or when told it is the \
 last round, stop asking and write the brief: what to build, the decisions made, what is out of scope and how to \
 tell it is done, in under 300 words.";
 
@@ -109,8 +113,9 @@ fn grill_schema() -> Value {
         "properties": {
             "done": {"type": "boolean"},
             "questions": {"type": "array", "items": {
-                "type": "object", "additionalProperties": false, "required": ["text", "recommended"],
-                "properties": {"text": text(), "recommended": text()}}},
+                "type": "object", "additionalProperties": false, "required": ["text", "options", "recommended", "multiple"],
+                "properties": {"text": text(), "options": {"type": "array", "items": text()}, "recommended": text(),
+                               "multiple": {"type": "boolean"}}}},
             "brief": text(),
         }
     })
@@ -228,6 +233,33 @@ pub fn grill_prompt(goal: &str, project: &str, flow: &Flow, history: &[Qa], roun
     p
 }
 
+const MAX_OPTIONS: usize = 4;
+const MAX_OPTION: usize = 140;
+
+/// The options the model offered, made fit to show: trimmed, no blanks or repeats, a sensible length, at most four,
+/// and always containing the recommended answer (added first if the model left it out). Fewer than two is not a
+/// choice, so those questions get none and the page asks for text.
+fn clean_options(raw: Option<&Value>, recommended: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |s: &str| {
+        let s: String = s.trim().chars().take(MAX_OPTION).collect();
+        if !s.is_empty() && !out.iter().any(|o| o.eq_ignore_ascii_case(&s)) {
+            out.push(s);
+        }
+    };
+    if !recommended.is_empty() {
+        add(recommended);
+    }
+    for o in raw.and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+        add(o);
+    }
+    out.truncate(MAX_OPTIONS);
+    if out.len() < 2 {
+        out.clear();
+    }
+    out
+}
+
 pub fn parse_grill(v: &Value, last: bool) -> Result<GrillStep> {
     let brief = v.get("brief").and_then(Value::as_str).unwrap_or("").trim().to_string();
     let done = v.get("done").and_then(Value::as_bool).unwrap_or(false);
@@ -239,7 +271,9 @@ pub fn parse_grill(v: &Value, last: bool) -> Result<GrillStep> {
         .filter_map(|q| {
             let text = q.get("text")?.as_str()?.trim().to_string();
             let recommended = q.get("recommended").and_then(Value::as_str).unwrap_or("").trim().to_string();
-            (!text.is_empty()).then_some(Question { text, recommended })
+            let options = clean_options(q.get("options"), &recommended);
+            let multiple = options.len() >= 2 && q.get("multiple").and_then(Value::as_bool).unwrap_or(false);
+            (!text.is_empty()).then_some(Question { text, recommended, options, multiple })
         })
         .take(MAX_QUESTIONS)
         .collect();
@@ -476,7 +510,7 @@ mod tests {
             {"text": "Which database?", "recommended": "SQLite"}, {"text": "  ", "recommended": "x"}]});
         assert_eq!(
             parse_grill(&qs, false).unwrap(),
-            GrillStep::Questions(vec![Question { text: "Which database?".into(), recommended: "SQLite".into() }])
+            GrillStep::Questions(vec![Question { text: "Which database?".into(), recommended: "SQLite".into(), options: vec![], multiple: false }])
         );
         let done = json!({"done": true, "brief": "Build X.", "questions": []});
         assert_eq!(parse_grill(&done, false).unwrap(), GrillStep::Brief("Build X.".into()));
@@ -633,5 +667,65 @@ mod tests {
         for phrase in ["stopping rule", "style preferences are not one", "evidence it observed"] {
             assert!(CUSTOM_ROLE_SYSTEM.contains(phrase), "{phrase}");
         }
+    }
+
+    #[test]
+    fn a_question_comes_with_choices_and_the_recommended_one_is_among_them() {
+        let q = json!({"done": false, "brief": "", "questions": [
+            {"text": "Which database?", "options": ["SQLite", "Postgres", "Files"], "recommended": "SQLite", "multiple": false}]});
+        let GrillStep::Questions(qs) = parse_grill(&q, false).unwrap() else { panic!() };
+        assert_eq!(qs[0].options, vec!["SQLite", "Postgres", "Files"]);
+        assert_eq!(qs[0].recommended, "SQLite");
+        assert!(!qs[0].multiple);
+    }
+
+    #[test]
+    fn a_recommended_answer_the_model_left_out_of_the_options_is_added_first() {
+        let q = json!({"done": false, "brief": "", "questions": [
+            {"text": "Where?", "options": ["Local", "Cloud"], "recommended": "Local, with a path to cloud later", "multiple": false}]});
+        let GrillStep::Questions(qs) = parse_grill(&q, false).unwrap() else { panic!() };
+        assert_eq!(qs[0].options[0], "Local, with a path to cloud later");
+        assert_eq!(qs[0].options.len(), 3);
+    }
+
+    #[test]
+    fn options_are_cleaned_and_capped_at_four() {
+        let q = json!({"done": false, "brief": "", "questions": [
+            {"text": "Pick", "options": ["  A ", "a", "", "B", "C", "D", "E"], "recommended": "A", "multiple": true}]});
+        let GrillStep::Questions(qs) = parse_grill(&q, false).unwrap() else { panic!() };
+        assert_eq!(qs[0].options, vec!["A", "B", "C", "D"], "trimmed, de-duplicated ignoring case, no blanks, four at most");
+        assert!(qs[0].multiple);
+        let long = "x".repeat(500);
+        let q = json!({"done": false, "brief": "", "questions": [{"text": "Pick", "options": [long, "B"], "recommended": "B", "multiple": false}]});
+        let GrillStep::Questions(qs) = parse_grill(&q, false).unwrap() else { panic!() };
+        assert!(qs[0].options.iter().all(|o| o.chars().count() <= MAX_OPTION));
+    }
+
+    #[test]
+    fn fewer_than_two_options_is_not_a_choice_so_the_page_asks_for_text() {
+        let one = json!({"done": false, "brief": "", "questions": [{"text": "Q", "options": ["Only"], "recommended": "Only", "multiple": true}]});
+        let GrillStep::Questions(qs) = parse_grill(&one, false).unwrap() else { panic!() };
+        assert!(qs[0].options.is_empty() && !qs[0].multiple, "no choices, so not a multi-choice either");
+        assert_eq!(qs[0].recommended, "Only", "the suggestion is kept for the text box");
+        // An older reply with no options at all still works.
+        let old = json!({"done": false, "brief": "", "questions": [{"text": "Q", "recommended": "Yes"}]});
+        let GrillStep::Questions(qs) = parse_grill(&old, false).unwrap() else { panic!() };
+        assert!(qs[0].options.is_empty());
+    }
+
+    #[test]
+    fn the_grilling_prompt_and_schema_ask_for_choices_and_never_an_other_option() {
+        for phrase in ["two to four short, distinct options", "never add an option like", "multiple to true only"] {
+            assert!(GRILL_SYSTEM.contains(phrase), "{phrase}");
+        }
+        let item = &grill_schema()["properties"]["questions"]["items"];
+        assert_eq!(item["required"], json!(["text", "options", "recommended", "multiple"]));
+        assert_eq!(item["additionalProperties"], false);
+    }
+
+    #[test]
+    fn a_stored_question_without_choices_still_loads() {
+        let q: Question = serde_json::from_value(json!({"text": "Q", "recommended": "A"})).unwrap();
+        assert!(q.options.is_empty() && !q.multiple);
     }
 }

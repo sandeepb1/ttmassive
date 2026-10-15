@@ -51,7 +51,15 @@ pub enum RunStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Question {
     pub text: String,
+    /// The answer the orchestrator would pick. One of `options` when there are any.
     pub recommended: String,
+    /// Two to four distinct answers to choose from. Empty for a question asked without them (an older run, or one
+    /// the model could not give choices for), which the page shows as a text box.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// More than one option can be chosen: "which of these matter most".
+    #[serde(default)]
+    pub multiple: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
