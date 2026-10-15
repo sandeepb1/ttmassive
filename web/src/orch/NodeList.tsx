@@ -3,11 +3,11 @@
 import { Fragment } from 'react';
 import { CardBody } from './AgentCard';
 import { Icon } from './bits';
-import { runOrder } from './model';
+import { awaitingApproval, runOrder } from './model';
 import type { Flow, Run } from './types';
 
 export function NodeList({ flow, run, selected, onSelect }: { flow: Flow; run: Run | null; selected: string | null; onSelect: (id: string) => void }) {
-  const waitingFor = run?.status.state === 'paused' && run.status.pause.kind === 'approval' ? run.status.pause.node : null;
+  const awaiting = new Set(run ? awaitingApproval(run) : []);
   const nodes = runOrder(flow);
   return (
     <div className="mc-nodelist">
@@ -26,11 +26,11 @@ export function NodeList({ flow, run, selected, onSelect }: { flow: Flow; run: R
               style={{ textAlign: 'left', cursor: 'pointer' }}
               data-engine={n.engine}
               data-status={nr?.status}
-              data-waiting={n.id === waitingFor || undefined}
+              data-waiting={awaiting.has(n.id) || undefined}
               data-selected={n.id === selected}
               onClick={() => onSelect(n.id)}
             >
-              <CardBody node={n} run={nr} waiting={n.id === waitingFor} />
+              <CardBody node={n} run={nr} waiting={awaiting.has(n.id)} />
             </button>
           </Fragment>
         );

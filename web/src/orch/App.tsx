@@ -100,7 +100,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       if (m.ok) setModels(m.data);
       if (f.ok) {
         setLists(f.data);
-        if (!initialRun && f.data.starters[0]) setFlow(cloneFlow(f.data.starters[0]));
+        // The editor behind a run opened from a link starts on a starter too, not on a blank page.
+        if (f.data.starters[0]) setFlow(cloneFlow(f.data.starters[0]));
       }
       if (rs.ok) setRuns(rs.data);
       if (u.ok) setUsage(u.data);
@@ -123,8 +124,9 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   useEffect(() => {
     const follow = () => {
       const m = /^#orch\/([A-Za-z0-9_-]+)$/.exec(location.hash);
-      if (!m) return;
-      setRunId((now) => (now === m[1] ? now : m[1]!));
+      if (m) setRunId((now) => (now === m[1] ? now : m[1]!));
+      else if (location.hash === '#orch/') setRunId(null); // the address with no run is the editor
+      else return;
       setSelected(null);
     };
     window.addEventListener('hashchange', follow);

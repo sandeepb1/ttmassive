@@ -3,7 +3,7 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Icon, ROLE_ICON } from './bits';
-import { ROLE_INFO, cacheHit, fmtTokens, totalTokens } from './model';
+import { ROLE_INFO, cacheHit, fmtTokens, modelShown, totalTokens } from './model';
 import type { FlowNode, NodeRun } from './types';
 
 export interface CardData extends Record<string, unknown> {
@@ -28,6 +28,8 @@ export function CardBody({ node, run, waiting }: Pick<CardData, 'node' | 'run' |
   const hit = t ? cacheHit(t) : null;
   const pct = (n: number) => `${total ? (n / total) * 100 : 0}%`;
   const last = run?.status === 'running' ? run.transcript.at(-1) : undefined;
+  const model = modelShown(node, run);
+  const breaks = run?.cacheBreaks ?? 0;
   return (
     <>
       <div className="mc-card-head">
@@ -43,10 +45,18 @@ export function CardBody({ node, run, waiting }: Pick<CardData, 'node' | 'run' |
         </span>
       </div>
       <div className="mc-card-meta">
-        <span className="mc-model">{node.model}</span>
+        <span className="mc-model" title={model.cheaper ? 'Switched to a cheaper model because your plan is filling up' : undefined}>
+          {model.label}
+        </span>
+        {model.cheaper && <span className="mc-flag mc-flag-cool">cheaper</span>}
         {node.checkpoint && (
           <span className="mc-flag" title="Waits for your approval before it starts">
             <Icon name="pause" /> approve
+          </span>
+        )}
+        {breaks > 0 && (
+          <span className="mc-flag mc-flag-bad" title="A turn got far less from the prompt cache than the one before it, so the prompt was paid for again">
+            <Icon name="alert" /> cache ×{breaks}
           </span>
         )}
         {run && run.attempts > 1 && (

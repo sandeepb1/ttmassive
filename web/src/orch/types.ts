@@ -13,6 +13,8 @@ export interface FlowNode {
   systemPrompt: string;
   checkpoint: boolean;
   tokenCap?: number | null;
+  /** Never switch this agent to a cheaper model. */
+  keepModel?: boolean;
   x: number;
   y: number;
 }
@@ -37,6 +39,8 @@ export interface Flow {
   edges: FlowEdge[];
   maxRetries: number;
   budget: Budget;
+  /** Give agents that have not started yet a cheaper model as the plan windows fill up. */
+  downshift?: boolean;
 }
 
 export interface Tokens {
@@ -57,6 +61,10 @@ export interface NodeRun {
   transcript: string[];
   /** The agent's conversation id after its latest finished turn; present once it has finished one. */
   session?: string | null;
+  /** The model it actually ran on: the flow's, or a cheaper one. */
+  modelUsed?: string | null;
+  /** Times a turn got far less from the prompt cache than the one before it. */
+  cacheBreaks?: number;
 }
 
 export type Pause =
@@ -99,6 +107,8 @@ export interface Run {
   feedback: Record<string, string>;
   retriesUsed: number;
   created: number;
+  /** When it reached done or cancelled, in Unix seconds. */
+  finished?: number | null;
 }
 
 export interface RunSummary {

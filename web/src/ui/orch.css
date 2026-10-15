@@ -567,6 +567,17 @@ textarea.mc-field {
   font-size: 0.6875rem;
   font-weight: 600;
 }
+.mc-flag-cool {
+  background: color-mix(in oklch, var(--mc-glow) 14%, transparent);
+  color: var(--mc-glow);
+}
+.mc-flag-bad {
+  background: color-mix(in oklch, var(--mc-bad) 14%, transparent);
+  color: var(--mc-bad);
+}
+.mc-dialog:focus {
+  outline: none;
+}
 .mc-card-state {
   margin-left: auto;
   display: grid;

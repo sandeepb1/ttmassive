@@ -7,7 +7,7 @@ import {
   type Connection, type Edge, type Node, type NodeChange,
 } from '@xyflow/react';
 import { AgentCard, type CardData } from './AgentCard';
-import { addEdge, connectionProblem } from './model';
+import { addEdge, awaitingApproval, connectionProblem } from './model';
 import type { EdgeKind, Flow, Run } from './types';
 
 const nodeTypes = { agent: AgentCard };
@@ -42,7 +42,7 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
     return () => window.clearTimeout(id);
   }, [fitToken, rf]);
 
-  const waitingFor = run?.status.state === 'paused' && run.status.pause.kind === 'approval' ? run.status.pause.node : null;
+  const awaiting = useMemo(() => new Set(run ? awaitingApproval(run) : []), [run]);
 
   const nodes: Node[] = useMemo(
     () =>
@@ -52,9 +52,9 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
         position: { x: n.x, y: n.y },
         selected: n.id === selected,
         draggable: editable,
-        data: { node: n, run: run?.nodes[n.id], waiting: n.id === waitingFor, selected: n.id === selected } satisfies CardData,
+        data: { node: n, run: run?.nodes[n.id], waiting: awaiting.has(n.id), selected: n.id === selected } satisfies CardData,
       })),
-    [flow.nodes, run, selected, editable, waitingFor],
+    [flow.nodes, run, selected, editable, awaiting],
   );
 
   const edges: Edge[] = useMemo(

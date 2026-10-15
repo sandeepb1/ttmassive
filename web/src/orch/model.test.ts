@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  awaitingApproval, cacheBreakCount, fmtDuration, modelShown, summary,
   addEdge, answersFor, cacheHit, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, newNode, pauseInfo, removeNode, runOrder, runTokens, statusLabel, tidy,
 } from './model.ts';
@@ -190,4 +191,51 @@ test('a finished run says which branch holds each builder’s work', () => {
   assert.deepEqual(builderBranches(r), []);
   r.nodes = { n3: { status: 'done', attempts: 2, output: null, error: null, transcript: [], tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } };
   assert.deepEqual(builderBranches(r), [{ node: 'n3', name: 'Builder', branch: 'ttm-orch/r1-n3' }]);
+});
+
+const nodeRun = (status: 'pending' | 'running' | 'done', extra: object = {}) => ({
+  status, attempts: 1, output: null, error: null, transcript: [], tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, ...extra,
+});
+
+test('an agent waiting for approval is shown even while its sibling is still working', () => {
+  // orch -> a, b, both asking first; a's input is done, b is not started because orch is the only thing done.
+  const f = line(); // n1 orch -> n2 researcher -> n3 builder (asks) -> n4 judge
+  const r = runOf(f, { state: 'running' });
+  r.nodes = { n1: nodeRun('done'), n2: nodeRun('running'), n3: nodeRun('pending'), n4: nodeRun('pending') };
+  assert.deepEqual(awaitingApproval(r), [], 'the builder is not ready until the researcher is done');
+  r.nodes.n2 = nodeRun('done');
+  assert.deepEqual(awaitingApproval(r), ['n3'], 'ready, and it asks first');
+  r.approved = ['n3'];
+  assert.deepEqual(awaitingApproval(r), []);
+});
+
+test('a downshifted model shows what it replaced', () => {
+  const n = line().nodes[0]!; // opus
+  assert.deepEqual(modelShown(n), { label: 'opus', cheaper: false });
+  assert.deepEqual(modelShown(n, { modelUsed: 'opus' }), { label: 'opus', cheaper: false });
+  assert.deepEqual(modelShown(n, { modelUsed: 'sonnet' }), { label: 'opus → sonnet', cheaper: true });
+});
+
+test('durations read naturally', () => {
+  assert.deepEqual([4, 59, 60, 83, 3599, 3600, 3725].map(fmtDuration), ['4s', '59s', '1m 00s', '1m 23s', '59m 59s', '1h 00m', '1h 02m']);
+});
+
+test('a run summary counts what happened', () => {
+  const f = line();
+  const r = runOf(f, { state: 'done' });
+  r.created = 100;
+  r.finished = 183;
+  r.retriesUsed = 1;
+  r.nodes = {
+    n1: nodeRun('done', { modelUsed: 'sonnet', tokens: { input: 10, output: 5, cacheRead: 80, cacheWrite: 5 } }),
+    n3: nodeRun('done', { cacheBreaks: 2, tokens: { input: 10, output: 5, cacheRead: 80, cacheWrite: 5 } }),
+  };
+  const s = summary(r);
+  assert.equal(s.duration, 83);
+  assert.equal(s.cheaper, 1, 'only the orchestrator ran on something other than what the flow asked for');
+  assert.equal(s.cacheBreaks, 2);
+  assert.equal(cacheBreakCount(r), 2);
+  assert.equal(s.sentBack, 1);
+  assert.equal(s.tokens, 210, 'two agents of 100 tokens each, plus 10 of overhead (the questions)');
+  assert.equal(summary({ ...r, finished: null }).duration, null);
 });

@@ -8,16 +8,34 @@ import type { Flow, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
 
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 function Dialog({ title, onClose, children, foot }: { title: string; onClose?: () => void; children: ReactNode; foot: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!onClose) return;
     const key = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     document.addEventListener('keydown', key);
     return () => document.removeEventListener('keydown', key);
   }, [onClose]);
+  // Keyboard focus belongs to the dialog while it is open, and goes back to where it was when it closes.
+  useEffect(() => {
+    const before = document.activeElement as HTMLElement | null;
+    const el = box.current;
+    if (el && !el.contains(document.activeElement)) (el.querySelector<HTMLElement>(FOCUSABLE) ?? el).focus();
+    return () => before?.focus?.();
+  }, []);
+  const trap = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab' || !box.current) return;
+    const items = [...box.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
+    if (!items.length) return;
+    const [first, last] = [items[0]!, items[items.length - 1]!];
+    if (e.shiftKey && document.activeElement === first) (e.preventDefault(), last.focus());
+    else if (!e.shiftKey && document.activeElement === last) (e.preventDefault(), first.focus());
+  };
   return (
     <div className="mc-scrim" onPointerDown={(e) => e.target === e.currentTarget && onClose?.()}>
-      <div className="mc-dialog" role="dialog" aria-modal="true" aria-label={title}>
+      <div ref={box} className="mc-dialog" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onKeyDown={trap}>
         <div className="mc-panel-head">
           <span style={{ flex: 1 }}>{title}</span>
           {onClose && (

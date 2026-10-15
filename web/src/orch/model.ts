@@ -61,13 +61,14 @@ export function newNode(flow: Flow, role: Role, models: Models, at: { x: number;
     // A builder changes files, so it waits for the user by default.
     checkpoint: role === 'builder',
     tokenCap: null,
+    keepModel: false,
     x: Math.round(at.x),
     y: Math.round(at.y),
   };
 }
 
 export function emptyFlow(id: string, name: string): Flow {
-  return { id, name, nodes: [], edges: [], maxRetries: 2, budget: { claudePct: 15, codexPct: 10, stopWindowPct: 85 } };
+  return { id, name, nodes: [], edges: [], maxRetries: 2, budget: { claudePct: 15, codexPct: 10, stopWindowPct: 85 }, downshift: false };
 }
 
 export function removeNode(flow: Flow, id: string): Flow {
@@ -225,6 +226,55 @@ export function builderBranches(run: Run): { node: string; name: string; branch:
   return run.flow.nodes
     .filter((n) => n.role === 'builder' && (run.nodes[n.id]?.attempts ?? 0) > 0)
     .map((n) => ({ node: n.id, name: n.name, branch: `ttm-orch/${run.id}-${n.id}` }));
+}
+
+/** Agents the run cannot start until you approve them, even while others are still working: every agent that
+ *  asks first, has all its inputs done, and has not been let through. */
+export function awaitingApproval(run: Run): string[] {
+  return run.flow.nodes
+    .filter((n) => n.checkpoint && !run.approved.includes(n.id))
+    .filter((n) => run.nodes[n.id]?.status === 'pending')
+    .filter((n) => run.flow.edges.filter((e) => e.kind === 'forward' && e.to === n.id).every((e) => run.nodes[e.from]?.status === 'done'))
+    .map((n) => n.id);
+}
+
+/** The model an agent ran on, and whether that is cheaper than the one the flow asked for. */
+export function modelShown(node: FlowNode, nr?: { modelUsed?: string | null }): { label: string; cheaper: boolean } {
+  const used = nr?.modelUsed;
+  return used && used !== node.model ? { label: `${node.model} → ${used}`, cheaper: true } : { label: used ?? node.model, cheaper: false };
+}
+
+export const cacheBreakCount = (run: Run): number => Object.values(run.nodes).reduce((n, x) => n + (x.cacheBreaks ?? 0), 0);
+
+export function fmtDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
+}
+
+export interface Summary {
+  duration: number | null;
+  tokens: number;
+  cached: number | null;
+  sentBack: number;
+  cheaper: number;
+  cacheBreaks: number;
+}
+
+/** What to say about a finished run. */
+export function summary(run: Run): Summary {
+  const t = runTokens(run);
+  const cheaper = run.flow.nodes.filter((n) => modelShown(n, run.nodes[n.id]).cheaper).length;
+  return {
+    duration: run.finished ? run.finished - run.created : null,
+    tokens: totalTokens(t),
+    cached: cacheHit(t),
+    sentBack: run.retriesUsed,
+    cheaper,
+    cacheBreaks: cacheBreakCount(run),
+  };
 }
 
 export const sumTokens = (list: Tokens[]): Tokens =>

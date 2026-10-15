@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import { Icon, ROLE_ICON, Field, Switch } from './bits';
-import { ROLE_INFO, cacheHit, fmtTokens, totalTokens } from './model';
+import { ROLE_INFO, cacheHit, fmtTokens, modelShown, totalTokens } from './model';
 import type { Engine, Flow, FlowNode, Models, NodeRun, Run } from './types';
 
 interface Props {
@@ -58,6 +58,15 @@ function FlowPanel({ flow, editable, onFlow }: Props) {
       <Field label="Times a judge may send work back" hint="After this many, the run pauses and asks you.">
         <input className="mc-field mc-mono" type="number" min={0} max={5} disabled={!editable} value={flow.maxRetries} onChange={(e) => onFlow({ maxRetries: Math.min(5, Math.max(0, Math.round(Number(e.target.value) || 0))) })} />
       </Field>
+      <div className="mc-section">
+        <Switch
+          on={!!flow.downshift}
+          disabled={!editable}
+          onChange={(v) => onFlow({ downshift: v })}
+          label="Use cheaper models as my plan fills up"
+          hint="An agent that has not started yet gets the next model down (Opus, then Sonnet, then Haiku; Codex the same) once the run is half way to a limit, and the cheapest from three quarters. Never a dearer one. An agent keeps the model it started on, so its prompt cache is not lost."
+        />
+      </div>
     </>
   );
 }
@@ -87,7 +96,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
         <span style={{ color: 'var(--mc-faint)' }}>· {ROLE_INFO[node.role].blurb}</span>
       </div>
 
-      {nr && <RunDetail nr={nr} feedback={feedback} />}
+      {nr && <RunDetail nr={nr} node={node} feedback={feedback} />}
 
       {nr && node.role === 'builder' && (
         <div className="mc-section">
@@ -144,6 +153,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
 
       <div className="mc-section">
         <Switch on={node.checkpoint} disabled={!editable} onChange={(v) => onNode(node.id, { checkpoint: v })} label="Ask me before it starts" hint={node.role === 'builder' ? 'It changes files, in its own copy of the project.' : undefined} />
+        <Switch on={!!node.keepModel} disabled={!editable} onChange={(v) => onNode(node.id, { keepModel: v })} label="Always use this model" hint="Never switch it to a cheaper one. Only matters when the flow uses cheaper models as the plan fills up." />
         {flow.edges.some((e) => e.kind === 'retry' && e.to === node.id) && <p className="mc-hint">A judge can send work back to this agent.</p>}
       </div>
       <Field label="Token cap" hint="Pause the run if this agent uses more than this. Cache reads do not count. Leave empty for no cap.">
@@ -159,7 +169,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
   );
 }
 
-function RunDetail({ nr, feedback }: { nr: NodeRun; feedback?: string }) {
+function RunDetail({ nr, node, feedback }: { nr: NodeRun; node: FlowNode; feedback?: string }) {
   const t = nr.tokens;
   const hit = cacheHit(t);
   return (
@@ -170,6 +180,8 @@ function RunDetail({ nr, feedback }: { nr: NodeRun; feedback?: string }) {
         <dd>{nr.status}</dd>
         <dt>Turns</dt>
         <dd>{nr.attempts}</dd>
+        <dt>Model</dt>
+        <dd>{modelShown(node, nr).label}</dd>
         <dt>Fresh input</dt>
         <dd>{fmtTokens(t.input + t.cacheWrite)}</dd>
         <dt>Output</dt>
@@ -181,6 +193,12 @@ function RunDetail({ nr, feedback }: { nr: NodeRun; feedback?: string }) {
         </dd>
         <dt>Total</dt>
         <dd>{fmtTokens(totalTokens(t))}</dd>
+        {(nr.cacheBreaks ?? 0) > 0 && (
+          <>
+            <dt>Cache breaks</dt>
+            <dd style={{ color: 'var(--mc-bad)' }}>{nr.cacheBreaks}</dd>
+          </>
+        )}
       </dl>
       {nr.error && <p className="mc-error">{nr.error}</p>}
       {feedback && (

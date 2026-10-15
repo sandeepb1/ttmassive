@@ -738,14 +738,24 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
   and the stop line. A run stops, and asks you, when it has used its share of a window (15% of Claude's and 10% of
   Codex's by default), when any window reaches 85%, or when an agent passes its token cap. Change them in **Flow
   settings**. The share is how far the window moved since the run began, so anything else using your plan at the same
-  time counts too. Each agent card shows its tokens and how much came from the prompt cache.
+  time counts too. Each agent card shows its tokens and how much came from the prompt cache. A **cache break** flag
+  appears on an agent whose turn got far less from the cache than the one before it: something made it pay for its
+  prompt again.
+- **Cheaper models as the plan fills up** (off by default; switch it on in **Flow settings**). Once a run is half way
+  to a limit, an agent that has not started yet gets the next model down (Opus, then Sonnet, then Haiku; Codex's
+  models the same way), and the cheapest from three quarters of the way. It never goes up, leaves a model it does not
+  know alone, and an agent keeps the model it started on so its cache is not lost. **Always use this model** on an
+  agent exempts it. The card shows *opus → haiku* and a *cheaper* tag. A finished run shows how long it took, what
+  it used and how much came from the cache.
 - **On a phone** the chart becomes a list of agents in run order, with the same status, approvals and details.
   Building a flow needs a tablet or larger.
 
 Agents are started with your own Claude Code and Codex logins, with your hooks, plugins and MCP servers for Claude
-switched off and Codex's plugins, hooks and apps switched off, so they start from the same small prompt each time and
-the cache holds. Claude agents leave nothing in your conversation history, except builders, whose conversations are
-kept so they can be taken over (they appear under their worktree's folder). Codex MCP servers listed in `~/.codex/config.toml` still load and add to every Codex prompt.
+switched off, and Codex agents get none of your MCP servers, plugins, hooks or apps, so they start from the same small
+prompt each time and the cache holds. Codex's own browser, computer-use, image and sub-agent features are off too: an
+unattended agent cannot drive your browser or computer, start agents of its own, or reach tools such as a home-lab
+server. Claude agents leave nothing in your conversation history, except builders, whose conversations are kept so
+they can be taken over (they appear under their worktree's folder).
 A run's state is saved after every step. If ttm restarts while one is going, it comes back paused, and **Try again**
 continues from the last finished agent.
 
