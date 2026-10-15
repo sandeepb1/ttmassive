@@ -41,7 +41,7 @@
   .q-note { font-size: 0.75rem; color: var(--warn-text); }
 
   .chat-prompt { align-self: center; width: calc(min(100%, 820px) - 16px); margin: 0 8px 6px; border-bottom: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
-  .chat-err { font-size: 0.8125rem; color: var(--danger-text); } .chat-err:empty { display: none; }
+  .chat-err { font-size: 0.8125rem; color: var(--danger-text); overflow: hidden; animation: kit-expand .22s ease; } .chat-err:empty { display: none; }
 
   .q-hint { margin-top: 2px; font-size: 0.75rem; color: var(--fg-muted); }
   .q-actions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -57,7 +57,7 @@
   .sg-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; color: var(--fg-muted); }
   .msg-img { max-width: min(260px, 70%); max-height: 260px; border-radius: var(--radius-lg); border: 1px solid var(--border-subtle); object-fit: cover; }
 
-  .chat-note { font-size: 0.8125rem; color: var(--ok-text); } .chat-note:empty { display: none; }
+  .chat-note { font-size: 0.8125rem; color: var(--ok-text); overflow: hidden; animation: kit-expand .22s ease; } .chat-note:empty { display: none; }
 
 
 

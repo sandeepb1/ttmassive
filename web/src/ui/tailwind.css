@@ -108,6 +108,12 @@
 @keyframes kit-fade-in {
   from { opacity: 0; }
 }
+/* A line that appears above the composer (a suggested reply, a note) opens up instead of pushing the conversation
+   up in one frame. The end value is generous: the animation ends at the element's own height. */
+@keyframes kit-expand {
+  from { max-height: 0; opacity: 0; }
+  to { max-height: 8rem; opacity: 1; }
+}
 @keyframes kit-fade-out {
   to { opacity: 0; }
 }
