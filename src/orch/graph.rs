@@ -107,7 +107,8 @@ fn forward() -> EdgeKind {
     EdgeKind::Forward
 }
 
-/// Share of each plan-limit window a single run may use.
+/// The plan limits: the share of each window a single run may use, and the line no window may pass. One set for
+/// the whole app, changed any time and applied to runs that are going.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Budget {
@@ -115,6 +116,17 @@ pub struct Budget {
     pub codex_pct: f64,
     /// Stop the run when the whole window (your own sessions included) passes this.
     pub stop_window_pct: f64,
+}
+
+impl Budget {
+    pub fn validate(&self) -> Result<(), String> {
+        let pct = |v: f64| v.is_finite() && v > 0.0 && v <= 100.0;
+        if pct(self.claude_pct) && pct(self.codex_pct) && pct(self.stop_window_pct) {
+            Ok(())
+        } else {
+            Err("limits must be above 0 and at most 100".into())
+        }
+    }
 }
 
 impl Default for Budget {
@@ -132,6 +144,7 @@ pub struct Flow {
     pub edges: Vec<Edge>,
     #[serde(default = "default_retries")]
     pub max_retries: u8,
+    /// Older flows carry their own limits. They are no longer used: the limits are the same for every flow.
     #[serde(default)]
     pub budget: Budget,
     /// Give agents that have not started yet a cheaper model as the plan windows fill up. Never a dearer one.

@@ -1,10 +1,10 @@
 // The panel for the selected agent: edit it before a run, watch it during one. With nothing selected it holds
-// the settings of the whole flow (budget, retries).
+// the settings: the plan limits (the same for every flow, changeable any time) and this flow's own choices.
 
 import { useState } from 'react';
 import { Icon, iconFor, Field, Switch } from './bits';
 import { CAPABILITY_SHORT, OUTPUT_TEXT, cacheHit, consistent, fmtTokens, modelShown, roleBlurb, roleLabel, totalTokens, writes } from './model';
-import type { Capability, Engine, Flow, FlowNode, Models, NodeRun, Output, Run } from './types';
+import type { Budget, Capability, Engine, Flow, FlowNode, Models, NodeRun, Output, Run } from './types';
 
 interface Props {
   flow: Flow;
@@ -13,6 +13,8 @@ interface Props {
   models: Models;
   editable: boolean;
   goal: string;
+  limits: Budget;
+  onLimits: (b: Budget) => void;
   onNode: (id: string, patch: Partial<FlowNode>) => void;
   onFlow: (patch: Partial<Flow>) => void;
   onDelete: (id: string) => void;
@@ -27,7 +29,7 @@ export function Inspector(p: Props) {
   return (
     <>
       <div className="mc-panel-head">
-        <span style={{ flex: 1 }}>{p.node ? p.node.name : 'Flow settings'}</span>
+        <span style={{ flex: 1 }}>{p.node ? p.node.name : 'Settings'}</span>
         <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label="Close" onClick={p.onClose}>
           <Icon name="close" />
         </button>
@@ -37,35 +39,48 @@ export function Inspector(p: Props) {
   );
 }
 
-function FlowPanel({ flow, editable, onFlow }: Props) {
-  const b = flow.budget;
-  const setBudget = (patch: Partial<typeof b>) => onFlow({ budget: { ...b, ...patch } });
+function FlowPanel({ flow, run, editable, limits, onLimits, onFlow }: Props) {
+  const b = limits;
   const pct = (v: string, fallback: number) => Math.min(100, Math.max(1, Number(v) || fallback));
   return (
     <>
       <p className="mc-hint" style={{ margin: '0 0 1rem' }}>
-        Select an agent to edit it. These limits protect your plan: a run stops, and asks you, when it reaches one.
+        Select an agent to edit it.
       </p>
-      <Field label="Claude: most this run may use" hint="Share of your 5-hour Claude window.">
-        <input className="mc-field mc-mono" type="number" min={1} max={100} disabled={!editable} value={b.claudePct} onChange={(e) => setBudget({ claudePct: pct(e.target.value, b.claudePct) })} />
-      </Field>
-      <Field label="Codex: most this run may use" hint="Share of your 5-hour Codex window.">
-        <input className="mc-field mc-mono" type="number" min={1} max={100} disabled={!editable} value={b.codexPct} onChange={(e) => setBudget({ codexPct: pct(e.target.value, b.codexPct) })} />
-      </Field>
-      <Field label="Stop line" hint="Stop whenever any window reaches this, so your own sessions are never left with nothing.">
-        <input className="mc-field mc-mono" type="number" min={1} max={100} disabled={!editable} value={b.stopWindowPct} onChange={(e) => setBudget({ stopWindowPct: pct(e.target.value, b.stopWindowPct) })} />
-      </Field>
-      <Field label="Times a judge may send work back" hint="After this many, the run pauses and asks you.">
-        <input className="mc-field mc-mono" type="number" min={0} max={5} disabled={!editable} value={flow.maxRetries} onChange={(e) => onFlow({ maxRetries: Math.min(5, Math.max(0, Math.round(Number(e.target.value) || 0))) })} />
-      </Field>
-      <div className="mc-section">
-        <Switch
-          on={!!flow.downshift}
-          disabled={!editable}
-          onChange={(v) => onFlow({ downshift: v })}
-          label="Use cheaper models as my plan fills up"
-          hint="An agent that has not started yet gets the next model down (Opus, then Sonnet, then Haiku; Codex the same) once the run is half way to a limit, and the cheapest from three quarters. Never a dearer one. An agent keeps the model it started on, so its prompt cache is not lost."
-        />
+
+      <div className="mc-group">
+        <h3 className="mc-group-title">Plan limits</h3>
+        <p className="mc-hint">
+          The same for every flow. They protect your plan: a run stops, and asks you, when it reaches one. You can change them at any time, and a run that is going
+          uses the new numbers the next time it checks.
+        </p>
+        <Field label="Most one run may use of Claude" hint="Share of your 5-hour Claude window.">
+          <input className="mc-field mc-mono" type="number" min={1} max={100} value={b.claudePct} onChange={(e) => onLimits({ ...b, claudePct: pct(e.target.value, b.claudePct) })} />
+        </Field>
+        <Field label="Most one run may use of Codex" hint="Share of your 5-hour Codex window.">
+          <input className="mc-field mc-mono" type="number" min={1} max={100} value={b.codexPct} onChange={(e) => onLimits({ ...b, codexPct: pct(e.target.value, b.codexPct) })} />
+        </Field>
+        <Field label="Stop everything at" hint="Stop whenever any window reaches this, so your own sessions are never left with nothing.">
+          <input className="mc-field mc-mono" type="number" min={1} max={100} value={b.stopWindowPct} onChange={(e) => onLimits({ ...b, stopWindowPct: pct(e.target.value, b.stopWindowPct) })} />
+        </Field>
+        {run?.waived && <p className="mc-hint">You chose to carry on past the limits for this run, so it is not being stopped by them.</p>}
+      </div>
+
+      <div className="mc-group">
+        <h3 className="mc-group-title">This flow</h3>
+        {!editable && <p className="mc-hint">Viewing an execution: these were fixed when it started. Go back to the design to change them.</p>}
+        <Field label="Times a judge may send work back" hint="After this many, the run pauses and asks you.">
+          <input className="mc-field mc-mono" type="number" min={0} max={5} disabled={!editable} value={flow.maxRetries} onChange={(e) => onFlow({ maxRetries: Math.min(5, Math.max(0, Math.round(Number(e.target.value) || 0))) })} />
+        </Field>
+        <div className="mc-section">
+          <Switch
+            on={!!flow.downshift}
+            disabled={!editable}
+            onChange={(v) => onFlow({ downshift: v })}
+            label="Use cheaper models as my plan fills up"
+            hint="An agent that has not started yet gets the next model down (Opus, then Sonnet, then Haiku; Codex the same) once the run is half way to a limit, and the cheapest from three quarters. Never a dearer one. An agent keeps the model it started on, so its prompt cache is not lost."
+          />
+        </div>
       </div>
     </>
   );

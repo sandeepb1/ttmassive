@@ -61,6 +61,8 @@ pub struct Service {
     /// (run id, the run as JSON) after every change.
     events: broadcast::Sender<(String, Arc<String>)>,
     windows: Arc<Mutex<Windows>>,
+    /// The plan limits. Read each time a run is checked, so a change reaches runs that are already going.
+    limits: Arc<Mutex<super::graph::Budget>>,
     scratch: PathBuf,
 }
 
@@ -91,6 +93,7 @@ impl Service {
         }
         Service {
             scratch: data_dir.join("orch").join("scratch"),
+            limits: Arc::new(Mutex::new(store.load_limits())),
             store,
             codex: Arc::default(),
             runs: Mutex::default(),
@@ -307,8 +310,20 @@ impl Service {
         self.get(id)
     }
 
-    /// Carry on after a pause: a failure, a limit, or a restart.
-    pub fn resume(&self, st: &Arc<AppState>, id: &str) -> Result<Run, Fail> {
+    pub fn limits(&self) -> super::graph::Budget {
+        *self.limits.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn set_limits(&self, b: super::graph::Budget) -> Result<super::graph::Budget, Fail> {
+        b.validate().map_err(Fail::Bad)?;
+        self.store.save_limits(&b).map_err(Fail::Internal)?;
+        *self.limits.lock().unwrap_or_else(|e| e.into_inner()) = b;
+        Ok(b)
+    }
+
+    /// Carry on after a pause: a failure, a limit, or a restart. `waive` also stops the plan limits being checked
+    /// again for this run, which is what "carry on anyway" means after a limit stopped it.
+    pub fn resume(&self, st: &Arc<AppState>, id: &str, waive: bool) -> Result<Run, Fail> {
         let live = self.live(id)?;
         {
             let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -319,6 +334,10 @@ impl Service {
             // Nodes that were interrupted by a restart or failed are tried again.
             for n in run.nodes.values_mut().filter(|n| n.status == NodeStatus::Interrupted) {
                 n.status = NodeStatus::Pending;
+            }
+            if waive && !run.waived {
+                run.waived = true;
+                run.note(None, super::run::LogKind::Decision, "You chose to carry on past the plan limits: they are not checked again for this run", None);
             }
             run.status = RunStatus::Running;
             self.persist(&run);
@@ -373,10 +392,16 @@ impl Service {
                     }
                 })
             };
-            let windows = svc.windows.clone();
-            let limit = move |r: &Run| gate::check(r, &windows.lock().unwrap_or_else(|e| e.into_inner()));
-            let windows = svc.windows.clone();
-            let pressure = move |r: &Run, e: super::graph::Engine| gate::pressure(r, &windows.lock().unwrap_or_else(|x| x.into_inner()), e);
+            let (windows, limits) = (svc.windows.clone(), svc.limits.clone());
+            let limit = move |r: &Run| {
+                let b = *limits.lock().unwrap_or_else(|e| e.into_inner());
+                gate::check(r, &windows.lock().unwrap_or_else(|e| e.into_inner()), &b)
+            };
+            let (windows, limits) = (svc.windows.clone(), svc.limits.clone());
+            let pressure = move |r: &Run, e: super::graph::Engine| {
+                let b = *limits.lock().unwrap_or_else(|e| e.into_inner());
+                gate::pressure(r, &windows.lock().unwrap_or_else(|x| x.into_inner()), &b, e)
+            };
             let changed = |r: &Run| svc.persist(r);
             let ctl = Control { cancelled: &live.cancelled, changed: &changed, limit: &limit, pressure: &pressure };
             tokio::select! {

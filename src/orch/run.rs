@@ -208,6 +208,9 @@ pub struct Run {
     /// When it reached done or cancelled; `None` while it can still go on.
     #[serde(default)]
     pub finished: Option<i64>,
+    /// The user chose to carry on past the plan limits: they are not checked again for this run.
+    #[serde(default)]
+    pub waived: bool,
     /// What happened and why, oldest first: requests, answers, decisions, skills and sub-agents.
     #[serde(default)]
     pub log: Vec<LogEntry>,
@@ -236,6 +239,7 @@ impl Run {
             retries_used: 0,
             created,
             finished: None,
+            waived: false,
             log: Vec::new(),
         }
     }

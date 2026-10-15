@@ -705,8 +705,9 @@ preset in `config.toml` and as `ttm new <preset> --yolo`. The default is off.
 ## Orchestrator mode
 
 A team of agents on one task. Open it from **Orchestrator** at the bottom of the sessions drawer, or
-**Orchestrator mode…** in the command bar. It covers the whole screen with a flow chart; **←** goes back to your
-sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run>` for a run you can bookmark.
+**Orchestrator mode…** in the command bar. It covers the whole screen with a flow chart; **Single agent** at the top left goes back to your
+sessions, which keep running underneath. (The browser's own Back button is not used for this, so it is safe to use
+within the orchestrator.) In an installed iOS app the top bar sits below the status-bar fade. Its address is `#orch/`, or `#orch/<run>` for a run you can bookmark.
 
 - **A flow** is agents joined by arrows: who hands its result to whom. Add agents from the bar under the chart
   (the four most flows need, and **More roles** for the rest), drag from one agent's right dot to the next one's left
@@ -778,12 +779,15 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
   again, a fresh agent does it.
 - **Limits protect your plan.** The bar at the top shows the 5-hour Claude and Codex windows, the run's own share,
   and the stop line. A run stops, and asks you, when it has used its share of a window (15% of Claude's and 10% of
-  Codex's by default), when any window reaches 85%, or when an agent passes its token cap. Change them in **Flow
-  settings**. The share is how far the window moved since the run began, so anything else using your plan at the same
+  Codex's by default), when any window reaches 85%, or when an agent passes its token cap. The limits are the same
+  for every flow and can be changed at any time, even while a run is going, in **Settings** (the sliders button next to
+  the meters, or the details panel with nothing selected); a run uses the new numbers the next time it checks. When a
+  run has stopped on a limit, **Carry on anyway** ignores the limits for the rest of that run (it says *limits
+  ignored* in the run bar), and **Change the limits** opens Settings. The share is how far the window moved since the run began, so anything else using your plan at the same
   time counts too. Each agent card shows its tokens and how much came from the prompt cache. A **cache break** flag
   appears on an agent whose turn got far less from the cache than the one before it: something made it pay for its
   prompt again.
-- **Cheaper models as the plan fills up** (off by default; switch it on in **Flow settings**). Once a run is half way
+- **Cheaper models as the plan fills up** (off by default; switch it on in **Settings**, under *This flow*). Once a run is half way
   to a limit, an agent that has not started yet gets the next model down (Opus, then Sonnet, then Haiku; Codex's
   models the same way), and the cheapest from three quarters of the way. It never goes up, leaves a model it does not
   know alone, and an agent keeps the model it started on so its cache is not lost. **Always use this model** on an

@@ -62,6 +62,8 @@ export interface Budget {
   stopWindowPct: number;
 }
 
+export const DEFAULT_LIMITS: Budget = { claudePct: 15, codexPct: 10, stopWindowPct: 85 };
+
 export interface Flow {
   id: string;
   name: string;
@@ -157,6 +159,8 @@ export interface Run {
   created: number;
   /** When it reached done or cancelled, in Unix seconds. */
   finished?: number | null;
+  /** The user chose to carry on past the plan limits. */
+  waived?: boolean;
   log?: LogEntry[];
 }
 

@@ -11,6 +11,7 @@ import type { Flow, FlowNode, Models, Role, Run, RunSummary, UsageSnapshot } fro
 
 const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'] };
 const at = { x: 0, y: 0 };
+const LIMITS = { claudePct: 15, codexPct: 10, stopWindowPct: 85 };
 const def = (id: Role) => roleDef(id)!;
 
 function line(): Flow {
@@ -114,9 +115,10 @@ test('flowProblem says what stops a flow being saved', () => {
   assert.match(flowProblem(emptyFlow('f', 'x'))!, /at least one/);
   assert.match(flowProblem(addEdge(line(), 'n4', 'n1', 'forward'))!, /loop/);
   assert.match(flowProblem(addEdge(line(), 'n2', 'n3', 'retry'))!, /verdict/);
-  const bad = line();
-  bad.budget.claudePct = 0;
-  assert.match(flowProblem(bad)!, /Budget/);
+  // Limits are no longer part of a flow, so an old flow's own numbers cannot stop it being saved.
+  const old = line();
+  old.budget.claudePct = 0;
+  assert.equal(flowProblem(old), null);
   const noModel = line();
   noModel.nodes[0]!.model = ' ';
   assert.match(flowProblem(noModel)!, /model/);
@@ -151,6 +153,9 @@ test('a pause says what it is waiting for and offers the right button', () => {
   const b = pauseInfo(runOf(f, { state: 'paused', pause: { kind: 'budget', message: 'Claude is at 86%' } }))!;
   assert.equal(b.detail, 'Claude is at 86%');
   assert.equal(b.primary!.action, 'resume');
+  assert.equal(b.primary!.waive, true, 'carrying on past a limit has to say so, or the limit stops it again');
+  assert.equal(b.limits, true);
+  assert.equal(r.primary!.waive, undefined);
 
   const x = pauseInfo(runOf(f, { state: 'paused', pause: { kind: 'failed', node: '', message: 'ttm restarted' } }))!;
   assert.equal(x.title, 'The run was interrupted');
@@ -176,21 +181,25 @@ test('gauges show the run’s share of each window and turn red at the budget', 
     codex: { five_hour: { used_pct: x, resets_at: null }, seven_day: null, error: null },
   });
   const run = runOf(f, { state: 'running' }); // baseline claude 30, codex 0
-  const g = gauges(f, run, usage(35, 2));
+  const g = gauges(f, run, usage(35, 2), LIMITS);
   assert.deepEqual(g.map((x) => [x.engine, x.share, x.tone]), [['claude', 5, 'ok'], ['codex', 2, 'ok']]);
-  assert.equal(gauges(f, run, usage(43, 2))[0]!.tone, 'warn'); // 13 of 15
-  assert.equal(gauges(f, run, usage(45, 2))[0]!.tone, 'bad'); // 15 of 15
-  assert.equal(gauges(f, run, usage(86, 2))[0]!.tone, 'bad'); // past the stop line
+  assert.equal(gauges(f, run, usage(43, 2), LIMITS)[0]!.tone, 'warn'); // 13 of 15
+  assert.equal(gauges(f, run, usage(45, 2), LIMITS)[0]!.tone, 'bad'); // 15 of 15
+  assert.equal(gauges(f, run, usage(86, 2), LIMITS)[0]!.tone, 'bad'); // past the stop line
   // Started high, used little, but the window itself is close to the stop line.
   const high = { ...run, baseline: { claude: 70, codex: 0 } };
-  assert.equal(gauges(f, high, usage(76, 2))[0]!.tone, 'warn');
-  assert.equal(gauges(f, high, usage(60, 2))[0]!.tone, 'ok');
+  assert.equal(gauges(f, high, usage(76, 2), LIMITS)[0]!.tone, 'warn');
+  assert.equal(gauges(f, high, usage(60, 2), LIMITS)[0]!.tone, 'ok');
+  // The limits are whatever is set now: with more room, the same use is no longer a problem.
+  const roomy = { ...LIMITS, claudePct: 40, stopWindowPct: 95 };
+  assert.equal(gauges(f, run, usage(45, 2), roomy)[0]!.tone, 'ok');
+  assert.equal(gauges(f, run, usage(45, 2), roomy)[0]!.budget, 40);
   // No run yet: only the window itself is known.
-  assert.equal(gauges(f, null, usage(35, 2))[0]!.share, null);
-  assert.equal(gauges(f, null, null)[0]!.used, null);
+  assert.equal(gauges(f, null, usage(35, 2), LIMITS)[0]!.share, null);
+  assert.equal(gauges(f, null, null, LIMITS)[0]!.used, null);
   // Only engines the flow uses are shown.
   const claudeOnly = { ...f, nodes: f.nodes.filter((n) => n.engine === 'claude') };
-  assert.deepEqual(gauges(claudeOnly, null, null).map((x) => x.engine), ['claude']);
+  assert.deepEqual(gauges(claudeOnly, null, null, LIMITS).map((x) => x.engine), ['claude']);
 });
 
 const single = { text: 'Which database?', recommended: 'SQLite', options: ['SQLite', 'Postgres', 'Files'], multiple: false };

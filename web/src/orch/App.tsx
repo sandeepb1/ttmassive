@@ -15,7 +15,7 @@ import { RunBar } from './RunBar';
 import { Sidebar } from './Sidebar';
 import { UsageMeters } from './UsageMeters';
 import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
-import type { Flow, FlowLists, Models, Role, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
+import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
 const PHONE = '(max-width: 699px)';
 const WIDE = '(min-width: 1100px)';
@@ -117,6 +117,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const [lists, setLists] = useState<FlowLists>({ saved: [], starters: [] });
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [usage, setUsage] = useState<UsageSnapshot | null>(null);
+  const [limits, setLimitsState] = useState<Budget>(DEFAULT_LIMITS);
   const [recents, setRecents] = useState<RecentDir[]>([]);
 
   const [flow, setFlowState] = useState<Flow>(() => emptyFlow(newFlowId(), 'New flow'));
@@ -170,7 +171,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
 
   useEffect(() => {
     void (async () => {
-      const [m, f, rs, u, d, ro] = await Promise.all([orch.models(), orch.flows(), orch.runs(), orch.usage(), orch.recentDirs(), orch.roles()]);
+      const [m, f, rs, u, d, ro, li] = await Promise.all([orch.models(), orch.flows(), orch.runs(), orch.usage(), orch.recentDirs(), orch.roles(), orch.limits()]);
+      if (li.ok) setLimitsState(li.data);
       if (m.ok) setModels(m.data);
       if (ro.ok) {
         setCatalog(ro.data);
@@ -329,7 +331,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const problem = useMemo(() => flowProblem(flow), [flow]);
   const selectedNode = shown.nodes.find((n) => n.id === selected) ?? null;
   const showList = phone || view === 'list';
-  const meters = useMemo(() => gauges(shown, run, usage), [shown, run, usage]);
+  const meters = useMemo(() => gauges(shown, run, usage, limits), [shown, run, usage, limits]);
 
   /** Leaving a flow that has been changed asks first; returns whether to go on. */
   const mayLeave = () => !edited.current || confirm(`Discard your unsaved changes to “${flow.name}”?`);
@@ -490,6 +492,32 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       }
       return !o;
     });
+  /** Show a run an action returned, then read it again: a run that finishes at once can announce it on the event
+   *  stream before the reply arrives, and the reply must not put the older state back. */
+  const applyRun = (r: Run) => {
+    setRun(r);
+    void orch.getRun(r.id).then((x) => x.ok && setRun((cur) => (cur && cur.id === x.data.id ? x.data : cur)));
+  };
+
+  // The plan limits apply to every flow and to runs that are going, so they are saved as they are typed.
+  const saveTimer = useRef<number>(0);
+  const changeLimits = (b: Budget) => {
+    setLimitsState(b);
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(async () => {
+      const r = await orch.setLimits(b);
+      if (r.ok) say('Limits saved');
+      else {
+        say(r.error);
+        const again = await orch.limits();
+        if (again.ok) setLimitsState(again.data);
+      }
+    }, 500);
+  };
+  const openLimits = () => {
+    setSelected(null);
+    setInspOpen(true);
+  };
   const [menu, setMenu] = useState<MenuState | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
 
@@ -526,7 +554,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const runMenu = (r: RunSummary): MenuItem[] => {
     const items: MenuItem[] = [{ label: 'Open', icon: 'workflow', onSelect: () => openRun(r.id) }];
     if (r.id === runId) items.push({ label: 'Use this version', icon: 'retry', onSelect: () => useThisVersion() });
-    if (r.status.state === 'running') items.push({ label: 'Stop', icon: 'stop', onSelect: () => void act(() => orch.cancel(r.id), (x) => (r.id === runId && setRun(x), void refreshRuns())) });
+    if (r.status.state === 'running') items.push({ label: 'Stop', icon: 'stop', onSelect: () => void act(() => orch.cancel(r.id), (x) => (r.id === runId && applyRun(x), void refreshRuns())) });
     items.push({ kind: 'separator' }, { label: 'Delete execution', icon: 'trash', danger: true, disabled: r.status.state === 'running', onSelect: () => removeRun(r) });
     return items;
   };
@@ -544,8 +572,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   return (
     <>
       <header className="mc-top">
-        <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label="Back to sessions" onClick={onExit}>
-          <Icon name="back" />
+        <button type="button" className="mc-btn mc-exit" title="Leave the orchestrator and go back to single agent mode: your sessions" onClick={onExit}>
+          <Icon name="agent" /> Single agent
         </button>
         {!wide && (
           <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label="Flows and executions" onClick={() => setSideOpen((o) => !o)}>
@@ -566,6 +594,9 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         )}
         <span className="mc-spacer" />
         <UsageMeters gauges={meters} />
+        <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon mc-hide-narrow" aria-label="Settings and plan limits" title="Plan limits and flow settings" onClick={openLimits}>
+          <Icon name="sliders" />
+        </button>
         <div className="mc-top-actions">
           {editable ? (
             <>
@@ -586,8 +617,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               <button type="button" className="mc-btn mc-hide-narrow" onClick={useThisVersion} title="Put this execution's design back in the editor">
                 <Icon name="retry" /> Use this version
               </button>
-              <button type="button" className="mc-btn" onClick={toDesign}>
-                <Icon name="edit" /> <span className="mc-hide-narrow">Back to</span> design
+              <button type="button" className="mc-btn" aria-label="Back to design" title="Back to the design" onClick={toDesign}>
+                <Icon name="edit" /> <span className="mc-hide-narrow">Back to design</span>
               </button>
             </>
           )}
@@ -640,7 +671,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         </aside>
 
         <main className="mc-stage" data-list={showList}>
-          {run && <RunBar run={run} busy={busy} link={link} onApprove={(n) => void act(() => orch.approve(run.id, n), setRun)} onResume={() => void act(() => orch.resume(run.id), setRun)} onCancel={() => void act(() => orch.cancel(run.id), setRun)} onCopy={copyText} />}
+          {run && <RunBar run={run} busy={busy} link={link} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} />}
           {showList ? (
             <NodeList flow={shown} run={run} selected={selected} onSelect={select} />
           ) : (
@@ -675,15 +706,15 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           )}
           {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
           {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
-          {dialog && <NewRunDialog flow={flow} recents={recents} busy={busy} error={error} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
+          {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
           {run?.status.state === 'grilling' && (
             <GrillDialog
               run={run}
               thinking={thinking}
               error={error}
               onAnswer={(a) => void doGrill(a)}
-              onStart={(brief) => void act(() => orch.start(run.id, brief), setRun)}
-              onStop={() => void act(() => orch.cancel(run.id), setRun)}
+              onStart={(brief) => void act(() => orch.start(run.id, brief), applyRun)}
+              onStop={() => void act(() => orch.cancel(run.id), applyRun)}
             />
           )}
         </main>
@@ -696,6 +727,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             models={models}
             editable={editable}
             goal={run?.goal ?? shown.name}
+            limits={limits}
+            onLimits={changeLimits}
             onNode={(id, patch) => editFlow((f) => ({ ...f, nodes: f.nodes.map((n) => (n.id === id ? { ...n, ...patch } : n)) }))}
             onFlow={(patch) => editFlow((f) => ({ ...f, ...patch }))}
             onDelete={(id) => (editFlow((f) => ({ ...f, nodes: f.nodes.filter((n) => n.id !== id), edges: f.edges.filter((e) => e.from !== id && e.to !== id) })), setSelected(null))}

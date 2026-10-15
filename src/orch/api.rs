@@ -60,6 +60,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/runs/{id}/resume", post(resume))
         .route("/api/orch/runs/{id}/cancel", post(cancel))
         .route("/api/orch/runs/{id}/popout", post(pop_out))
+        .route("/api/orch/limits", get(limits).put(set_limits))
         .route("/api/orch/project", get(project))
         .route("/api/orch/project/init", post(project_init))
         .route("/api/orch/events", get(events))
@@ -196,8 +197,24 @@ async fn approve(State(st): St, Path(id): Path<String>, Json(b): Json<ApproveBod
     Ok(json_nocache(st.orch.approve(&st, &id, &b.node)?))
 }
 
-async fn resume(State(st): St, Path(id): Path<String>) -> Result<Response, Fail> {
-    Ok(json_nocache(st.orch.resume(&st, &id)?))
+#[derive(Deserialize, Default)]
+struct ResumeBody {
+    /// Carry on past the plan limits for the rest of the run.
+    #[serde(default)]
+    waive: bool,
+}
+
+async fn limits(State(st): St) -> Response {
+    json_nocache(st.orch.limits())
+}
+
+async fn set_limits(State(st): St, Json(b): Json<super::graph::Budget>) -> Result<Response, Fail> {
+    Ok(json_nocache(st.orch.set_limits(b)?))
+}
+
+async fn resume(State(st): St, Path(id): Path<String>, body: Option<Json<ResumeBody>>) -> Result<Response, Fail> {
+    let waive = body.map(|Json(b)| b.waive).unwrap_or_default();
+    Ok(json_nocache(st.orch.resume(&st, &id, waive)?))
 }
 
 async fn cancel(State(st): St, Path(id): Path<String>) -> Result<Response, Fail> {

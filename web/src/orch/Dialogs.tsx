@@ -5,7 +5,7 @@ import type { RecentDir } from '../dirs';
 import { orch } from './api';
 import { Icon, Field, Switch } from './bits';
 import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
-import type { Capability, Flow, Output, Question, RepoState, Run } from './types';
+import type { Budget, Capability, Flow, Output, Question, RepoState, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
 
@@ -60,8 +60,9 @@ function remembered(): string {
   }
 }
 
-export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: {
+export function NewRunDialog({ flow, limits, recents, busy, error, onCreate, onClose }: {
   flow: Flow;
+  limits: Budget;
   recents: RecentDir[];
   busy: boolean;
   error: string | null;
@@ -113,7 +114,7 @@ export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: 
     }
     onCreate(goal.trim(), project.trim(), skip);
   };
-  const b = flow.budget;
+  const b = limits;
   return (
     <Dialog
       title="New run"
@@ -173,7 +174,7 @@ export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: 
       </Field>
       <Switch on={skip} onChange={setSkip} label="Skip the questions" hint="Use what you typed as the brief." />
       <p className="mc-hint">
-        Stops at {b.stopWindowPct}% of any plan window, or when the run has used {b.claudePct}% of Claude’s or {b.codexPct}% of Codex’s 5-hour window. Change these in the flow settings.
+        Stops at {b.stopWindowPct}% of any plan window, or when the run has used {b.claudePct}% of Claude’s or {b.codexPct}% of Codex’s 5-hour window. Change them any time in Settings.
       </p>
       {error && <p className="mc-error">{error}</p>}
     </Dialog>

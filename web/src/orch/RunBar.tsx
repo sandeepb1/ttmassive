@@ -11,7 +11,8 @@ interface Props {
   busy: boolean;
   link: boolean;
   onApprove: (node: string) => void;
-  onResume: () => void;
+  onResume: (waive?: boolean) => void;
+  onLimits: () => void;
   onCancel: () => void;
   onCopy: (text: string) => void;
 }
@@ -74,7 +75,7 @@ function GitNotice({ run, busy, onFixed }: { run: Run; busy: boolean; onFixed: (
   );
 }
 
-export function RunBar({ run, busy, link, onApprove, onResume, onCancel, onCopy }: Props) {
+export function RunBar({ run, busy, link, onApprove, onResume, onLimits, onCancel, onCopy }: Props) {
   const info = pauseInfo(run);
   const tokens = runTokens(run);
   const hit = cacheHit(tokens);
@@ -106,6 +107,11 @@ export function RunBar({ run, busy, link, onApprove, onResume, onCancel, onCopy 
               <b style={{ color: 'inherit' }}>{breaks}</b> cache {breaks === 1 ? 'break' : 'breaks'}
             </span>
           )}
+          {run.waived && (
+            <span title="You chose to carry on past the plan limits">
+              <b>limits</b> ignored
+            </span>
+          )}
           {run.retriesUsed > 0 && (
             <span>
               <b>{run.retriesUsed}</b> sent back
@@ -120,7 +126,7 @@ export function RunBar({ run, busy, link, onApprove, onResume, onCancel, onCopy 
         )}
       </div>
 
-      <GitNotice run={run} busy={busy} onFixed={(wasFailed) => wasFailed && onResume()} />
+      <GitNotice run={run} busy={busy} onFixed={(wasFailed) => wasFailed && onResume(false)} />
 
       {info && (
         <div className="mc-notice" data-tone={failed ? 'bad' : undefined} role="alert">
@@ -132,9 +138,15 @@ export function RunBar({ run, busy, link, onApprove, onResume, onCancel, onCopy 
                 type="button"
                 className="mc-btn mc-btn-primary"
                 disabled={busy}
-                onClick={() => (info.primary!.action === 'approve' ? onApprove(info.primary!.node!) : onResume())}
+                title={info.primary.waive ? 'Ignore the plan limits for the rest of this run' : undefined}
+                onClick={() => (info.primary!.action === 'approve' ? onApprove(info.primary!.node!) : onResume(info.primary!.waive))}
               >
                 <Icon name={info.primary.action === 'approve' ? 'check' : 'play'} /> {info.primary.label}
+              </button>
+            )}
+            {info.limits && (
+              <button type="button" className="mc-btn" onClick={onLimits}>
+                <Icon name="sliders" /> Change the limits
               </button>
             )}
             <button type="button" className="mc-btn" disabled={busy} onClick={onCancel}>

@@ -1,7 +1,7 @@
 // Calls to /api/orch. A failure comes back as a message to show; a 401 reloads the page to the login.
 
 import { fetchRecentDirs, type RecentDir } from '../dirs';
-import type { Capability, CustomRole, Flow, FlowLists, Models, Output, Role, RepoState, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
+import type { Budget, Capability, CustomRole, Flow, FlowLists, Models, Output, Role, RepoState, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -54,7 +54,10 @@ export const orch = {
   grill: (id: string, answers: string[]) => send<Run>('POST', `${run(id)}/grill`, { answers }),
   start: (id: string, brief?: string) => send<Run>('POST', `${run(id)}/start`, { brief }),
   approve: (id: string, node: string) => send<Run>('POST', `${run(id)}/approve`, { node }),
-  resume: (id: string) => send<Run>('POST', `${run(id)}/resume`),
+  /** `waive` also stops the plan limits being checked again for this run. */
+  resume: (id: string, waive = false) => send<Run>('POST', `${run(id)}/resume`, waive ? { waive: true } : undefined),
+  limits: () => send<Budget>('GET', `${base}/limits`),
+  setLimits: (b: Budget) => send<Budget>('PUT', `${base}/limits`, b),
   projectState: (path: string) => send<{ state: RepoState }>('GET', `${base}/project?path=${encodeURIComponent(path)}`),
   projectInit: (path: string) => send<{ state: RepoState }>('POST', `${base}/project/init`, { path }),
   deleteRun: (id: string) => send<void>('DELETE', run(id)),

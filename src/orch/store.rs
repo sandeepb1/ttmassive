@@ -87,6 +87,20 @@ impl Store {
         }
     }
 
+    /// The plan limits, or the defaults when none were saved (or the file cannot be read).
+    pub fn load_limits(&self) -> super::graph::Budget {
+        std::fs::read(self.file("limits", "global").unwrap_or_default())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<super::graph::Budget>(&b).ok())
+            .filter(|b| b.validate().is_ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_limits(&self, b: &super::graph::Budget) -> Result<()> {
+        b.validate().map_err(anyhow::Error::msg)?;
+        self.write("limits", "global", b)
+    }
+
     pub fn save_run(&self, r: &Run) -> Result<()> {
         self.write("runs", &r.id, r)
     }
@@ -182,6 +196,19 @@ mod tests {
         assert!(s.file("runs", "a/b").is_err());
         assert!(s.file("runs", "").is_err());
         assert!(s.load_run("../x").is_none());
+    }
+
+    #[test]
+    fn limits_default_until_saved_and_bad_ones_are_refused() {
+        let dir = tmp("limits");
+        let s = Store::new(&dir);
+        assert_eq!(s.load_limits(), crate::orch::graph::Budget::default());
+        let b = crate::orch::graph::Budget { claude_pct: 40.0, codex_pct: 30.0, stop_window_pct: 90.0 };
+        s.save_limits(&b).unwrap();
+        assert_eq!(s.load_limits(), b);
+        assert!(s.save_limits(&crate::orch::graph::Budget { claude_pct: 0.0, ..b }).is_err());
+        assert!(s.save_limits(&crate::orch::graph::Budget { codex_pct: 101.0, ..b }).is_err());
+        assert_eq!(s.load_limits(), b, "a refused save leaves the old limits");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 // out, what a paused run is waiting for, and how full the plan windows are. Pure, so node tests it.
 // The server checks everything again; these rules exist so the page can say no before asking.
 
+import { DEFAULT_LIMITS } from './types.ts';
 import type {
   Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
@@ -174,7 +175,7 @@ export function liveLines(run: Run): { node: string; line: string }[] {
 export const isFinished = (s: { state: string }) => s.state === 'done' || s.state === 'cancelled';
 
 export function emptyFlow(id: string, name: string): Flow {
-  return { id, name, nodes: [], edges: [], maxRetries: 2, budget: { claudePct: 15, codexPct: 10, stopWindowPct: 85 }, downshift: false };
+  return { id, name, nodes: [], edges: [], maxRetries: 2, budget: { ...DEFAULT_LIMITS }, downshift: false };
 }
 
 export function removeNode(flow: Flow, id: string): Flow {
@@ -265,8 +266,6 @@ export function flowProblem(flow: Flow): string | null {
     const why = connectionProblem({ ...rest, edges: flow.edges.filter((x) => x.id !== e.id) }, e.from, e.to, 'retry');
     if (why) return why;
   }
-  const b = flow.budget;
-  for (const v of [b.claudePct, b.codexPct, b.stopWindowPct]) if (!(v > 0 && v <= 100)) return 'Budget percentages must be between 1 and 100';
   if (flow.maxRetries < 0 || flow.maxRetries > 5) return 'Retries must be 0 to 5';
   return null;
 }
@@ -292,7 +291,9 @@ export interface PauseInfo {
   title: string;
   detail: string;
   /** What the main button does; none when the user must change something first. */
-  primary: { label: string; action: 'approve' | 'resume'; node?: string } | null;
+  primary: { label: string; action: 'approve' | 'resume'; node?: string; /** Also ignore the plan limits from now on. */ waive?: boolean } | null;
+  /** Offer to change the plan limits: the pause is because of them. */
+  limits?: boolean;
 }
 
 export function pauseInfo(run: Run): PauseInfo | null {
@@ -316,7 +317,12 @@ export function pauseInfo(run: Run): PauseInfo | null {
         primary: { label: 'Accept the work as it is', action: 'resume' },
       };
     case 'budget':
-      return { title: 'Stopped to protect your plan limits', detail: p.message, primary: { label: 'Carry on anyway', action: 'resume' } };
+      return {
+        title: 'Stopped to protect your plan limits',
+        detail: p.message,
+        primary: { label: 'Carry on anyway', action: 'resume', waive: true },
+        limits: true,
+      };
     case 'failed':
       return {
         title: p.node ? `${name(p.node)} stopped` : 'The run was interrupted',
@@ -468,8 +474,7 @@ export interface Gauge {
   tone: Tone;
 }
 
-export function gauges(flow: Flow, run: Run | null, usage: UsageSnapshot | null): Gauge[] {
-  const b: Budget = flow.budget;
+export function gauges(flow: Flow, run: Run | null, usage: UsageSnapshot | null, b: Budget): Gauge[] {
   const engines = (['claude', 'codex'] as const).filter((e) => flow.nodes.some((n) => n.engine === e));
   return engines.map((engine) => {
     const w = usage?.[engine]?.five_hour ?? null;
