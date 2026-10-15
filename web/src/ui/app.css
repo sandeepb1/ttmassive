@@ -83,7 +83,9 @@
   /* The area above the page, in the usage strip's colour so the strip continues up under the status bar. It is also
      the opaque fixed box that asks iOS 26 not to blur the top of an installed app. Height 0 where there is no inset. */
   #edge { position: fixed; top: 0; left: 0; right: 0; height: var(--safe-top); background: var(--surface-1); z-index: 40; }
-  #app { display: flex; height: var(--vvh, var(--app-h)); position: relative; overflow: hidden;
+  /* overflow: clip, not hidden: clip cannot be scrolled at all. A focus or scrollIntoView on something that is off
+     screen (a sheet about to slide up) scrolls a hidden-overflow box to reveal it, and the whole UI jumps. */
+  #app { display: flex; height: var(--vvh, var(--app-h)); position: relative; overflow: hidden; overflow: clip;
     padding: var(--safe-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
   /* OSC 9;4 progress: a thin bar along the top edge of the terminal. */
   @keyframes t-sweep { from { transform: translateX(0); } to { transform: translateX(185%); } }

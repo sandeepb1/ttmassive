@@ -79,7 +79,10 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
     open(host) {
       returnTo = document.activeElement;
       host.append(backdrop, dialog);
-      dialog.show();
+      // Not dialog.show(): its focusing steps focus the first control inside the sheet while it is still parked below
+      // the screen, and the browser scrolls the app to reveal it (the whole UI jumps up, then settles). The sheet does
+      // not take focus anyway (see the header), so open it by the attribute alone.
+      dialog.setAttribute('open', '');
       document.addEventListener('keydown', onKey, true);
       releaseOverlay = pushOverlay(() => onDismiss());
     },
@@ -100,7 +103,7 @@ export function sheetShell(title: string, onDismiss: () => void): SheetShell {
       const finish = () => {
         if (done) return;
         done = true;
-        dialog.close();
+        dialog.removeAttribute('open');
         backdrop.remove();
         dialog.remove();
       };
