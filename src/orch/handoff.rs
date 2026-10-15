@@ -8,8 +8,10 @@ use super::graph::Node;
 use super::roles::Output;
 use super::run::{NodeStatus, Run};
 
-/// JSON Schema for the answer an agent must give, by what it hands back. Both CLIs enforce it.
-pub fn schema_for(output: Output) -> Value {
+/// JSON Schema for the answer an agent must give, by what it hands back. Both CLIs enforce it. A verdict from an
+/// agent that can send work back to more than one place must also say which: `send_back_to` is one of `targets`, or
+/// `none` when it approves.
+pub fn schema_for(output: Output, targets: &[&str]) -> Value {
     let obj = |props: Value, required: &[&str]| {
         json!({"type": "object", "properties": props, "required": required, "additionalProperties": false})
     };
@@ -17,6 +19,15 @@ pub fn schema_for(output: Output) -> Value {
     let list = json!({"type": "array", "items": {"type": "string"}});
     match output {
         Output::Plan => obj(json!({"plan": text, "steps": list}), &["plan", "steps"]),
+        Output::Verdict if targets.len() >= 2 => {
+            let mut ids: Vec<&str> = targets.to_vec();
+            ids.push("none");
+            obj(
+                json!({"verdict": {"type": "string", "enum": ["approve", "reject"]}, "feedback": text,
+                       "send_back_to": {"type": "string", "enum": ids}}),
+                &["verdict", "feedback", "send_back_to"],
+            )
+        }
         Output::Verdict => obj(
             json!({"verdict": {"type": "string", "enum": ["approve", "reject"]}, "feedback": text}),
             &["verdict", "feedback"],
@@ -34,7 +45,8 @@ pub fn schema_for(output: Output) -> Value {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
     Approve,
-    Reject(String),
+    /// Work is not good enough: what is wrong, and where it said to send it, if it said.
+    Reject { feedback: String, send_back_to: Option<String> },
 }
 
 /// A judge's decision. An answer that is missing or unclear counts as a rejection, since letting
@@ -43,7 +55,10 @@ pub fn verdict(output: &Value) -> Verdict {
     let feedback = output.get("feedback").and_then(Value::as_str).unwrap_or("").to_string();
     match output.get("verdict").and_then(Value::as_str) {
         Some("approve") => Verdict::Approve,
-        _ => Verdict::Reject(if feedback.is_empty() { "The judge gave no reason.".into() } else { feedback }),
+        _ => Verdict::Reject {
+            feedback: if feedback.is_empty() { "The judge gave no reason.".into() } else { feedback },
+            send_back_to: output.get("send_back_to").and_then(Value::as_str).filter(|s| *s != "none" && !s.is_empty()).map(String::from),
+        },
     }
 }
 
@@ -69,6 +84,19 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
             let body = serde_json::to_string_pretty(out).unwrap_or_default();
             p.push_str(&format!("\n## From {} ({})\n\n{body}\n", from.name, from.role_label()));
         }
+    }
+    let back = run.flow.send_back_targets(&node.id);
+    if node.decides() && back.len() >= 2 {
+        p.push_str("\n# Where you can send work back to\n\n");
+        for id in &back {
+            if let Some(n) = run.flow.node(id) {
+                p.push_str(&format!("- `{id}`: {} ({})\n", n.name, n.role_label()));
+            }
+        }
+        p.push_str(
+            "\nIf you reject, set `send_back_to` to the id of the agent that should redo its work: the earliest one whose \
+             output was wrong (the design if the design was wrong, otherwise whoever made the change). Use `none` if you approve.\n",
+        );
     }
     if let Some(f) = run.feedback.get(&node.id) {
         p.push_str(&format!("\n# Judge feedback\n\nYour previous work was sent back. Fix this:\n\n{}\n", f.trim()));
@@ -118,14 +146,14 @@ mod tests {
     #[test]
     fn every_role_has_a_closed_object_schema() {
         for output in [Output::Plan, Output::Report, Output::Change, Output::Verdict] {
-            let s = schema_for(output);
+            let s = schema_for(output, &[]);
             assert_eq!(s["type"], "object");
             assert_eq!(s["additionalProperties"], false);
             for key in s["required"].as_array().unwrap() {
                 assert!(s["properties"].get(key.as_str().unwrap()).is_some());
             }
         }
-        assert_eq!(schema_for(Output::Verdict)["properties"]["verdict"]["enum"], json!(["approve", "reject"]));
+        assert_eq!(schema_for(Output::Verdict, &[])["properties"]["verdict"]["enum"], json!(["approve", "reject"]));
     }
 
     #[test]
@@ -165,9 +193,50 @@ mod tests {
         assert_eq!(verdict(&json!({"verdict": "approve", "feedback": ""})), Verdict::Approve);
         assert_eq!(
             verdict(&json!({"verdict": "reject", "feedback": "No tests"})),
-            Verdict::Reject("No tests".into())
+            Verdict::Reject { feedback: "No tests".into(), send_back_to: None }
         );
-        assert!(matches!(verdict(&json!({"verdict": "maybe"})), Verdict::Reject(_)));
-        assert!(matches!(verdict(&json!({})), Verdict::Reject(_)));
+        assert!(matches!(verdict(&json!({"verdict": "maybe"})), Verdict::Reject { .. }));
+        assert!(matches!(verdict(&json!({})), Verdict::Reject { .. }));
+    }
+
+    #[test]
+    fn a_verdict_that_can_go_two_ways_must_say_which() {
+        let one = schema_for(Output::Verdict, &["build"]);
+        assert!(one["properties"].get("send_back_to").is_none(), "one place to go needs no answer");
+        let two = schema_for(Output::Verdict, &["design", "build"]);
+        assert_eq!(two["properties"]["send_back_to"]["enum"], json!(["design", "build", "none"]));
+        assert!(two["required"].as_array().unwrap().contains(&json!("send_back_to")));
+        assert_eq!(two["additionalProperties"], false);
+        // Only a verdict has it.
+        assert!(schema_for(Output::Report, &["a", "b"])["properties"].get("send_back_to").is_none());
+    }
+
+    #[test]
+    fn the_verdict_names_where_it_went_and_none_means_nowhere() {
+        let v = |j: Value| verdict(&j);
+        assert_eq!(
+            v(json!({"verdict": "reject", "feedback": "Wrong design", "send_back_to": "design"})),
+            Verdict::Reject { feedback: "Wrong design".into(), send_back_to: Some("design".into()) }
+        );
+        assert!(matches!(v(json!({"verdict": "reject", "feedback": "x", "send_back_to": "none"})), Verdict::Reject { send_back_to: None, .. }));
+        assert!(matches!(v(json!({"verdict": "reject", "feedback": "x"})), Verdict::Reject { send_back_to: None, .. }));
+        assert_eq!(v(json!({"verdict": "approve", "feedback": "", "send_back_to": "none"})), Verdict::Approve);
+    }
+
+    #[test]
+    fn a_judge_with_two_places_to_go_is_told_what_they_are() {
+        let mut r = run(); // r -> b, both Researcher and Builder
+        r.flow.nodes.push(node("j", "Judge", Role::Judge));
+        r.nodes.insert("j".into(), crate::orch::run::Run::new("x".into(), r.flow.clone(), "g".into(), 0).nodes.remove("j").unwrap());
+        for (i, to) in ["r", "b"].iter().enumerate() {
+            r.flow.edges.push(Edge { id: format!("x{i}"), from: "j".into(), to: (*to).into(), kind: EdgeKind::Retry });
+        }
+        let p = build_prompt(&r, r.flow.node("j").unwrap());
+        assert!(p.contains("Where you can send work back to") && p.contains("`r`: Research") && p.contains("`b`: Build"), "{p}");
+        assert!(p.contains("send_back_to") && p.contains("earliest one whose output was wrong"));
+        // Nothing of the kind for an agent with one place to go, or none.
+        assert!(!build_prompt(&r, r.flow.node("b").unwrap()).contains("send back"));
+        r.flow.edges.pop();
+        assert!(!build_prompt(&r, r.flow.node("j").unwrap()).contains("Where you can send work back to"));
     }
 }

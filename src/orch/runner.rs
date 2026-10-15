@@ -148,7 +148,7 @@ impl EngineRunner {
                 let spec = claude::Spec {
                     model: node.model.clone(),
                     system_prompt: node.system_prompt.clone(),
-                    schema: handoff::schema_for(node.output()),
+                    schema: handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id)),
                     access: match limits(node) {
                         Limits::Writes => Access::Write,
                         _ if node.capability() == Capability::Inspect => Access::Inspect,
@@ -188,7 +188,7 @@ impl EngineRunner {
                 server.start_thread(&spec).await?
             }
         };
-        let schema = handoff::schema_for(node.output());
+        let schema = handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id));
         self.active.lock().unwrap_or_else(|e| e.into_inner()).insert(thread.id.clone());
         let result = server
             .turn(&mut thread, prompt, &schema, |note| {

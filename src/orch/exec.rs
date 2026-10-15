@@ -12,7 +12,7 @@ use futures_util::stream::FuturesUnordered;
 
 use super::Outcome;
 use super::downshift;
-use super::graph::{EdgeKind, Engine, Node, Role};
+use super::graph::{Engine, Node};
 use super::handoff::{self, Verdict};
 use super::run::{NodeStatus, Pause, Run, RunStatus, now_secs};
 
@@ -178,19 +178,27 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
 
 /// A judge has answered: either carry on, or send work back to the builder it points at.
 fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pause> {
-    let Verdict::Reject(feedback) = handoff::verdict(output) else { return None };
-    let Some(target) = run
-        .flow
-        .edges
-        .iter()
-        .find(|e| e.kind == EdgeKind::Retry && e.from == judge.id)
-        .map(|e| e.to.clone())
-    else {
+    let Verdict::Reject { feedback, send_back_to } = handoff::verdict(output) else { return None };
+    let targets: Vec<String> = run.flow.send_back_targets(&judge.id).into_iter().map(String::from).collect();
+    if targets.is_empty() {
         return None; // no way back drawn: the judge is advisory
-    };
+    }
     if run.retries_used >= run.flow.max_retries {
         return Some(Pause::RetriesExhausted { node: judge.id.clone() });
     }
+    // One place to go needs no answer. With several, the verdict must name one of them.
+    let target = match (targets.as_slice(), send_back_to) {
+        ([only], _) => only.clone(),
+        (_, Some(t)) if targets.contains(&t) => t,
+        _ => {
+            let message = "it rejected the work but did not say which agent should redo it".to_string();
+            let n = run.nodes.get_mut(&judge.id).expect("every node has a state");
+            n.status = NodeStatus::Failed;
+            n.output = None;
+            n.error = Some(message.clone());
+            return Some(Pause::Failed { node: judge.id.clone(), message });
+        }
+    };
     run.retries_used += 1;
     run.feedback.insert(target.clone(), feedback);
     // Redo what lies between the builder and the judge, and nothing else: a branch running beside them keeps its work.
@@ -264,7 +272,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::orch::graph::{Budget, Edge, Engine, Flow};
+    use crate::orch::graph::{Budget, Edge, EdgeKind, Engine, Flow, Role};
     use crate::orch::usage::Tokens;
 
     fn node(id: &str, role: Role) -> Node {
@@ -810,5 +818,91 @@ mod tests {
         // Under the minimum input, a low share means little.
         let run = builder_turns(tok(10, 900), tok(900, 10)).await;
         assert_eq!(run.lock().unwrap().nodes["build"].cache_breaks, 0);
+    }
+
+    fn reject_to(why: &str, target: &str) -> anyhow::Result<Outcome> {
+        ok(json!({"verdict": "reject", "feedback": why, "send_back_to": target}))
+    }
+
+    /// orch -> res -> build -> judge; the judge can send work back to either res (the findings) or build (the code).
+    fn two_ways() -> Flow {
+        let mut f = flow();
+        f.edges.push(edge("e5", "judge", "res", EdgeKind::Retry));
+        f
+    }
+
+    #[tokio::test]
+    async fn a_verdict_sends_work_back_to_the_agent_it_names_and_redoes_what_follows_it() {
+        let run = new_run(two_ways());
+        let fake = Fake::with(vec![("judge", reject_to("The findings are wrong", "res")), ("judge", approve())]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        // The planner is not redone; the researcher is, then everything that depends on it.
+        assert_eq!(fake.ran(), vec!["orch", "res", "build", "judge", "res", "build", "judge"]);
+        assert!(fake.prompt("res", 1).contains("The findings are wrong"), "the researcher is told what was wrong");
+        assert!(!fake.prompt("build", 1).contains("The findings are wrong"), "the builder is only handed the new findings");
+        assert_eq!(run.lock().unwrap().retries_used, 1);
+    }
+
+    #[tokio::test]
+    async fn naming_the_other_place_sends_work_there_instead() {
+        let run = new_run(two_ways());
+        let fake = Fake::with(vec![("judge", reject_to("No tests", "build")), ("judge", approve())]);
+        go(&run, &fake).await;
+        assert_eq!(fake.ran(), vec!["orch", "res", "build", "judge", "build", "judge"], "the researcher kept its work");
+    }
+
+    #[tokio::test]
+    async fn a_rejection_that_does_not_say_where_pauses_and_the_judge_is_asked_again() {
+        for bad in [ok(json!({"verdict": "reject", "feedback": "no", "send_back_to": "none"})), reject_to("no", "nowhere")] {
+            let run = new_run(two_ways());
+            let fake = Fake::with(vec![("judge", bad), ("judge", reject_to("Now I say", "build")), ("judge", approve())]);
+            go(&run, &fake).await;
+            let RunStatus::Paused { pause: Pause::Failed { node, message } } = status(&run) else { panic!("not paused") };
+            assert_eq!(node, "judge");
+            assert!(message.contains("which agent should redo it"), "{message}");
+            assert_eq!(run.lock().unwrap().nodes["judge"].status, NodeStatus::Failed, "so resuming asks it again");
+            assert_eq!(run.lock().unwrap().retries_used, 0, "nothing was sent back");
+            // Trying again asks the judge once more rather than letting the rejection pass.
+            go(&run, &fake).await;
+            // It ended only after the judge said where to send the work, the builder redid it, and it was approved.
+            assert_eq!(fake.ran().iter().filter(|i| *i == "judge").count(), 3, "asked, asked again, then asked about the redone work");
+            assert_eq!(fake.ran().iter().filter(|i| *i == "build").count(), 2, "the rejection was acted on, not waved through");
+            assert_eq!(status(&run), RunStatus::Done);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_retry_limit_is_shared_across_the_places_work_can_go() {
+        let mut f = two_ways();
+        f.max_retries = 2;
+        let run = new_run(f);
+        let fake = Fake::with(vec![
+            ("judge", reject_to("a", "res")),
+            ("judge", reject_to("b", "build")),
+            ("judge", reject_to("c", "res")),
+        ]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Paused { pause: Pause::RetriesExhausted { node: "judge".into() } });
+        assert_eq!(run.lock().unwrap().retries_used, 2);
+    }
+
+    #[tokio::test]
+    async fn a_judge_with_one_place_to_go_needs_no_answer() {
+        // The flow() judge has one retry edge: a rejection that names nothing still goes there.
+        let run = new_run(flow());
+        let fake = Fake::with(vec![("judge", reject("No tests")), ("judge", approve())]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        assert_eq!(fake.ran().iter().filter(|i| *i == "build").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn work_can_be_sent_back_to_an_agent_that_does_not_write() {
+        // The target here is the researcher, which only reads.
+        let run = new_run(two_ways());
+        let fake = Fake::with(vec![("judge", reject_to("Wrong", "res")), ("judge", approve())]);
+        go(&run, &fake).await;
+        assert_eq!(run.lock().unwrap().nodes["res"].attempts, 2);
     }
 }

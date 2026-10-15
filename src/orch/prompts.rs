@@ -59,8 +59,8 @@ Rules: use as few agents as the goal needs. Most flows are 3 to 5 agents; over 6
 orchestrator. Add an agent only for a different kind of work (reading, running checks, changing files), a clean-context \
 check, or a part that can run in parallel with another. Agents that read can run at the same time; never have two agents \
 change the same files, one agent that changes files per piece of work. Anything that changes files is followed by a judge \
-that can run the checks, and the judge's edge back to that agent is marked retry (one retry edge per judge). A flow that \
-changes nothing has no retry edge. Use the cheapest model that can do the job: opus for the orchestrator, architect and \
+that can run the checks, and the judge's edge back to that agent is marked retry. If a plan or design could be wrong, the \
+judge may also have a retry edge to that earlier agent (the architect, say). A flow that changes nothing has no retry edge. Use the cheapest model that can do the job: opus for the orchestrator, architect and \
 judge; sonnet (or a small codex model) for researchers, debuggers and reporters; haiku or a small codex model for simple \
 lookups. Use a different model for the judge than for the agent whose work it checks. Mark checkpoint true on every agent \
 that changes files, so the user approves before files change. Each system_prompt is 2 to 5 sentences: the agent's job, \
@@ -591,7 +591,7 @@ mod tests {
             assert!(p.contains(&format!("- {} (", role_id(d.id))), "{:?} is missing from the prompt", d.id);
         }
         assert!(!p.contains("- custom ("), "a custom role is not offered to the designer");
-        for rule in ["3 to 5 agents", "never have two agents", "one retry edge per judge", "different model for the judge"] {
+        for rule in ["3 to 5 agents", "never have two agents", "also have a retry edge", "different model for the judge"] {
             assert!(p.contains(rule), "{rule}");
         }
         // The schema accepts exactly the ids the prompt offers.
@@ -602,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn a_suggestion_can_use_the_new_roles_and_a_reviewer_of_a_plan_cannot_send_back_to_a_planner() {
+    fn a_suggestion_can_use_the_new_roles_and_send_work_back_to_a_reader() {
         let s = json!({
             "name": "Bug fix",
             "nodes": [
@@ -618,10 +618,14 @@ mod tests {
         });
         let f = flow_from_suggestion(&s, "f", &models()).unwrap();
         assert_eq!(f.nodes[1].role, Role::Debugger);
-        // Sending work back to something that does not change files is refused, as everywhere else.
+        // Work can be sent back to an earlier agent that only reads, such as the debugger.
+        let mut ok = s.clone();
+        ok["edges"][3]["to"] = json!("d");
+        assert!(flow_from_suggestion(&ok, "f", &models()).is_ok());
+        // But not forward: the judge runs last, so sending to itself or a later agent is refused.
         let mut bad = s.clone();
-        bad["edges"][3]["to"] = json!("d");
-        assert!(format!("{:#}", flow_from_suggestion(&bad, "f", &models()).unwrap_err()).contains("changes files"));
+        bad["edges"][3]["to"] = json!("j");
+        assert!(flow_from_suggestion(&bad, "f", &models()).is_err());
     }
 
     #[test]

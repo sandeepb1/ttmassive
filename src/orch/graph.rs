@@ -242,7 +242,7 @@ impl Flow {
             if !id_ok(&e.id) || !edge_ids.insert(e.id.as_str()) {
                 return Err(format!("edge id '{}' is invalid or repeated", e.id));
             }
-            let (Some(from), Some(to)) = (self.node(&e.from), self.node(&e.to)) else {
+            let (Some(from), Some(_)) = (self.node(&e.from), self.node(&e.to)) else {
                 return Err(format!("edge '{}' points at a node that does not exist", e.id));
             };
             if e.from == e.to {
@@ -252,8 +252,8 @@ impl Flow {
                 if !from.decides() {
                     return Err("only an agent that hands back a verdict can send work back".into());
                 }
-                if !to.writes() {
-                    return Err("work can only be sent back to an agent that changes files".into());
+                if self.edges.iter().filter(|x| x.kind == EdgeKind::Retry && x.from == e.from && x.to == e.to).count() > 1 {
+                    return Err("two send-back edges join the same pair of agents".into());
                 }
             }
         }
@@ -301,7 +301,7 @@ impl Flow {
             layers.push(ready.into_iter().map(String::from).collect());
         }
         if placed != self.nodes.len() {
-            return Err("the flow has a loop; only a judge's retry edge may point backwards".into());
+            return Err("the flow has a loop; only an agent that gives a verdict may send work back".into());
         }
         Ok(layers)
     }
@@ -347,6 +347,11 @@ impl Flow {
         let down = reach(self, a.id.as_str(), true);
         let up = reach(self, b.id.as_str(), false);
         self.nodes.iter().map(|n| n.id.as_str()).filter(|id| down.contains(id) && up.contains(id)).collect()
+    }
+
+    /// Where `id` can send work back to, in edge order.
+    pub fn send_back_targets(&self, id: &str) -> Vec<&str> {
+        self.edges.iter().filter(|e| e.kind == EdgeKind::Retry && e.from == id).map(|e| e.to.as_str()).collect()
     }
 
     /// Ids of nodes whose output feeds `id`, in edge order.
@@ -466,14 +471,34 @@ mod tests {
     }
 
     #[test]
-    fn only_an_agent_that_gives_a_verdict_may_retry_and_only_into_one_that_writes() {
+    fn only_an_agent_that_gives_a_verdict_may_send_work_back() {
         let mut f = line();
         f.edges[3] = edge("e4", "res", "build", EdgeKind::Retry);
         assert!(f.validate().unwrap_err().contains("verdict"));
+    }
 
+    #[test]
+    fn work_can_be_sent_back_to_any_earlier_agent_not_only_one_that_writes() {
+        // A failed design goes back to the planner, or the code goes back to the builder.
         let mut f = line();
         f.edges[3] = edge("e4", "judge", "res", EdgeKind::Retry);
-        assert!(f.validate().unwrap_err().contains("changes files"));
+        assert_eq!(f.validate(), Ok(()));
+        f.edges.push(edge("e5", "judge", "build", EdgeKind::Retry));
+        assert_eq!(f.validate(), Ok(()), "a judge may have several places to send work back to");
+        assert_eq!(f.send_back_targets("judge"), vec!["res", "build"]);
+        assert!(f.send_back_targets("build").is_empty());
+    }
+
+    #[test]
+    fn work_cannot_be_sent_forward_or_twice_to_the_same_agent() {
+        let mut f = line();
+        f.nodes.push(node("late", Role::Analyst));
+        f.edges.push(edge("e5", "judge", "late", EdgeKind::Forward));
+        f.edges.push(edge("e6", "judge", "late", EdgeKind::Retry));
+        assert!(f.validate().unwrap_err().contains("earlier"));
+        let mut g = line();
+        g.edges.push(edge("e5", "judge", "build", EdgeKind::Retry));
+        assert!(g.validate().unwrap_err().contains("same pair"), "{:?}", g.validate());
     }
 
     #[test]

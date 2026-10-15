@@ -156,20 +156,19 @@ pub fn catalog() -> Vec<RoleDef> {
             false,
             "You research one question using primary sources: official documentation, the project's own repository, original papers. Return findings as claims, each with the source and the exact passage relied on. Say what you could not verify. Prefer fewer, better sources over many weak ones, and stop when the question is answered. Do not give recommendations, and do not state anything you did not see in a source.",
         ),
-        RoleDef {
-            claude_model: "opus",
-            ..def(
-                Role::Analyst,
-                "Analyst",
-                "Weighs reports against each other",
-                Stage::Gather,
-                "scale",
-                Capability::Read,
-                Output::Report,
-                false,
-                "You compare the reports you are given. Identify where they agree, where they conflict, and what is missing. For each decision the reports bear on, rank the options with the reason, and state your confidence. Quote the report each point came from. Do not do new research, do not invent facts that are not in your inputs, and do not write code.",
-            )
-        },
+        // Sonnet, not the strong tier the research suggested for it: measured on one analyst task, Opus cost 2.2x as much
+        // ($0.059 vs $0.027) and reached the same recommendation. The research marked this its weakest-evidenced role.
+        def(
+            Role::Analyst,
+            "Analyst",
+            "Weighs reports against each other",
+            Stage::Gather,
+            "scale",
+            Capability::Read,
+            Output::Report,
+            false,
+            "You compare the reports you are given. Identify where they agree, where they conflict, and what is missing. For each decision the reports bear on, rank the options with the reason, and state your confidence. Quote the report each point came from. Do not do new research, do not invent facts that are not in your inputs, and do not write code.",
+        ),
         def(
             Role::Debugger,
             "Debugger",
@@ -207,7 +206,7 @@ pub fn catalog() -> Vec<RoleDef> {
                 Capability::Inspect,
                 Output::Verdict,
                 true,
-                "You decide whether the work meets the criteria you are given. Read the change and the plan, then run the checks yourself (tests, build, git diff) and base your verdict on what you observe, not on the author's claims. Return approve or reject. On reject, list each problem with its evidence and what must change. Flag only problems that affect correctness or the stated criteria; style preferences and extra features are not reasons to reject. Do not fix problems yourself, and do not reject twice for an issue that has been addressed.",
+                "You decide whether the work meets the criteria you are given. Read the change and the plan, then run the checks yourself (tests, build, git diff) and base your verdict on what you observe, not on the author's claims. Treat test results as one input, not the verdict: tests can pass a wrong change or fail a right one, so prefer the project's own existing tests over any the author just added. Return approve or reject. On reject, list each problem with its evidence and what must change. Flag only problems that affect correctness or the stated criteria; style preferences and extra features are not reasons to reject. Do not fix problems yourself, and do not reject twice for an issue that has been addressed.",
             )
         },
         def(
@@ -246,7 +245,7 @@ mod tests {
         assert_eq!(ids.len(), c.len(), "an id is used twice");
         for d in &c {
             assert!(!d.label.is_empty() && !d.blurb.is_empty() && !d.icon.is_empty(), "{:?}", d.id);
-            assert!(d.prompt.len() > 60 && d.prompt.len() < 1000, "{:?} prompt length", d.id);
+            assert!(d.prompt.len() > 60 && d.prompt.len() < 1200, "{:?} prompt length", d.id);
         }
         assert!(!c.iter().any(|d| d.id == Role::Custom), "a custom role is defined by the user, not here");
     }
@@ -306,7 +305,7 @@ mod tests {
         let writers: Vec<_> = c.iter().filter(|d| d.capability == Capability::Write).map(|d| d.id).collect();
         assert_eq!(writers, vec![Role::Builder], "parallel writers conflict (docs/research/multi-agent-roles.md)");
         let judge = c.iter().find(|d| d.id == Role::Judge).unwrap();
-        assert_eq!(judge.capability, Capability::Inspect, "a judge that only reads is the weakest checker");
+        assert_eq!(judge.capability, Capability::Inspect, "a judge may run checks: the evidence that this beats reading alone is mixed (docs/research/judge-evidence.md), but it is the only way to see a test fail");
         let debugger = c.iter().find(|d| d.id == Role::Debugger).unwrap();
         assert_eq!(debugger.capability, Capability::Inspect);
     }
@@ -325,12 +324,14 @@ mod tests {
         assert_eq!(model(Role::Judge), "opus", "a weak judge approves weak work");
         assert_eq!(model(Role::Search), "haiku");
         assert_ne!(model(Role::Builder), "haiku");
+        assert_eq!(model(Role::Analyst), "sonnet", "measured: opus cost 2.2x for the same answer");
     }
 
     #[test]
-    fn the_judge_is_told_not_to_reject_for_style() {
+    fn the_judge_is_told_not_to_reject_for_style_and_to_weigh_test_results_not_obey_them() {
         let p = prompt(Role::Judge);
         assert!(p.contains("style preferences") && p.contains("run the checks yourself"), "{p}");
+        assert!(p.contains("one input, not the verdict") && p.contains("project's own existing tests"), "{p}");
     }
 
     #[test]

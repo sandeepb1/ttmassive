@@ -77,6 +77,7 @@ pub fn all() -> Vec<Flow> {
             ("design", "build", F),
             ("build", "check", F),
             ("check", "build", R),
+            ("check", "design", R),
         ],
         2,
         default,
@@ -136,7 +137,7 @@ pub fn all() -> Vec<Flow> {
             ("find", "Search", Role::Search, codex, "gpt-6-luna", 1, 0, false),
             ("read-a", "Researcher", Role::Researcher, claude, "sonnet", 1, 1, false),
             ("read-b", "Researcher 2", Role::Researcher, claude, "sonnet", 1, 2, false),
-            ("weigh", "Analyst", Role::Analyst, claude, "opus", 2, 1, false),
+            ("weigh", "Analyst", Role::Analyst, claude, "sonnet", 2, 1, false),
             ("report", "Reporter", Role::Reporter, claude, "sonnet", 3, 1, false),
         ],
         &[
@@ -183,8 +184,9 @@ mod tests {
             assert!(writers <= 1, "{}: one writer per piece of work", f.name);
             assert!(f.nodes.len() <= 6, "{}: over six agents needs a written reason", f.name);
             assert!(f.max_retries <= 2, "{}: cap send-back loops at 2", f.name);
+            // A judge may have a second place to send work back to (a wrong design goes to the architect), no more.
             let retries = f.edges.iter().filter(|e| e.kind == EdgeKind::Retry).count();
-            assert!(retries <= 1, "{}: a verdict can name only one place to send work back to", f.name);
+            assert!(retries <= 2, "{}: at most the code and the design", f.name);
             // Whatever changes files asks first.
             for n in f.nodes.iter().filter(|n| n.writes()) {
                 assert!(n.checkpoint, "{}: {} changes files and must ask first", f.name, n.name);
@@ -204,6 +206,13 @@ mod tests {
                 assert!(f.edges.iter().all(|e| e.kind == EdgeKind::Forward), "{}: nothing to send back to", f.name);
             }
         }
+    }
+
+    #[test]
+    fn a_wrong_design_can_be_sent_back_to_the_architect_as_well_as_wrong_code_to_the_builder() {
+        let f = &all()[0];
+        assert_eq!(f.send_back_targets("check"), vec!["build", "design"]);
+        assert_eq!(f.validate(), Ok(()));
     }
 
     #[test]
