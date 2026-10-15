@@ -147,9 +147,14 @@
   /* !important: these hide kit buttons, whose display utility is in a later layer and would otherwise win. */
   #app.l-pinned:not(.l-collapsed) .p-menu, #app.r-pinned:not(.r-collapsed) .p-panel { display: none !important; }
   .sidebar { flex: none; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--surface-1); }
-  #left { width: var(--sb-w); border-right: 1px solid var(--border-subtle); }
+  #left { width: var(--l-w, var(--sb-w)); border-right: 1px solid var(--border-subtle); }
   #right { width: var(--sb-right-w); border-left: 1px solid var(--border-subtle); }
-  #app.l-collapsed #left, #app.r-collapsed #right { display: none; }
+  /* Collapsing a pinned sidebar slides it out (a negative margin, so its content is not squeezed on the way) and the
+     conversation grows into the room. It is hidden only once it is out, so it cannot be tabbed to or tapped. */
+  #app.l-pinned #left { transition: margin-left .26s var(--ease), visibility 0s; }
+  #app.r-pinned #right { transition: margin-right .26s var(--ease), visibility 0s; }
+  #app.l-collapsed #left { margin-left: calc(-1 * var(--l-w, var(--sb-w))); visibility: hidden; transition: margin-left .26s var(--ease), visibility 0s .26s; }
+  #app.r-collapsed #right { margin-right: calc(-1 * var(--sb-right-w)); visibility: hidden; transition: margin-right .26s var(--ease), visibility 0s .26s; }
 
   /* Overlay mode: out of the layout, off screen until opened. */
   #app:not(.l-pinned) #left, #app:not(.r-pinned) #right { position: absolute; top: 0; bottom: 0; z-index: 30; visibility: hidden;
@@ -192,7 +197,7 @@
 
   /* Split view turns the session list into a rail of buttons. */
   .sb-rail { display: none; }
-  #app.is-split.l-pinned:not(.rail-open) #left { width: 64px; }
+  #app.is-split.l-pinned:not(.rail-open) { --l-w: 64px; }
   #app.is-split.l-pinned:not(.rail-open) #left > :not(.sb-rail) { display: none; }
   #app.is-split.l-pinned:not(.rail-open) .sb-rail { display: flex; flex-direction: column; align-items: center; gap: 8px; height: 100%;
     padding: 6px 0 calc(6px + env(safe-area-inset-bottom)); }

@@ -59,6 +59,8 @@ export function closeOverlays(state: LayoutState): LayoutState {
 // ---- the page ------------------------------------------------------------------------------
 
 const KEY = 'ttm.sidebars';
+/** How long a pinned sidebar takes to slide (the transition in app.css). */
+const SLIDE_MS = 260;
 
 function load(): LayoutState {
   try {
@@ -76,6 +78,7 @@ function load(): LayoutState {
 export class Layout {
   private state: LayoutState = load();
   private listeners = new Set<() => void>();
+  private settleTimer = 0;
 
   private app: HTMLElement;
 
@@ -133,6 +136,7 @@ export class Layout {
   }
 
   private apply() {
+    const slides = this.slidesNow();
     for (const side of ['left', 'right'] as const) {
       const p = this.placement(side);
       const c = side === 'left' ? 'l' : 'r';
@@ -140,6 +144,30 @@ export class Layout {
       this.app.classList.toggle(`${c}-collapsed`, p === 'pinned' && this.state[side].collapsed);
       this.app.classList.toggle(`${c}-open`, p === 'overlay' && this.state[side].open);
     }
+    if (slides) this.holdRefit();
     for (const cb of this.listeners) cb();
+  }
+
+  /** Whether applying the state now slides a pinned sidebar in or out (it was pinned, and still is, with another collapsed flag). */
+  private slidesNow(): boolean {
+    if (this.app.hidden) return false;
+    return (['left', 'right'] as const).some((side) => {
+      const c = side === 'left' ? 'l' : 'r';
+      const was = this.app.classList.contains(`${c}-collapsed`);
+      return this.app.classList.contains(`${c}-pinned`) && this.placement(side) === 'pinned' && was !== this.state[side].collapsed;
+    });
+  }
+
+  /**
+   * While a sidebar slides, the conversation's width changes every frame. Terminals must not refit on each one (it
+   * reflows the whole screen and tells tmux), so they wait for `ttm-layout-settled` and fit once at the end.
+   */
+  private holdRefit() {
+    this.app.classList.add('layout-moving');
+    window.clearTimeout(this.settleTimer);
+    this.settleTimer = window.setTimeout(() => {
+      this.app.classList.remove('layout-moving');
+      window.dispatchEvent(new Event('ttm-layout-settled'));
+    }, SLIDE_MS + 60);
   }
 }

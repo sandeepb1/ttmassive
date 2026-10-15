@@ -206,11 +206,13 @@ export class TerminalSession {
       refitQueued = true;
       requestAnimationFrame(() => {
         refitQueued = false;
-        if (!this.closed) this.fit.fit();
+        // A pinned sidebar is sliding (see Layout.holdRefit): the width is changing every frame. Fit once it stops.
+        if (!this.closed && !document.querySelector('#app.layout-moving')) this.fit.fit();
       });
     };
     const ro = new ResizeObserver(refit);
     ro.observe(el);
+    window.addEventListener('ttm-layout-settled', refit);
     window.addEventListener('orientationchange', refit);
     window.visualViewport?.addEventListener('resize', refit);
     // Restyle live when the theme changes, and re-measure once the web font has actually loaded.
@@ -229,6 +231,7 @@ export class TerminalSession {
       offTheme();
       offPrefs();
       ro.disconnect();
+      window.removeEventListener('ttm-layout-settled', refit);
       window.removeEventListener('orientationchange', refit);
       window.visualViewport?.removeEventListener('resize', refit);
     };
