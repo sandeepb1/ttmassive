@@ -1,6 +1,7 @@
 // The left sidebar: your sessions grouped by project, a way to start new ones, rename, kill, switch.
 
 import { fetchPresets, launchSession, mainAgents, type PresetInfo } from './dirs';
+import { openOrch } from './orch/entry';
 import { el } from './dom';
 import { button } from './ui/button';
 import { cn } from './ui/cn';
@@ -139,8 +140,9 @@ export class SessionSidebar {
     head.append(el('strong', 'sb-brand', 'ttm'), el('span', 'sb-spacer'), add, collapse);
 
     const foot = el('div', 'sb-foot');
+    const orchestrator = button({ variant: 'ghost', cls: 'sb-orch w-full justify-start gap-2.5 text-muted-foreground', onClick: () => openOrch() }, icon('workflow'), 'Orchestrator');
     const settings = button({ variant: 'ghost', cls: 'sb-settings w-full justify-start gap-2.5 text-muted-foreground', onClick: () => this.hooks.openSettings() }, icon('sliders'), 'Settings');
-    foot.append(settings);
+    foot.append(orchestrator, settings);
 
     // Split view shrinks the sidebar to this: one button per session, and the same way to Settings.
     const railOpen = button({ variant: 'ghost', size: 'icon-sm', label: 'Show the session list', cls: 'rail-expand', onClick: () => this.hooks.collapse() }, icon('panel-left'));

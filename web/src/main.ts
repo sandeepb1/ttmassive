@@ -32,6 +32,7 @@ import { readSessionCache } from './sessions-cache';
 import { parseLaunch, sameLaunch, startSession, type Launch } from './launch-model';
 import { NewSessionSheet } from './new-session-sheet';
 import { chip } from './ui/chip';
+import { isOrchHash, orchOpen, syncOrchRoute } from './orch/entry';
 import { SHEET_SELECTOR } from './ui/sheet';
 import type { SubAgent } from './agents';
 
@@ -97,6 +98,7 @@ const limit = () => paneLimit(layouts.settings);
 const defaultPreset = (): PresetId => layouts.settings[presetClass(window.innerWidth)];
 
 function sessionName(): string {
+  if (isOrchHash()) return 'main'; // orchestrator mode is not a session
   const n = decodeURIComponent(location.hash.slice(1));
   return /^[A-Za-z0-9_-]{1,64}$/.test(n) ? n : 'main';
 }
@@ -182,6 +184,7 @@ function focus(p: Pane) {
 }
 
 function updateHash() {
+  if (orchOpen() || isOrchHash()) return; // orchestrator mode owns the address while it is open
   if (focused && location.hash.slice(1) !== focused.name) history.replaceState(null, '', `#${encodeURIComponent(focused.name)}`);
   // An installed app is opened from its icon with no address: remember where you were, so it goes back there.
   if (focused && !focused.isAgent) {
@@ -833,6 +836,7 @@ async function showApp() {
   $('login').hidden = true;
   $('offline').hidden = true;
   $('app').hidden = false;
+  syncOrchRoute(); // the page may have been opened straight onto #orch/<run>
   void loadNewSessionData();
   watchForUpdates($('app'));
   watchLaunches();
@@ -976,6 +980,8 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('online', nudgeAll);
 window.addEventListener('hashchange', () => {
+  if (!$('app').hidden) syncOrchRoute();
+  if (isOrchHash()) return; // `#orch` is a mode, not a session
   if (isOverlayTraversal()) return; // an overlay's history entry going away, not a request to open another session
   if (focused && sessionName() !== focused.name && !$('app').hidden) openSession(sessionName());
 });

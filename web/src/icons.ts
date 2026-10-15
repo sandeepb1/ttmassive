@@ -2,13 +2,13 @@
 // names, so the set can change without touching them.
 
 import {
-  ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, ChevronUp, Columns2, Command, createElement, Dot, Ellipsis, FileCheck, FileText, Folder,
-  GitBranch, Globe, Grid2x2, Image, Info, Layers, ListChecks, Menu, Minus, PanelLeft, PanelRight, Pencil, Plus, Route,
-  Search, ShieldAlert, SlidersHorizontal, Sparkles, Square, Terminal, X,
+  ArrowDown, ArrowLeft, ArrowUp, BookOpen, Bot, ChevronDown, ChevronRight, ChevronUp, Columns2, Command, createElement, Dot, Ellipsis, FileCheck, FileText, Folder,
+  Gavel, GitBranch, Globe, Hammer, Grid2x2, Image, Info, Layers, ListChecks, Menu, Minus, PanelLeft, PanelRight, Pause, Pencil, Play, Plus, Radar, RotateCcw, Route,
+  Save, Scale, Search, ShieldAlert, SlidersHorizontal, Sparkles, Square, Terminal, Trash2, WandSparkles, Workflow, X, Check, CircleAlert,
   type IconNode,
 } from 'lucide';
 
-export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command' | 'memory' | 'route' | 'more' | 'arrow-up' | 'arrow-down' | 'stop' | 'minus' | 'shield-alert';
+export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command' | 'memory' | 'route' | 'more' | 'arrow-up' | 'arrow-down' | 'stop' | 'minus' | 'shield-alert' | 'play' | 'pause' | 'check' | 'alert' | 'back' | 'save' | 'trash' | 'wand' | 'retry' | 'radar' | 'workflow' | 'book' | 'scale' | 'gavel' | 'hammer';
 
 const NODES: Record<IconName, IconNode> = {
   shell: Terminal,
@@ -45,6 +45,21 @@ const NODES: Record<IconName, IconNode> = {
   stop: Square,
   minus: Minus,
   'shield-alert': ShieldAlert,
+  play: Play,
+  pause: Pause,
+  check: Check,
+  alert: CircleAlert,
+  back: ArrowLeft,
+  save: Save,
+  trash: Trash2,
+  wand: WandSparkles,
+  retry: RotateCcw,
+  radar: Radar,
+  workflow: Workflow,
+  book: BookOpen,
+  scale: Scale,
+  gavel: Gavel,
+  hammer: Hammer,
 };
 
 /** The category a tool belongs to, for its icon and tint. */

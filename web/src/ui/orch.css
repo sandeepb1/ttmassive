@@ -1,0 +1,1095 @@
+/* Orchestrator mode: a flow chart of agents, drawn as a dark "mission control". Everything is scoped to #orch,
+   so the rest of the app is untouched. Model families keep the colours used everywhere else (--claude, --codex);
+   status colours are the app's (--ok, --warn, --danger). Colours here are oklch(), never hex (see guard.test.ts). */
+
+#orch {
+  --mc-bg: oklch(0.15 0.014 258);
+  --mc-panel: oklch(0.19 0.016 258);
+  --mc-raise: oklch(0.23 0.018 258);
+  --mc-hover: oklch(0.27 0.02 258);
+  --mc-line: oklch(0.31 0.02 258);
+  --mc-line-soft: oklch(0.25 0.018 258);
+  --mc-fg: oklch(0.95 0.006 258);
+  --mc-dim: oklch(0.74 0.014 258);
+  --mc-faint: oklch(0.56 0.016 258);
+  --mc-glow: oklch(0.74 0.15 215);
+  --mc-live: var(--mc-glow);
+  --mc-ok: var(--ok, oklch(0.76 0.16 152));
+  --mc-warn: var(--warn, oklch(0.82 0.15 85));
+  --mc-bad: var(--danger, oklch(0.68 0.2 25));
+  --mc-claude: var(--claude, oklch(0.74 0.13 50));
+  --mc-codex: var(--codex, oklch(0.75 0.12 165));
+  --mc-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+  --mc-top: 3.25rem;
+
+  position: fixed;
+  inset: 0;
+  /* Above the session panes (6), sidebars (30) and sheets (40); the app is inert while this is open. */
+  z-index: 50;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--mc-bg);
+  color: var(--mc-fg);
+  font-size: 0.875rem;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: contain;
+}
+#orch[hidden] {
+  display: none !important;
+}
+#orch * {
+  box-sizing: border-box;
+}
+#orch button {
+  font: inherit;
+  color: inherit;
+}
+
+/* ------------------------------------------------------------------ top bar */
+.mc-top {
+  display: flex;
+  min-height: var(--mc-top);
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 0.75rem;
+  padding-top: env(safe-area-inset-top);
+  border-bottom: 1px solid var(--mc-line);
+  background: var(--mc-panel);
+  min-width: 0;
+}
+.mc-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.mc-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--mc-glow) 18%, transparent);
+  color: var(--mc-glow);
+}
+.mc-flow-name {
+  flex: 0 1 16rem;
+  min-width: 0;
+  height: 2.25rem;
+  padding: 0 0.625rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--mc-fg);
+  font: inherit;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+.mc-flow-name:hover:not(:disabled) {
+  border-color: var(--mc-line);
+}
+.mc-flow-name:focus {
+  outline: none;
+  border-color: var(--mc-glow);
+  background: var(--mc-raise);
+}
+.mc-spacer {
+  flex: 1;
+}
+.mc-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* ------------------------------------------------------------------ buttons and fields */
+.mc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  height: 2.25rem;
+  padding: 0 0.875rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-md);
+  background: var(--mc-raise);
+  color: var(--mc-fg);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  transition: background 0.12s, border-color 0.12s, transform 0.08s;
+}
+.mc-btn:hover:not(:disabled) {
+  background: var(--mc-hover);
+}
+.mc-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.mc-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.mc-btn:focus-visible,
+.mc-field:focus-visible,
+.mc-row-btn:focus-visible {
+  outline: 2px solid var(--mc-glow);
+  outline-offset: 2px;
+}
+.mc-btn-primary {
+  border-color: transparent;
+  background: var(--mc-glow);
+  color: oklch(0.2 0.03 230);
+}
+.mc-btn-primary:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--mc-glow) 86%, white);
+}
+.mc-btn-quiet {
+  border-color: transparent;
+  background: transparent;
+}
+.mc-btn-danger {
+  color: var(--mc-bad);
+}
+.mc-btn-icon {
+  width: 2.25rem;
+  padding: 0;
+}
+.mc-btn-sm {
+  height: 1.875rem;
+  padding: 0 0.625rem;
+  font-size: 0.8125rem;
+}
+.mc-field {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.4rem 0.625rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-md);
+  background: var(--mc-bg);
+  color: var(--mc-fg);
+  font: inherit;
+}
+.mc-field:focus {
+  outline: none;
+  border-color: var(--mc-glow);
+}
+textarea.mc-field {
+  resize: vertical;
+  line-height: 1.45;
+}
+.mc-mono {
+  font-family: var(--mc-mono);
+  font-variant-numeric: tabular-nums;
+}
+.mc-label {
+  display: block;
+  margin: 0 0 0.3rem;
+  color: var(--mc-faint);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.mc-hint {
+  margin: 0.3rem 0 0;
+  color: var(--mc-faint);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.mc-error {
+  margin: 0.5rem 0 0;
+  color: var(--mc-bad);
+  font-size: 0.8125rem;
+}
+.mc-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.25rem 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.mc-switch-track {
+  position: relative;
+  flex: none;
+  width: 2.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: var(--mc-line);
+  transition: background 0.15s;
+}
+.mc-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 0.125rem;
+  left: 0.125rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--mc-fg);
+  transition: transform 0.15s;
+}
+.mc-switch[aria-checked='true'] .mc-switch-track {
+  background: var(--mc-glow);
+}
+.mc-switch[aria-checked='true'] .mc-switch-track::after {
+  transform: translateX(1rem);
+}
+
+/* ------------------------------------------------------------------ usage meters */
+.mc-meters {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+}
+.mc-meter {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 7.5rem;
+}
+.mc-meter-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.6875rem;
+  color: var(--mc-dim);
+  white-space: nowrap;
+}
+.mc-meter-head b {
+  color: var(--mc-fg);
+  font-weight: 600;
+}
+.mc-meter-bar {
+  position: relative;
+  height: 0.375rem;
+  border-radius: 999px;
+  background: var(--mc-line-soft);
+  overflow: hidden;
+}
+.mc-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in oklch, var(--mc-dim) 55%, transparent);
+}
+.mc-meter-share {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--mc-ok);
+}
+.mc-meter[data-tone='warn'] .mc-meter-share {
+  background: var(--mc-warn);
+}
+.mc-meter[data-tone='bad'] .mc-meter-share {
+  background: var(--mc-bad);
+}
+.mc-meter-stop {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  background: var(--mc-bad);
+  opacity: 0.8;
+}
+
+/* ------------------------------------------------------------------ body layout */
+.mc-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: 17.5rem minmax(0, 1fr) 22rem;
+  min-height: 0;
+}
+.mc-side,
+.mc-inspector {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--mc-panel);
+  overflow: hidden;
+}
+.mc-side {
+  border-right: 1px solid var(--mc-line);
+}
+.mc-inspector {
+  border-left: 1px solid var(--mc-line);
+}
+.mc-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--mc-bg);
+}
+.mc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.75rem;
+}
+.mc-section {
+  margin-bottom: 1.1rem;
+}
+.mc-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--mc-line-soft);
+  font-weight: 650;
+}
+.mc-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem 0;
+}
+.mc-tab {
+  flex: 1;
+  height: 2rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--mc-dim);
+  font-weight: 600;
+  cursor: pointer;
+}
+.mc-tab[aria-selected='true'] {
+  background: var(--mc-raise);
+  color: var(--mc-fg);
+}
+
+/* ------------------------------------------------------------------ lists (runs, flows) */
+.mc-list {
+  display: grid;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mc-row-btn {
+  display: grid;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--mc-raise);
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mc-row-btn:hover {
+  background: var(--mc-hover);
+}
+.mc-row-btn[aria-current='true'] {
+  border-color: var(--mc-glow);
+}
+.mc-row-title {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-row-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--mc-faint);
+  font-size: 0.75rem;
+}
+.mc-li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.25rem;
+}
+.mc-empty {
+  padding: 1rem 0.5rem;
+  color: var(--mc-faint);
+  text-align: center;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------------ status pill */
+.mc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 1.375rem;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--mc-dim) 16%, transparent);
+  color: var(--mc-dim);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.mc-pill::before {
+  content: '';
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+.mc-pill[data-tone='live'] {
+  background: color-mix(in oklch, var(--mc-live) 16%, transparent);
+  color: var(--mc-live);
+}
+.mc-pill[data-tone='live']::before {
+  animation: mc-pulse 1.4s ease-in-out infinite;
+}
+.mc-pill[data-tone='ok'] {
+  background: color-mix(in oklch, var(--mc-ok) 16%, transparent);
+  color: var(--mc-ok);
+}
+.mc-pill[data-tone='warn'] {
+  background: color-mix(in oklch, var(--mc-warn) 16%, transparent);
+  color: var(--mc-warn);
+}
+.mc-pill[data-tone='bad'] {
+  background: color-mix(in oklch, var(--mc-bad) 16%, transparent);
+  color: var(--mc-bad);
+}
+@keyframes mc-pulse {
+  50% {
+    opacity: 0.3;
+    transform: scale(0.7);
+  }
+}
+
+/* ------------------------------------------------------------------ the agent card */
+.mc-card {
+  --mc-engine: var(--mc-claude);
+  position: relative;
+  width: 14.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-lg);
+  background: var(--mc-panel);
+  box-shadow: 0 0.5rem 1.5rem oklch(0 0 0 / 0.35);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.mc-card[data-engine='codex'] {
+  --mc-engine: var(--mc-codex);
+}
+.mc-card[data-selected='true'] {
+  border-color: var(--mc-fg);
+}
+.mc-card[data-status='running'] {
+  border-color: var(--mc-live);
+  box-shadow: 0 0 0 1px var(--mc-live), 0 0 1.75rem color-mix(in oklch, var(--mc-live) 45%, transparent);
+  animation: mc-breathe 2.2s ease-in-out infinite;
+}
+.mc-card[data-status='done'] {
+  border-color: color-mix(in oklch, var(--mc-ok) 55%, var(--mc-line));
+}
+.mc-card[data-status='failed'],
+.mc-card[data-status='interrupted'] {
+  border-color: var(--mc-bad);
+}
+.mc-card[data-waiting='true'] {
+  border-color: var(--mc-warn);
+  box-shadow: 0 0 1.25rem color-mix(in oklch, var(--mc-warn) 30%, transparent);
+}
+@keyframes mc-breathe {
+  50% {
+    box-shadow: 0 0 0 1px var(--mc-live), 0 0 2.5rem color-mix(in oklch, var(--mc-live) 25%, transparent);
+  }
+}
+.mc-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.mc-role {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.125rem;
+  height: 2.125rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--mc-engine) 18%, transparent);
+  color: var(--mc-engine);
+}
+.mc-card-name {
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-card-role {
+  color: var(--mc-faint);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mc-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0.625rem;
+}
+.mc-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 1.375rem;
+  padding: 0 0.5rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--mc-engine) 14%, transparent);
+  color: var(--mc-engine);
+  font-family: var(--mc-mono);
+  font-size: 0.6875rem;
+}
+.mc-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 1.375rem;
+  padding: 0 0.4rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--mc-warn) 14%, transparent);
+  color: var(--mc-warn);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+.mc-card-state {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  color: var(--mc-faint);
+}
+.mc-card[data-status='running'] .mc-card-state {
+  color: var(--mc-live);
+}
+.mc-card[data-status='done'] .mc-card-state {
+  color: var(--mc-ok);
+}
+.mc-card[data-status='failed'] .mc-card-state,
+.mc-card[data-status='interrupted'] .mc-card-state {
+  color: var(--mc-bad);
+}
+.mc-spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid color-mix(in oklch, var(--mc-live) 25%, transparent);
+  border-top-color: var(--mc-live);
+  border-radius: 50%;
+  animation: mc-spin 0.8s linear infinite;
+}
+@keyframes mc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.mc-usage {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.625rem;
+}
+.mc-usage-line {
+  display: flex;
+  justify-content: space-between;
+  color: var(--mc-dim);
+  font-family: var(--mc-mono);
+  font-size: 0.6875rem;
+}
+.mc-usage-bar {
+  display: flex;
+  height: 0.25rem;
+  border-radius: 999px;
+  background: var(--mc-line-soft);
+  overflow: hidden;
+}
+.mc-usage-bar > i {
+  display: block;
+  height: 100%;
+}
+.mc-usage-bar > i:nth-child(1) {
+  background: var(--mc-engine);
+}
+.mc-usage-bar > i:nth-child(2) {
+  background: color-mix(in oklch, var(--mc-engine) 45%, transparent);
+}
+.mc-usage-bar > i:nth-child(3) {
+  background: color-mix(in oklch, var(--mc-engine) 22%, transparent);
+}
+.mc-last {
+  margin-top: 0.5rem;
+  overflow: hidden;
+  color: var(--mc-faint);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* React Flow, in this look */
+#orch .react-flow {
+  --xy-background-color: var(--mc-bg);
+  --xy-background-pattern-dots-color-default: var(--mc-line);
+  --xy-edge-stroke-default: var(--mc-faint);
+  --xy-edge-stroke-width-default: 1.75;
+  --xy-edge-stroke-selected-default: var(--mc-fg);
+  --xy-connectionline-stroke-default: var(--mc-glow);
+  --xy-handle-background-color-default: var(--mc-panel);
+  --xy-handle-border-color-default: var(--mc-dim);
+  --xy-controls-button-background-color-default: var(--mc-raise);
+  --xy-controls-button-color-default: var(--mc-fg);
+  --xy-controls-button-border-color-default: var(--mc-line);
+  --xy-minimap-background-color-default: var(--mc-panel);
+  --xy-minimap-mask-background-color-default: oklch(0 0 0 / 0.5);
+}
+#orch .react-flow__node {
+  cursor: pointer;
+}
+#orch .react-flow__handle {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-width: 2px;
+}
+#orch .react-flow__handle-connecting {
+  background: var(--mc-bad);
+}
+#orch .react-flow__handle-valid {
+  background: var(--mc-ok);
+}
+#orch .react-flow__edge-path {
+  transition: stroke 0.2s;
+}
+#orch .react-flow__edge.mc-edge-live .react-flow__edge-path {
+  stroke: var(--mc-live);
+  stroke-width: 2.5;
+  stroke-dasharray: 6 5;
+  animation: mc-flow 0.6s linear infinite;
+}
+#orch .react-flow__edge.mc-edge-done .react-flow__edge-path {
+  stroke: color-mix(in oklch, var(--mc-ok) 70%, var(--mc-faint));
+}
+#orch .react-flow__edge.mc-edge-retry .react-flow__edge-path {
+  stroke: var(--mc-warn);
+  stroke-dasharray: 4 5;
+}
+#orch .react-flow__edge-text {
+  fill: var(--mc-warn);
+  font-size: 0.6875rem;
+}
+#orch .react-flow__edge-textbg {
+  fill: var(--mc-bg);
+}
+#orch .react-flow__attribution {
+  background: transparent;
+  opacity: 0.5;
+}
+@keyframes mc-flow {
+  to {
+    stroke-dashoffset: -11;
+  }
+}
+
+/* The palette that adds agents to the canvas */
+.mc-palette {
+  position: absolute;
+  left: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  max-width: calc(100% - 1.5rem);
+  padding: 0.375rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklch, var(--mc-panel) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+.mc-palette .mc-btn {
+  height: 2rem;
+  padding: 0 0.625rem;
+}
+
+/* The run bar floating over the top of the canvas */
+.mc-runbar {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  right: 0.75rem;
+  z-index: 4;
+  display: grid;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+.mc-runbar > * {
+  pointer-events: auto;
+}
+.mc-runbar-main {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklch, var(--mc-panel) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+.mc-runbar-goal {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mc-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-runbar-stats {
+  display: flex;
+  gap: 0.875rem;
+  color: var(--mc-dim);
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.mc-runbar-stats b {
+  color: var(--mc-fg);
+  font-weight: 600;
+}
+.mc-notice {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid color-mix(in oklch, var(--mc-warn) 55%, var(--mc-line));
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklch, var(--mc-warn) 10%, var(--mc-panel));
+  box-shadow: 0 0.75rem 2rem oklch(0 0 0 / 0.4);
+}
+.mc-notice[data-tone='ok'] {
+  border-color: color-mix(in oklch, var(--mc-ok) 55%, var(--mc-line));
+  background: color-mix(in oklch, var(--mc-ok) 9%, var(--mc-panel));
+}
+.mc-notice[data-tone='bad'] {
+  border-color: color-mix(in oklch, var(--mc-bad) 60%, var(--mc-line));
+  background: color-mix(in oklch, var(--mc-bad) 10%, var(--mc-panel));
+}
+.mc-notice-title {
+  font-weight: 650;
+}
+.mc-notice-detail {
+  margin: 0;
+  color: var(--mc-dim);
+  line-height: 1.45;
+}
+.mc-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* ------------------------------------------------------------------ inspector */
+.mc-kv {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.2rem 0.75rem;
+  margin: 0;
+  color: var(--mc-dim);
+  font-size: 0.8125rem;
+}
+.mc-kv dd {
+  margin: 0;
+  color: var(--mc-fg);
+  font-family: var(--mc-mono);
+  text-align: right;
+}
+.mc-pre {
+  max-height: 14rem;
+  margin: 0;
+  padding: 0.625rem;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  background: var(--mc-bg);
+  color: var(--mc-dim);
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mc-log {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+}
+.mc-log li {
+  overflow: hidden;
+  color: var(--mc-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+/* ------------------------------------------------------------------ dialogs (new run, questions) */
+.mc-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: oklch(0 0 0 / 0.55);
+  backdrop-filter: blur(3px);
+}
+.mc-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(36rem, 100%);
+  max-height: 100%;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-xl);
+  background: var(--mc-panel);
+  box-shadow: 0 1.5rem 4rem oklch(0 0 0 / 0.55);
+  overflow: hidden;
+}
+.mc-dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
+}
+.mc-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--mc-line-soft);
+}
+.mc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+.mc-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 1.875rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--mc-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--mc-dim);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.mc-chip[aria-pressed='true'] {
+  border-color: var(--mc-glow);
+  background: color-mix(in oklch, var(--mc-glow) 14%, transparent);
+  color: var(--mc-fg);
+}
+.mc-q {
+  margin-bottom: 1rem;
+}
+.mc-q-text {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.mc-q-use {
+  margin-top: 0.3rem;
+}
+.mc-thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.5rem 0.5rem;
+  color: var(--mc-dim);
+}
+
+/* A short message at the bottom of the chart */
+.mc-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 1rem;
+  z-index: 30;
+  transform: translateX(-50%);
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--mc-line);
+  border-radius: 999px;
+  background: var(--mc-raise);
+  box-shadow: 0 0.5rem 1.5rem oklch(0 0 0 / 0.5);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ list view (phones) */
+.mc-nodelist {
+  display: grid;
+  gap: 0.625rem;
+  padding: 4.5rem 0.75rem 6rem;
+  height: 100%;
+  overflow-y: auto;
+  align-content: start;
+}
+.mc-nodelist .mc-card {
+  width: 100%;
+}
+.mc-link {
+  display: grid;
+  place-items: center;
+  height: 1.5rem;
+  color: var(--mc-faint);
+}
+
+/* ------------------------------------------------------------------ responsive */
+/* Tablet: the side panels become drawers over the canvas. */
+@media (max-width: 1099px) {
+  .mc-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mc-side,
+  .mc-inspector {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 15;
+    width: min(22rem, 92%);
+    box-shadow: 0 0 3rem oklch(0 0 0 / 0.6);
+    transition: transform 0.2s ease;
+  }
+  .mc-side {
+    left: 0;
+    transform: translateX(-105%);
+  }
+  .mc-inspector {
+    right: 0;
+    transform: translateX(105%);
+  }
+  .mc-side[data-open='true'],
+  .mc-inspector[data-open='true'] {
+    transform: none;
+  }
+  /* Two rows: the controls, then the usage meters across the full width. */
+  .mc-top {
+    flex-wrap: wrap;
+    gap: 0.25rem 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+  .mc-flow-name {
+    flex: 1 1 0;
+  }
+  .mc-spacer {
+    display: none;
+  }
+  .mc-meters {
+    order: 10;
+    flex: 1 0 100%;
+    gap: 0.75rem;
+  }
+  .mc-meter {
+    flex: 1;
+    min-width: 0;
+  }
+}
+/* Phone: a list of agents instead of a canvas, and a compact top bar. */
+@media (max-width: 699px) {
+  #orch {
+    --mc-top: 3rem;
+  }
+  .mc-brand-text,
+  .mc-hide-narrow {
+    display: none !important;
+  }
+
+  .mc-side,
+  .mc-inspector {
+    width: 100%;
+  }
+  .mc-runbar-stats {
+    display: none;
+  }
+  .mc-dialog {
+    width: 100%;
+    max-height: 100%;
+    border-radius: var(--radius-xl);
+  }
+  .mc-scrim {
+    padding: 0;
+    align-items: end;
+  }
+  .mc-dialog {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .mc-palette {
+    display: none;
+  }
+}
+
+/* The list view (chosen, or always on a phone) stacks the run bar above the list instead of floating over a chart. */
+.mc-stage[data-list='true'] {
+  display: flex;
+  flex-direction: column;
+}
+.mc-stage[data-list='true'] .mc-runbar {
+  position: static;
+  padding: 0.5rem 0.75rem 0;
+}
+.mc-stage[data-list='true'] .mc-nodelist {
+  flex: 1;
+  padding-top: 0.75rem;
+}
+
+/* Fingers: 44px targets and 16px input text so iOS does not zoom on focus. */
+@media (pointer: coarse) {
+  #orch .mc-btn,
+  #orch .mc-tab,
+  #orch .mc-chip {
+    min-height: 44px;
+  }
+  #orch .mc-btn-icon {
+    min-width: 44px;
+  }
+  #orch .mc-field,
+  #orch .mc-flow-name {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  #orch .mc-row-btn {
+    min-height: 44px;
+  }
+  #orch .react-flow__handle {
+    width: 1.375rem;
+    height: 1.375rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #orch *,
+  #orch *::before,
+  #orch *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

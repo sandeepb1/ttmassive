@@ -2,6 +2,7 @@
 // only decides which apply right now (a pane with no agent has no "Change model") and how they read.
 
 import type { Item, Step } from './command-model';
+import { openOrch } from './orch/entry';
 import type { Pane } from './pane';
 import { getBellSound, getOptionMeta, setBellSound, setOptionMeta } from './prefs';
 import type { PresetInfo } from './dirs';
@@ -63,6 +64,8 @@ async function buildItems(ctx: Ctx): Promise<Item[]> {
       });
     }
   }
+
+  add({ id: 'start:orchestrator', label: 'Orchestrator mode…', hint: 'Plan work as a flow of Claude Code and Codex agents', group: 'Start', keywords: 'orchestrator agents flow multi agent workflow team research build judge', run: () => openOrch() });
 
   // ---- Panes
   if (ctx.canSplit() && panes.length < ctx.paneLimit()) {
