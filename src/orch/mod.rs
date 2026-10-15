@@ -9,6 +9,7 @@ pub mod gate;
 pub mod graph;
 pub mod handoff;
 pub mod prompts;
+pub mod roles;
 pub mod run;
 pub mod runner;
 pub mod service;

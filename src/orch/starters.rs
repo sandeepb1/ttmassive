@@ -4,32 +4,7 @@
 use super::graph::{Budget, Edge, EdgeKind, Engine, Flow, Node, Role};
 
 pub fn default_prompt(role: Role) -> &'static str {
-    match role {
-        Role::Orchestrator => {
-            "You are the orchestrator. Turn the brief into a short, concrete plan the other agents can follow. \
-             Name the steps in order and say what done looks like. Do not do the work yourself."
-        }
-        Role::Researcher => {
-            "You are a researcher. Find out what is needed to do the task well, from the code in the working \
-             folder and from reliable sources. Report findings and where they came from. Do not change files."
-        }
-        Role::Search => {
-            "You are a search agent. Locate the files, symbols and facts the task touches, quickly and \
-             broadly. Report exact locations. Do not change files."
-        }
-        Role::Analyst => {
-            "You are an analyst. Weigh the findings you are given, point out risks and gaps, and recommend one \
-             approach with reasons. Do not change files."
-        }
-        Role::Judge => {
-            "You are a strict reviewer. Check the work against the brief and the plan. Approve only if it is \
-             correct and complete; otherwise reject and say exactly what to fix."
-        }
-        Role::Builder => {
-            "You are the builder. Do the work described by the plan and findings, in the working folder. Keep \
-             changes small and focused, run the project's checks, and report what you changed."
-        }
-    }
+    super::roles::prompt(role)
 }
 
 fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: usize, row: usize) -> Node {
@@ -37,6 +12,7 @@ fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: us
         id: id.into(),
         name: name.into(),
         role,
+        custom: None,
         engine,
         model: model.into(),
         system_prompt: default_prompt(role).into(),
@@ -52,58 +28,137 @@ fn edge(from: &str, to: &str, kind: EdgeKind) -> Edge {
     Edge { id: format!("{from}-{to}-{}", if kind == EdgeKind::Retry { "retry" } else { "next" }), from: from.into(), to: to.into(), kind }
 }
 
-pub fn all() -> Vec<Flow> {
-    // Plan first, then research, then the builder; the judge can send the builder back.
-    let mut build = Flow {
-        id: "starter-research-build-review".into(),
-        name: "Research, build, review".into(),
-        nodes: vec![
-            node("plan", "Planner", Role::Orchestrator, Engine::Claude, "opus", 0, 0),
-            node("research", "Researcher", Role::Researcher, Engine::Claude, "sonnet", 1, 0),
-            node("build", "Builder", Role::Builder, Engine::Codex, "gpt-6.1-sol", 2, 0),
-            node("review", "Judge", Role::Judge, Engine::Claude, "opus", 3, 0),
-        ],
-        edges: vec![
-            edge("plan", "research", EdgeKind::Forward),
-            edge("research", "build", EdgeKind::Forward),
-            edge("build", "review", EdgeKind::Forward),
-            edge("review", "build", EdgeKind::Retry),
-        ],
-        max_retries: 2,
-        budget: Budget::default(),
-        downshift: false,
-    };
-    // Approve the plan before anything starts, and approve again before files change.
-    build.nodes[1].checkpoint = true;
-    build.nodes[2].checkpoint = true;
+/// A flow of these agents and edges. Nodes are (id, name, role, engine, model, column, row, asks first).
+type Spec<'a> = (&'a str, &'a str, Role, Engine, &'a str, usize, usize, bool);
 
-    let report = Flow {
-        id: "starter-research-report".into(),
-        name: "Research and report".into(),
-        nodes: vec![
-            node("plan", "Planner", Role::Orchestrator, Engine::Claude, "opus", 0, 1),
-            node("search", "Searcher", Role::Search, Engine::Codex, "gpt-6-luna", 1, 0),
-            node("research", "Researcher", Role::Researcher, Engine::Claude, "sonnet", 1, 2),
-            node("analyse", "Analyst", Role::Analyst, Engine::Claude, "sonnet", 2, 1),
-            node("review", "Judge", Role::Judge, Engine::Claude, "opus", 3, 1),
-        ],
-        edges: vec![
-            edge("plan", "search", EdgeKind::Forward),
-            edge("plan", "research", EdgeKind::Forward),
-            edge("search", "analyse", EdgeKind::Forward),
-            edge("research", "analyse", EdgeKind::Forward),
-            edge("analyse", "review", EdgeKind::Forward),
-        ],
-        max_retries: 1,
-        budget: Budget { claude_pct: 10.0, codex_pct: 5.0, stop_window_pct: 85.0 },
+fn flow(id: &str, name: &str, specs: &[Spec], edges: &[(&str, &str, EdgeKind)], max_retries: u8, budget: Budget) -> Flow {
+    Flow {
+        id: id.into(),
+        name: name.into(),
+        nodes: specs
+            .iter()
+            .map(|&(nid, label, role, engine, model, col, row, asks)| {
+                let mut n = node(nid, label, role, engine, model, col, row);
+                n.checkpoint = asks;
+                n
+            })
+            .collect(),
+        edges: edges.iter().map(|&(a, b, k)| edge(a, b, k)).collect(),
+        max_retries,
+        budget,
         downshift: false,
-    };
-    vec![build, report]
+    }
+}
+
+/// The five flow shapes from docs/research/multi-agent-roles.md. Most coding flows land at 3 to 6 agents, with one
+/// writer, and a judge that can run the checks and send the work back.
+pub fn all() -> Vec<Flow> {
+    use EdgeKind::{Forward as F, Retry as R};
+    let (claude, codex) = (Engine::Claude, Engine::Codex);
+    let default = Budget::default();
+
+    // Ask before the design and before files change: the plan is approved once the findings are in.
+    let feature = flow(
+        "starter-feature",
+        "Feature",
+        &[
+            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 1, false),
+            ("find", "Search", Role::Search, codex, "gpt-6-luna", 1, 0, false),
+            ("read", "Researcher", Role::Researcher, claude, "sonnet", 1, 2, false),
+            ("design", "Architect", Role::Architect, claude, "opus", 2, 1, true),
+            ("build", "Builder", Role::Builder, codex, "gpt-6.1-sol", 3, 1, true),
+            ("check", "Judge", Role::Judge, claude, "opus", 4, 1, false),
+        ],
+        &[
+            ("plan", "find", F),
+            ("plan", "read", F),
+            ("find", "design", F),
+            ("read", "design", F),
+            ("design", "build", F),
+            ("build", "check", F),
+            ("check", "build", R),
+        ],
+        2,
+        default,
+    );
+
+    let bug = flow(
+        "starter-bug-fix",
+        "Bug fix",
+        &[
+            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 0, false),
+            ("debug", "Debugger", Role::Debugger, claude, "sonnet", 1, 0, true),
+            ("build", "Builder", Role::Builder, codex, "gpt-6.1-sol", 2, 0, true),
+            ("check", "Judge", Role::Judge, claude, "opus", 3, 0, false),
+        ],
+        &[("plan", "debug", F), ("debug", "build", F), ("build", "check", F), ("check", "build", R)],
+        2,
+        default,
+    );
+
+    let refactor = flow(
+        "starter-refactor",
+        "Refactor",
+        &[
+            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 0, false),
+            ("find", "Search", Role::Search, codex, "gpt-6-luna", 1, 0, false),
+            ("design", "Architect", Role::Architect, claude, "opus", 2, 0, true),
+            ("build", "Builder", Role::Builder, codex, "gpt-6.1-sol", 3, 0, true),
+            ("check", "Judge", Role::Judge, claude, "opus", 4, 0, false),
+        ],
+        &[("plan", "find", F), ("find", "design", F), ("design", "build", F), ("build", "check", F), ("check", "build", R)],
+        2,
+        default,
+    );
+
+    // Two reviewers look at the same work through different lenses, in parallel, with nothing to send it back to.
+    let mut review = flow(
+        "starter-code-review",
+        "Code review",
+        &[
+            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 0, false),
+            ("right", "Correctness review", Role::Judge, claude, "opus", 1, 0, false),
+            ("safe", "Security and spec review", Role::Judge, claude, "opus", 1, 1, false),
+            ("report", "Reporter", Role::Reporter, claude, "sonnet", 2, 0, false),
+        ],
+        &[("plan", "right", F), ("plan", "safe", F), ("right", "report", F), ("safe", "report", F)],
+        0,
+        default,
+    );
+    review.nodes[1].system_prompt.push_str(" Review for correctness only: logic errors, broken behaviour, missing cases and failing checks.");
+    review.nodes[2].system_prompt.push_str(" Review for security problems (injection, unsafe input, leaked secrets) and for gaps against the stated requirements only.");
+
+    let report = flow(
+        "starter-research-report",
+        "Research report",
+        &[
+            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 1, false),
+            ("find", "Search", Role::Search, codex, "gpt-6-luna", 1, 0, false),
+            ("read-a", "Researcher", Role::Researcher, claude, "sonnet", 1, 1, false),
+            ("read-b", "Researcher 2", Role::Researcher, claude, "sonnet", 1, 2, false),
+            ("weigh", "Analyst", Role::Analyst, claude, "opus", 2, 1, false),
+            ("report", "Reporter", Role::Reporter, claude, "sonnet", 3, 1, false),
+        ],
+        &[
+            ("plan", "find", F),
+            ("plan", "read-a", F),
+            ("plan", "read-b", F),
+            ("find", "weigh", F),
+            ("read-a", "weigh", F),
+            ("read-b", "weigh", F),
+            ("weigh", "report", F),
+        ],
+        1,
+        Budget { claude_pct: 10.0, codex_pct: 5.0, stop_window_pct: 85.0 },
+    );
+
+    vec![feature, bug, refactor, review, report]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orch::roles::Capability;
 
     #[test]
     fn every_starter_is_a_valid_flow() {
@@ -122,9 +177,69 @@ mod tests {
     }
 
     #[test]
-    fn the_builder_waits_for_approval_in_the_first_starter() {
+    fn a_starter_follows_the_research_rules_of_thumb() {
+        for f in all() {
+            let writers = f.nodes.iter().filter(|n| n.writes()).count();
+            assert!(writers <= 1, "{}: one writer per piece of work", f.name);
+            assert!(f.nodes.len() <= 6, "{}: over six agents needs a written reason", f.name);
+            assert!(f.max_retries <= 2, "{}: cap send-back loops at 2", f.name);
+            let retries = f.edges.iter().filter(|e| e.kind == EdgeKind::Retry).count();
+            assert!(retries <= 1, "{}: a verdict can name only one place to send work back to", f.name);
+            // Whatever changes files asks first.
+            for n in f.nodes.iter().filter(|n| n.writes()) {
+                assert!(n.checkpoint, "{}: {} changes files and must ask first", f.name, n.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_flow_that_writes_has_a_checker_that_can_run_things_and_a_flow_that_does_not_has_no_send_back() {
+        for f in all() {
+            let writes = f.nodes.iter().any(|n| n.writes());
+            let judge = f.nodes.iter().find(|n| n.decides() && n.capability() == Capability::Inspect);
+            if writes {
+                assert!(judge.is_some(), "{}: nobody checks the change", f.name);
+                assert!(f.edges.iter().any(|e| e.kind == EdgeKind::Retry), "{}: no way to send it back", f.name);
+            } else {
+                assert!(f.edges.iter().all(|e| e.kind == EdgeKind::Forward), "{}: nothing to send back to", f.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_builder_waits_for_approval_and_so_does_the_design() {
         let f = &all()[0];
         assert!(f.node("build").unwrap().checkpoint);
-        assert!(f.node("research").unwrap().checkpoint, "the plan is approved first");
+        assert!(f.node("design").unwrap().checkpoint, "the plan is approved once the findings are in");
+    }
+
+    #[test]
+    fn the_judge_and_the_builder_are_different_models() {
+        // A judge favours its own style, so it should not be the same model as the one that wrote the work.
+        for f in all() {
+            let Some(b) = f.nodes.iter().find(|n| n.writes()) else { continue };
+            let j = f.nodes.iter().find(|n| n.decides()).unwrap();
+            assert!(b.engine != j.engine || b.model != j.model, "{}", f.name);
+        }
+    }
+
+    #[test]
+    fn every_starter_model_is_one_the_app_offers() {
+        for f in all() {
+            for n in &f.nodes {
+                let ok = match n.engine {
+                    Engine::Claude => ["opus", "sonnet", "haiku"].contains(&n.model.as_str()),
+                    Engine::Codex => n.model.starts_with("gpt-6"),
+                };
+                assert!(ok, "{}: {} on {}", f.name, n.name, n.model);
+            }
+        }
+    }
+
+    #[test]
+    fn the_review_lenses_are_different() {
+        let f = all().into_iter().find(|f| f.id == "starter-code-review").unwrap();
+        assert_ne!(f.node("right").unwrap().system_prompt, f.node("safe").unwrap().system_prompt);
+        assert!(f.node("safe").unwrap().system_prompt.contains("security"));
     }
 }

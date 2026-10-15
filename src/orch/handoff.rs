@@ -4,27 +4,28 @@
 
 use serde_json::{Value, json};
 
-use super::graph::{Node, Role};
+use super::graph::Node;
+use super::roles::Output;
 use super::run::{NodeStatus, Run};
 
-/// JSON Schema for the answer a role must give. Both CLIs enforce it.
-pub fn schema_for(role: Role) -> Value {
+/// JSON Schema for the answer an agent must give, by what it hands back. Both CLIs enforce it.
+pub fn schema_for(output: Output) -> Value {
     let obj = |props: Value, required: &[&str]| {
         json!({"type": "object", "properties": props, "required": required, "additionalProperties": false})
     };
     let text = json!({"type": "string"});
     let list = json!({"type": "array", "items": {"type": "string"}});
-    match role {
-        Role::Orchestrator => obj(json!({"plan": text, "steps": list}), &["plan", "steps"]),
-        Role::Judge => obj(
+    match output {
+        Output::Plan => obj(json!({"plan": text, "steps": list}), &["plan", "steps"]),
+        Output::Verdict => obj(
             json!({"verdict": {"type": "string", "enum": ["approve", "reject"]}, "feedback": text}),
             &["verdict", "feedback"],
         ),
-        Role::Builder => obj(
+        Output::Change => obj(
             json!({"summary": text, "files_changed": list, "notes": text}),
             &["summary", "files_changed", "notes"],
         ),
-        Role::Researcher | Role::Search | Role::Analyst => {
+        Output::Report => {
             obj(json!({"summary": text, "findings": list, "sources": list}), &["summary", "findings", "sources"])
         }
     }
@@ -66,7 +67,7 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
         p.push_str("\n# Inputs\n");
         for (from, out) in inputs {
             let body = serde_json::to_string_pretty(out).unwrap_or_default();
-            p.push_str(&format!("\n## From {} ({:?})\n\n{body}\n", from.name, from.role));
+            p.push_str(&format!("\n## From {} ({})\n\n{body}\n", from.name, from.role_label()));
         }
     }
     if let Some(f) = run.feedback.get(&node.id) {
@@ -82,13 +83,14 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orch::graph::{Budget, Edge, EdgeKind, Engine, Flow};
+    use crate::orch::graph::{Budget, Edge, EdgeKind, Engine, Flow, Role};
 
     fn node(id: &str, name: &str, role: Role) -> Node {
         Node {
             id: id.into(),
             name: name.into(),
             role,
+            custom: None,
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: String::new(),
@@ -115,17 +117,15 @@ mod tests {
 
     #[test]
     fn every_role_has_a_closed_object_schema() {
-        for role in
-            [Role::Orchestrator, Role::Researcher, Role::Search, Role::Analyst, Role::Judge, Role::Builder]
-        {
-            let s = schema_for(role);
+        for output in [Output::Plan, Output::Report, Output::Change, Output::Verdict] {
+            let s = schema_for(output);
             assert_eq!(s["type"], "object");
             assert_eq!(s["additionalProperties"], false);
             for key in s["required"].as_array().unwrap() {
                 assert!(s["properties"].get(key.as_str().unwrap()).is_some());
             }
         }
-        assert_eq!(schema_for(Role::Judge)["properties"]["verdict"]["enum"], json!(["approve", "reject"]));
+        assert_eq!(schema_for(Output::Verdict)["properties"]["verdict"]["enum"], json!(["approve", "reject"]));
     }
 
     #[test]

@@ -173,8 +173,19 @@ impl Service {
         Ok(flow)
     }
 
-    pub async fn node_prompt(&self, role: super::graph::Role, name: &str, goal: &str) -> Result<String, Fail> {
-        Ok(prompts::node_prompt(role, name, goal, &self.scratch).await?.0)
+    pub async fn node_prompt(&self, label: &str, capability: super::roles::Capability, output: super::roles::Output, name: &str, goal: &str) -> Result<String, Fail> {
+        Ok(prompts::node_prompt(label, capability, output, name, goal, &self.scratch).await?.0)
+    }
+
+    /// Design a role from a description: its name, what it may do, what it hands back, and its instructions.
+    pub async fn custom_role(&self, description: &str) -> Result<prompts::NewRole, Fail> {
+        if description.trim().len() < 8 {
+            return Err(Fail::Bad("describe the role in a sentence or two".into()));
+        }
+        if description.len() > 2000 {
+            return Err(Fail::Bad("that description is too long".into()));
+        }
+        Ok(prompts::custom_role(description, &self.scratch).await?.0)
     }
 
     pub async fn create_run(
@@ -383,8 +394,8 @@ impl Service {
             let nr = run.nodes.get(node_id).ok_or(Fail::NotFound)?;
             (node, nr.session.clone(), nr.status == NodeStatus::Running)
         };
-        if node.role != super::graph::Role::Builder {
-            return Err(Fail::Bad("only a builder can be opened in a live session".into()));
+        if !node.writes() {
+            return Err(Fail::Bad("only an agent that changes files can be opened in a live session".into()));
         }
         if working {
             return Err(Fail::Conflict("it is working right now: stop the run first, or wait for it to finish".into()));

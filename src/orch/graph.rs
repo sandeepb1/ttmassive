@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use super::roles::{self, Capability, Output};
+
 const MAX_NODES: usize = 24;
 const MAX_EDGES: usize = 64;
 const MAX_ID: usize = 40;
@@ -21,13 +23,30 @@ pub enum Role {
     Analyst,
     Judge,
     Builder,
+    Architect,
+    Debugger,
+    Reporter,
+    /// A role the user wrote: its label, capability and result shape are on the node (`Node::custom`).
+    Custom,
 }
 
 impl Role {
-    /// Roles that only read: no file writes, no worktree.
-    pub fn read_only(self) -> bool {
-        !matches!(self, Role::Builder)
+    /// What a built-in role may do. A custom role says so itself, on the node.
+    pub fn capability(self) -> Capability {
+        roles::def_for(self).map_or(Capability::Read, |d| d.capability)
     }
+
+    pub fn output(self) -> Output {
+        roles::def_for(self).map_or(Output::Report, |d| d.output)
+    }
+}
+
+/// What makes a custom role what it is. Kept on the node so a saved flow carries it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomRole {
+    pub label: String,
+    pub capability: Capability,
+    pub output: Output,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +71,9 @@ pub struct Node {
     pub id: String,
     pub name: String,
     pub role: Role,
+    /// Present exactly when `role` is `custom`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<CustomRole>,
     pub engine: Engine,
     pub model: String,
     /// Written by Sonnet and editable. Identical on every turn so the prompt cache holds.
@@ -125,6 +147,36 @@ pub fn id_ok(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_ID && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+impl Node {
+    /// What this agent may do.
+    pub fn capability(&self) -> Capability {
+        self.custom.as_ref().map_or_else(|| self.role.capability(), |c| c.capability)
+    }
+
+    /// The shape of the answer it hands back.
+    pub fn output(&self) -> Output {
+        self.custom.as_ref().map_or_else(|| self.role.output(), |c| c.output)
+    }
+
+    pub fn writes(&self) -> bool {
+        self.capability() == Capability::Write
+    }
+
+    /// Hands back a decision, and so may send work back to an earlier agent.
+    pub fn decides(&self) -> bool {
+        self.output() == Output::Verdict
+    }
+
+    /// The name to show: a custom role's own, else the built-in role's.
+    pub fn role_label(&self) -> String {
+        match (&self.custom, roles::def_for(self.role)) {
+            (Some(c), _) => c.label.clone(),
+            (None, Some(d)) => d.label.to_string(),
+            (None, None) => "Agent".to_string(),
+        }
+    }
+}
+
 impl Flow {
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.nodes.iter().find(|n| n.id == id)
@@ -173,6 +225,16 @@ impl Flow {
             if n.token_cap == Some(0) {
                 return Err(format!("node '{}' token cap must be above 0", n.name));
             }
+            match (&n.role, &n.custom) {
+                (Role::Custom, None) => return Err(format!("node '{}' is a custom role with no definition", n.name)),
+                (Role::Custom, Some(c)) if c.label.trim().is_empty() || c.label.len() > MAX_NAME => {
+                    return Err(format!("node '{}' has a custom role name of 1 to {MAX_NAME} characters", n.name));
+                }
+                (r, Some(_)) if *r != Role::Custom => {
+                    return Err(format!("node '{}' has a custom definition but is not a custom role", n.name));
+                }
+                _ => {}
+            }
         }
 
         let mut edge_ids = HashSet::new();
@@ -187,11 +249,11 @@ impl Flow {
                 return Err(format!("edge '{}' joins a node to itself", e.id));
             }
             if e.kind == EdgeKind::Retry {
-                if from.role != Role::Judge {
-                    return Err("only a judge can send work back".into());
+                if !from.decides() {
+                    return Err("only an agent that hands back a verdict can send work back".into());
                 }
-                if to.role.read_only() {
-                    return Err("a judge can only send work back to a builder".into());
+                if !to.writes() {
+                    return Err("work can only be sent back to an agent that changes files".into());
                 }
             }
         }
@@ -253,7 +315,7 @@ impl Flow {
             if !seen.insert(n) {
                 continue;
             }
-            if self.node(n).is_some_and(|x| !x.role.read_only()) {
+            if self.node(n).is_some_and(Node::writes) {
                 return Some(n);
             }
             queue.extend(self.inputs_of(n));
@@ -306,6 +368,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             role,
+            custom: None,
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: String::new(),
@@ -403,14 +466,49 @@ mod tests {
     }
 
     #[test]
-    fn only_a_judge_may_retry_and_only_into_a_builder() {
+    fn only_an_agent_that_gives_a_verdict_may_retry_and_only_into_one_that_writes() {
         let mut f = line();
         f.edges[3] = edge("e4", "res", "build", EdgeKind::Retry);
-        assert!(f.validate().unwrap_err().contains("judge"));
+        assert!(f.validate().unwrap_err().contains("verdict"));
 
         let mut f = line();
         f.edges[3] = edge("e4", "judge", "res", EdgeKind::Retry);
-        assert!(f.validate().unwrap_err().contains("builder"));
+        assert!(f.validate().unwrap_err().contains("changes files"));
+    }
+
+    #[test]
+    fn a_custom_role_is_judged_by_what_it_may_do_not_by_its_name() {
+        use crate::orch::roles::{Capability, Output};
+        let custom = |cap, out| Some(CustomRole { label: "Security reviewer".into(), capability: cap, output: out });
+        // A custom reviewer that hands back a verdict can send work back, exactly like the built-in judge.
+        let mut f = line();
+        f.nodes[3].role = Role::Custom;
+        f.nodes[3].custom = custom(Capability::Inspect, Output::Verdict);
+        assert_eq!(f.validate(), Ok(()));
+        assert!(f.nodes[3].decides() && !f.nodes[3].writes());
+        // One that only reports cannot.
+        f.nodes[3].custom = custom(Capability::Inspect, Output::Report);
+        assert!(f.validate().unwrap_err().contains("verdict"));
+        // A custom writer is a writer: it gets a worktree and is a valid place to send work back to.
+        let mut g = line();
+        g.nodes[2].role = Role::Custom;
+        g.nodes[2].custom = custom(Capability::Write, Output::Change);
+        assert_eq!(g.validate(), Ok(()));
+        assert!(g.nodes[2].writes());
+        assert_eq!(g.nodes[2].role_label(), "Security reviewer");
+    }
+
+    #[test]
+    fn a_custom_role_needs_its_definition_and_only_it() {
+        use crate::orch::roles::{Capability, Output};
+        let mut f = line();
+        f.nodes[1].role = Role::Custom;
+        assert!(f.validate().unwrap_err().contains("no definition"));
+        f.nodes[1].custom = Some(CustomRole { label: " ".into(), capability: Capability::Read, output: Output::Report });
+        assert!(f.validate().unwrap_err().contains("custom role name"));
+        let mut g = line();
+        g.nodes[1].custom = Some(CustomRole { label: "X".into(), capability: Capability::Read, output: Output::Report });
+        assert!(g.validate().unwrap_err().contains("not a custom role"));
     }
 
     #[test]

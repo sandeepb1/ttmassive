@@ -224,6 +224,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             role: Role::Researcher,
+            custom: None,
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: String::new(),

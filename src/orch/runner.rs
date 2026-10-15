@@ -13,7 +13,8 @@ use super::Outcome;
 use super::claude::{self, Access, Event};
 use super::codex;
 use super::exec::NodeRunner;
-use super::graph::{Engine, Flow, Node, Role};
+use super::graph::{Engine, Flow, Node};
+use super::roles::Capability;
 use super::handoff;
 use super::worktree;
 
@@ -53,10 +54,10 @@ enum Limits {
 }
 
 fn limits(node: &Node) -> Limits {
-    if !node.role.read_only() {
+    if node.writes() {
         Limits::Writes
-    } else if node.role == Role::Judge || node.engine == Engine::Codex {
-        // A Claude judge is given a sandboxed shell; Codex's read-only sandbox already allows one.
+    } else if node.capability() == Capability::Inspect || node.engine == Engine::Codex {
+        // A Claude agent that may inspect is given a sandboxed shell; Codex's read-only sandbox already allows one.
         Limits::Shell
     } else {
         Limits::Reads
@@ -126,7 +127,7 @@ impl EngineRunner {
     /// Builders work in their own worktree. A reader that comes after a builder (a judge, say) looks
     /// at that builder's worktree, because that is where the work is; any other reader gets the project.
     async fn cwd(&self, node: &Node) -> Result<PathBuf> {
-        if !node.role.read_only() {
+        if node.writes() {
             let _one_at_a_time = self.worktree_lock.lock().await;
             return worktree::ensure(&self.project, &self.worktrees, &self.run_id, &node.id).await;
         }
@@ -147,10 +148,10 @@ impl EngineRunner {
                 let spec = claude::Spec {
                     model: node.model.clone(),
                     system_prompt: node.system_prompt.clone(),
-                    schema: handoff::schema_for(node.role),
+                    schema: handoff::schema_for(node.output()),
                     access: match limits(node) {
                         Limits::Writes => Access::Write,
-                        _ if node.role == Role::Judge => Access::Inspect,
+                        _ if node.capability() == Capability::Inspect => Access::Inspect,
                         _ => Access::ReadOnly,
                     },
                     cwd,
@@ -181,13 +182,13 @@ impl EngineRunner {
                 let spec = codex::Spec {
                     model: node.model.clone(),
                     system_prompt: node.system_prompt.clone(),
-                    read_only: node.role.read_only(),
+                    read_only: !node.writes(),
                     cwd,
                 };
                 server.start_thread(&spec).await?
             }
         };
-        let schema = handoff::schema_for(node.role);
+        let schema = handoff::schema_for(node.output());
         self.active.lock().unwrap_or_else(|e| e.into_inner()).insert(thread.id.clone());
         let result = server
             .turn(&mut thread, prompt, &schema, |note| {
@@ -217,6 +218,7 @@ impl NodeRunner for EngineRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orch::graph::Role;
 
     #[test]
     fn the_folder_note_names_the_folder_and_the_limits() {
@@ -236,6 +238,7 @@ mod tests {
             id: "n".into(),
             name: "n".into(),
             role,
+            custom: None,
             engine,
             model: "m".into(),
             system_prompt: String::new(),

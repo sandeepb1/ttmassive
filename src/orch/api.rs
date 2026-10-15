@@ -50,6 +50,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/flows/suggest", post(suggest))
         .route("/api/orch/flows/{id}", axum::routing::put(save_flow).delete(delete_flow))
         .route("/api/orch/node-prompt", post(node_prompt))
+        .route("/api/orch/custom-role", post(custom_role))
+        .route("/api/orch/roles", get(roles))
         .route("/api/orch/runs", get(list_runs).post(create_run))
         .route("/api/orch/runs/{id}", get(get_run))
         .route("/api/orch/runs/{id}/grill", post(grill))
@@ -97,13 +99,41 @@ async fn delete_flow(State(st): St, Path(id): Path<String>) -> Result<Response, 
 #[derive(Deserialize)]
 struct NodePromptBody {
     role: Role,
+    /// A custom role's definition; for a built-in role it is read from the catalog.
+    custom: Option<super::graph::CustomRole>,
     name: String,
     goal: String,
 }
 
 async fn node_prompt(State(st): St, Json(b): Json<NodePromptBody>) -> Result<Response, Fail> {
-    let p = st.orch.node_prompt(b.role, &b.name, &b.goal).await?;
+    let (label, capability, output) = match (&b.custom, super::roles::def_for(b.role)) {
+        (Some(c), _) => (c.label.clone(), c.capability, c.output),
+        (None, Some(d)) => (d.label.to_string(), d.capability, d.output),
+        (None, None) => return Err(Fail::Bad("that role has no definition".into())),
+    };
+    let p = st.orch.node_prompt(&label, capability, output, &b.name, &b.goal).await?;
     Ok(json_nocache(json!({"systemPrompt": p})))
+}
+
+#[derive(Deserialize)]
+struct CustomRoleBody {
+    description: String,
+}
+
+/// Design a custom role from a description. Nothing is saved: the page puts it on the canvas for the user to edit.
+async fn custom_role(State(st): St, Json(b): Json<CustomRoleBody>) -> Result<Response, Fail> {
+    let r = st.orch.custom_role(&b.description).await?;
+    Ok(json_nocache(json!({
+        "label": r.role.label,
+        "capability": r.role.capability,
+        "output": r.role.output,
+        "instructions": r.instructions,
+    })))
+}
+
+/// The built-in roles, for the page to offer.
+async fn roles() -> Response {
+    json_nocache(super::roles::catalog())
 }
 
 async fn list_runs(State(st): St) -> Response {

@@ -170,7 +170,7 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
             return Some(Pause::Budget { message });
         }
     }
-    if node.role == Role::Judge {
+    if node.decides() {
         return judged(run, node, &output);
     }
     None
@@ -272,6 +272,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             role,
+            custom: None,
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: String::new(),
