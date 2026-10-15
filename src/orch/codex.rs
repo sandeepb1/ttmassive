@@ -56,6 +56,11 @@ pub fn thread_start_params(spec: &Spec, mcp_off: &[String]) -> Value {
     if !mcp_off.is_empty() {
         config["mcp_servers"] = mcp_off.iter().map(|n| (n.clone(), json!({"enabled": false}))).collect::<serde_json::Map<_, _>>().into();
     }
+    if !spec.read_only {
+        // A builder installs dependencies and runs the project's checks, which need the network. Its sandbox lets
+        // it write only inside its own copy, but Codex shuts the network in that sandbox unless told otherwise.
+        config["sandbox_workspace_write"] = json!({ "network_access": true });
+    }
     json!({
         "cwd": spec.cwd,
         "model": spec.model,
@@ -436,6 +441,9 @@ mod tests {
         let mut b = spec.clone();
         b.read_only = false;
         assert_eq!(thread_start_params(&b, &[])["sandbox"], "workspace-write");
+        // Only an agent that changes files gets the network; a reader's sandbox stays closed.
+        assert_eq!(thread_start_params(&b, &[])["config"]["sandbox_workspace_write"]["network_access"], true);
+        assert!(t["config"].get("sandbox_workspace_write").is_none());
 
         // The user's own MCP servers are switched off by name, and only when there are some.
         assert!(t["config"].get("mcp_servers").is_none());
@@ -498,6 +506,31 @@ mod tests {
         eprintln!("notifications: {seen:?}\noutcome: {out:?}");
         assert_eq!(out.structured, Some(json!({"n": 7})));
         assert!(out.tokens.total() > 0);
+    }
+
+    /// A builder's sandbox reaches the network and a reader's does not. Makes two small real turns:
+    /// `cargo test -- --ignored codex_builder_network`.
+    #[tokio::test]
+    #[ignore]
+    async fn codex_builder_network_is_open_and_a_readers_is_not() {
+        let server = Server::start().await.unwrap();
+        let schema = json!({
+            "type": "object", "properties": {"code": {"type": "string"}},
+            "required": ["code"], "additionalProperties": false
+        });
+        let ask = "Run this shell command: curl -sS -m 8 -o /dev/null -w '%{http_code}' https://registry.npmjs.org/left-pad ; echo. \
+                   Put the number it printed in `code`, or the word FAILED if curl printed an error.";
+        let mut codes = Vec::new();
+        for read_only in [false, true] {
+            let scratch = Scratch::new(if read_only { "net-ro" } else { "net-rw" });
+            let spec = Spec { model: "gpt-6-luna".into(), system_prompt: "Do exactly what is asked.".into(), read_only, cwd: scratch.0.clone() };
+            let mut thread = server.start_thread(&spec).await.unwrap();
+            let out = server.turn(&mut thread, ask, &schema, |_| {}).await.unwrap();
+            codes.push(out.structured.unwrap()["code"].as_str().unwrap().to_string());
+        }
+        eprintln!("builder: {}, reader: {}", codes[0], codes[1]);
+        assert_eq!(codes[0], "200");
+        assert_ne!(codes[1], "200");
     }
 
     /// Talks to the real `codex` but makes no model call: `cargo test -- --ignored codex_lists`.
