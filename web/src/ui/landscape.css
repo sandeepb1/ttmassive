@@ -1,0 +1,48 @@
+/* A phone on its side leaves about 330px of height, and the on-screen keyboard takes most of that. These
+   rules give the height back to the terminal. Imported after touch.css, so they win over the 44px sizes there:
+   tap targets stay 44px, and what goes is the chrome around them. */
+@layer components {
+  @media (orientation: landscape) and (max-height: 520px) {
+    /* The plan-usage strip is a full 44px row on a touch screen. The same numbers are in the right sidebar's
+       Plan tab, so it steps aside. */
+    #usage { display: none; }
+    #app { --topbar-h: 44px; --strip-h: 0px; }
+
+    /* The key bar's rows lose their padding; the keys stay 44px tall. */
+    .p-keybar { height: 52px; }
+    .kb-row { height: 52px; padding: 4px 6px; }
+
+    /* The session list: more rows in view. */
+    .sb-foot { padding-top: 2px; padding-bottom: calc(2px + env(safe-area-inset-bottom)); }
+    .sidebar-left .drawer-list { padding: 6px 10px; }
+    .sidebar-left .srow-main { padding: 4px 2px; }
+    .sg-head { min-height: 40px; }
+    .sidebar-left .drawer-msg:empty { display: none; }
+
+    /* The right sidebar: icon-only tabs (each has a name and a tooltip) and a tighter search box. */
+    .rb-search { padding-top: 4px; padding-bottom: 2px; }
+    .rb-tabs { padding-top: 2px; padding-bottom: 4px; }
+    .rb-tab { flex-direction: row; justify-content: center; min-height: 44px; padding-block: 0; }
+    .rb-tab-label { display: none; }
+    .rb-search-icon, .rb-search-clear { top: 24px; }
+
+    /* Sheets may use nearly the whole height (the utility class caps them at 82%) and are wider than in portrait. */
+    dialog[data-sheet] { max-height: 96% !important; width: min(100%, 46rem) !important; }
+
+    /* Settings: the section chips become a column on the left and the settings scroll beside them. */
+    .settings-body { flex-direction: row !important; gap: 14px !important; }
+    dialog[data-sheet] > :first-child { padding-top: 6px !important; padding-bottom: 0 !important; }
+    .settings-nav { gap: 2px !important; flex-direction: column !important; width: 9.5rem; overflow-x: visible !important; overflow-y: auto !important; padding: 0 !important; }
+    .settings-nav > button { justify-content: flex-start; }
+    .step-row { flex-direction: row !important; align-items: center !important; justify-content: space-between !important; }
+    .step-row > :first-child { margin: 0 !important; }
+  }
+
+  /* The keyboard is up in landscape: about 180px are left. The terminal and the keys are all that fit, so the
+     pane's header goes until the keyboard is put away. */
+  @media (orientation: landscape) and (max-height: 300px) {
+    .p-head { display: none; }
+    .p-chat, .p-agent { top: 0; }
+    .t-chip { top: 8px; }
+  }
+}
