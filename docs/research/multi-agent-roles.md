@@ -15,10 +15,12 @@ The evidence points one way. Splitting by function pays when the pieces are read
 | builder | Builder | build | write | change | balanced | CORE |
 | judge | Judge | check | run checks | verdict | strong | CORE |
 | researcher | Researcher | gather | read (files and web) | report | balanced | SITUATIONAL |
-| analyst | Analyst | gather | read | report | strong | SITUATIONAL |
+| analyst | Analyst | gather | read | report | strong (ttm uses balanced: see below) | SITUATIONAL |
 | architect | Architect | plan | read | plan | strong | SITUATIONAL |
 | debugger | Debugger | gather | run checks | report | balanced | SITUATIONAL |
 | reporter | Reporter | deliver | read | report | balanced | SITUATIONAL |
+
+**Analyst tier, measured later the same day:** the same analyst task (two conflicting reports, no tools) cost $0.0585 on Opus and $0.0268 on Sonnet (2.2x) and both reached the same recommendation. This role's evidence was already the weakest here and its "strong" tier was inference, so ttm defaults it to the balanced tier.
 
 Why only nine (the brief guessed 10 to 14): each extra role costs tokens [2][6] and adds a hand-off where context is lost [13]. I found no source that supports a separate product manager, CEO, CTO, project manager, tester, designer or documenter agent for a one-person tool. Section 3 explains each rejection.
 
@@ -27,6 +29,8 @@ Three cautions that shape everything below:
 1. Cost scales with agent count. Anthropic measured about 4x the tokens of chat for a single agent and about 15x for multi-agent [2]. Codex documents the same direction [6]. On a subscription with usage windows, every added agent must earn its place.
 2. Do not run writers in parallel on one task. Cognition's argument, still maintained in 2026, is that parallel writers make conflicting implicit decisions [11][12]. Anthropic also names coding as a poor fit for multi-agent because it has few truly parallelizable tasks [2].
 3. A judge that only reads is the weakest checker. Models do not reliably self-correct without external feedback [21], LLM judges favour their own style [22], and every gain I could quantify for verification came from running something (tests) [14][17]. Give the judge the ability to run checks, use a different model from the builder where possible, and cap retries.
+
+   **Update, same day:** a follow-up pass (`docs/research/judge-evidence.md`) found this weaker than stated. Running code clearly helps a writer repair its own work, but for reviewing a finished patch the one direct comparison found tests-only and read-only verifiers about equal (43.7% vs 42.8%) and better combined (51.0%), and a 2026 study found forbidding execution cost only 1.25 points. No study measures a diff reviewer with and without a shell, and none shows a different-vendor judge catches more bugs in code. Treat "let the judge run checks" and "use a different model" as sensible precautions, not proven gains, and have the judge weigh test output rather than obey it.
 
 ## 2. Role catalogue
 

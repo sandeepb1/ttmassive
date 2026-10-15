@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, type MouseEvent } from 'react';
 import {
   Background, BackgroundVariant, Controls, MarkerType, ReactFlow, useReactFlow,
-  type Connection, type Edge, type Node, type NodeChange,
+  type Connection, type Edge, type FinalConnectionState, type Node, type NodeChange,
 } from '@xyflow/react';
 import { AgentCard, type CardData } from './AgentCard';
 import { addEdge, awaitingApproval, connectionProblem } from './model';
@@ -109,6 +109,17 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
     [flow, onFlow, onProblem],
   );
 
+  // React Flow refuses an invalid drop before `onConnect` runs, so say why here: a drop on a handle that was refused.
+  const onConnectEnd = useCallback(
+    (_: unknown, st: FinalConnectionState) => {
+      if (st.isValid !== false || !st.fromNode || !st.toNode || !st.toHandle) return;
+      const kind = kindOf({ sourceHandle: st.fromHandle?.id, targetHandle: st.toHandle.id });
+      const why = kind ? connectionProblem(flow, st.fromNode.id, st.toNode.id, kind) : 'Connect an output to an input, or a send-back dot to a drop dot';
+      if (why) onProblem(why);
+    },
+    [flow, onProblem],
+  );
+
   const onNodesDelete = useCallback(
     (gone: Node[]) => {
       const ids = new Set(gone.map((n) => n.id));
@@ -144,6 +155,7 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
       connectionRadius={36}
       onNodesChange={onNodesChange}
       onConnect={onConnect}
+      onConnectEnd={onConnectEnd}
       isValidConnection={isValid}
       onNodesDelete={onNodesDelete}
       onEdgesDelete={onEdgesDelete}

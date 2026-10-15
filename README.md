@@ -711,15 +711,22 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
 - **A flow** is agents joined by arrows: who hands its result to whom. Add agents from the bar under the chart
   (the four most flows need, and **More roles** for the rest), drag from one agent's right dot to the next one's left
   dot, and give each a **Claude Code** model (opus, sonnet, haiku) or a **Codex** one (the list is asked of Codex
-  itself). An agent that gives a verdict has a bottom dot that drags to an earlier agent that changes files, to
-  **send work back**.
+  itself). An agent that gives a verdict has a bottom dot that drags to an earlier agent to
+  **send work back** to it. It can have more than one: the **Feature** starter lets its judge send wrong code back to
+  the builder or a wrong design back to the architect. With more than one, the judge names which when it rejects (the
+  earliest agent whose output was wrong), and only that agent and what depends on it run again. If it rejects without
+  naming one, the run pauses and asks it again, rather than letting a rejection through. The limit on how often work is
+  sent back is shared across all of them.
 - **Roles.** Nine, chosen from published evidence on multi-agent systems (see `docs/research/multi-agent-roles.md`
   for the sources and what could not be verified), in stages: *Plan* (orchestrator, architect), *Gather* (search,
   researcher, analyst, debugger), *Build* (builder), *Check* (judge) and *Deliver* (reporter). Each is a fixed set of
   instructions plus two properties that decide what it may do and what it hands back: it **reads**, **reads and runs
   checks** in a sandbox, or **changes files** (in its own copy of the project); and it hands back a plan, a report, a
-  change, or a verdict. The research's advice is built in: one writer per piece of work, a judge that runs the checks
-  and a different model from the builder, and most flows of three to five agents. The five starters (Feature, Bug fix,
+  change, or a verdict. The research's advice is built in: one writer per piece of work, a judge that may run the checks
+  (it is told to treat test results as one input, not the verdict) and uses a different model from the builder, and most
+  flows of three to five agents. The evidence that running checks beats reading alone is mixed, and no study shows a
+  different-vendor judge catches more bugs in code, so those two are sensible precautions, not guarantees
+  (`docs/research/judge-evidence.md`). The five starters (Feature, Bug fix,
   Refactor, Code review, Research report) are those flow shapes.
 - **Custom roles.** **More roles → Custom role…**: describe a job in your own words and Sonnet picks what it may do and
   what it hands back and writes its instructions; you check and change all of it before it is added. The rules are

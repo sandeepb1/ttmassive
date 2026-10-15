@@ -118,7 +118,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
               </select>
             </Field>
           </div>
-          <Field label="Hands back" hint={node.custom.capability === 'write' ? 'An agent that changes files reports the change.' : 'A verdict lets it send work back to an agent that changes files.'}>
+          <Field label="Hands back" hint={node.custom.capability === 'write' ? 'An agent that changes files reports the change.' : 'A verdict lets it send work back to an earlier agent.'}>
             <select
               className="mc-field"
               value={node.custom.output}

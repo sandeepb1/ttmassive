@@ -160,12 +160,11 @@ export function connectionProblem(flow: Flow, from: string, to: string, kind: Ed
   if (from === to) return 'An agent cannot hand work to itself';
   if (flow.edges.some((e) => e.from === from && e.to === to && e.kind === kind)) return 'Already connected';
   if (kind === 'forward') {
-    if (reaches(flow.edges, to, from)) return 'That would make a loop; only a judge’s retry edge may go back';
+    if (reaches(flow.edges, to, from)) return 'That would make a loop; only an agent that gives a verdict may send work back';
     return null;
   }
   if (!decides(a)) return 'Only an agent that gives a verdict can send work back';
-  if (!writes(b)) return 'Work can only be sent back to an agent that changes files';
-  if (!reaches(flow.edges, to, from)) return 'Send work back to an agent that runs before the judge';
+  if (!reaches(flow.edges, to, from)) return 'Send work back to an agent that runs before this one';
   return null;
 }
 
@@ -217,7 +216,7 @@ export function flowProblem(flow: Flow): string | null {
   if (flow.nodes.some((n) => !n.name.trim())) return 'Every agent needs a name';
   if (flow.nodes.some((n) => !n.model.trim())) return 'Every agent needs a model';
   if (flow.edges.some((e) => !ids.has(e.from) || !ids.has(e.to))) return 'An edge points at an agent that is gone';
-  if (!layers(flow).length) return 'The flow has a loop; only a judge’s retry edge may go back';
+  if (!layers(flow).length) return 'The flow has a loop; only an agent that gives a verdict may send work back';
   const rest = { ...flow, edges: [] as FlowEdge[] };
   for (const e of flow.edges.filter((x) => x.kind === 'retry')) {
     const why = connectionProblem({ ...rest, edges: flow.edges.filter((x) => x.id !== e.id) }, e.from, e.to, 'retry');

@@ -239,7 +239,7 @@ export function CustomRoleDialog({ busy, error, draft, onDesign, onAdd, onClose 
         </Field>
       </div>
       <p className="mc-hint" style={{ margin: '0 0 1rem' }}>
-        {d.capability === 'write' ? 'It will ask you before it starts, and work in its own copy of the project.' : d.output === 'verdict' ? 'It can send work back to an agent that changes files.' : 'It cannot change any file.'}
+        {d.capability === 'write' ? 'It will ask you before it starts, and work in its own copy of the project.' : d.output === 'verdict' ? 'It can send work back to an earlier agent.' : 'It cannot change any file.'}
       </p>
       <Field label="Instructions" hint="Sent the same way on every turn, so the prompt cache holds. The goal is given separately.">
         <textarea className="mc-field" rows={8} value={d.instructions} maxLength={2000} onChange={(e) => set({ instructions: e.target.value })} />

@@ -61,15 +61,22 @@ test('connections: no self, no duplicates, no loops', () => {
   assert.match(connectionProblem(f, 'n1', 'ghost', 'forward')!, /Both ends/);
 });
 
-test('retry edges: judge to an earlier builder only', () => {
-  const f = line();
+test('retry edges: a verdict agent to any earlier agent, and several places are allowed', () => {
+  let f = line(); // n1 orchestrator, n2 researcher, n3 builder, n4 judge
   assert.equal(connectionProblem(f, 'n4', 'n3', 'retry'), null);
   assert.match(connectionProblem(f, 'n3', 'n3', 'retry')!, /itself/);
   assert.match(connectionProblem(f, 'n2', 'n3', 'retry')!, /verdict/);
-  assert.match(connectionProblem(f, 'n4', 'n2', 'retry')!, /changes files/);
-  // A builder that runs after the judge cannot be sent back to.
-  let g = f;
-  g = { ...g, nodes: [...g.nodes, newNode(g, def('builder'), models, at)] };
+  // An earlier agent that only reads is a fine place to send work back to: a wrong design goes back to its author.
+  assert.equal(connectionProblem(f, 'n4', 'n2', 'retry'), null);
+  assert.equal(connectionProblem(f, 'n4', 'n1', 'retry'), null);
+  // A judge can have a second place to send work back to, but not the same one twice.
+  f = addEdge(f, 'n4', 'n3', 'retry');
+  assert.equal(connectionProblem(f, 'n4', 'n2', 'retry'), null);
+  assert.match(connectionProblem(f, 'n4', 'n3', 'retry')!, /Already/);
+  assert.equal(flowProblem(addEdge(f, 'n4', 'n2', 'retry')), null);
+  // An agent that runs after the judge cannot be sent back to.
+  let g = line();
+  g = { ...g, nodes: [...g.nodes, newNode(g, def('analyst'), models, at)] };
   g = addEdge(g, 'n4', 'n5', 'forward');
   assert.match(connectionProblem(g, 'n4', 'n5', 'retry')!, /before/);
 });
