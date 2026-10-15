@@ -1,0 +1,266 @@
+//! One execution of a flow: the brief, how far each node has got, and what they produced. Saved
+//! to disk after every change so a restart loses at most the node that was running.
+
+use std::collections::{HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::graph::Flow;
+use super::usage::Tokens;
+
+/// Most transcript lines kept for each node. The page shows these live; they are not the handoff.
+const MAX_TRANSCRIPT: usize = 200;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeStatus {
+    Pending,
+    Running,
+    Done,
+    Failed,
+    /// Was running when ttm stopped. Resume runs it again.
+    Interrupted,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Pause {
+    /// Waiting for the user to approve this node before it starts.
+    Approval { node: String },
+    /// The judge turned work back more times than the flow allows.
+    RetriesExhausted { node: String },
+    /// A cap was reached; the message says which.
+    Budget { message: String },
+    /// A node failed; Resume tries it again.
+    Failed { node: String, message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum RunStatus {
+    /// The orchestrator is asking questions before the flow starts.
+    Grilling,
+    Running,
+    Paused { pause: Pause },
+    Done,
+    Cancelled,
+}
+
+/// One question the orchestrator asks before the flow starts, with the answer it would pick.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Question {
+    pub text: String,
+    pub recommended: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Qa {
+    pub question: String,
+    pub answer: String,
+}
+
+/// Where the grilling step has got to.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Grill {
+    /// Rounds of questions asked so far.
+    pub round: u8,
+    pub history: Vec<Qa>,
+    /// Questions waiting for answers.
+    pub pending: Vec<Question>,
+    /// The orchestrator's summary of what to build, once it has enough. The user confirms it.
+    pub brief: Option<String>,
+}
+
+/// How full each plan-limit window was when the run started, so the run's own share can be told.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Baseline {
+    pub claude: Option<f64>,
+    pub codex: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeRun {
+    pub status: NodeStatus,
+    /// How many times this node has started (more than one after a judge sends work back).
+    pub attempts: u32,
+    /// The structured answer handed to the nodes downstream.
+    pub output: Option<Value>,
+    pub error: Option<String>,
+    /// Use over all attempts.
+    pub tokens: Tokens,
+    pub transcript: Vec<String>,
+}
+
+impl NodeRun {
+    fn new() -> Self {
+        Self {
+            status: NodeStatus::Pending,
+            attempts: 0,
+            output: None,
+            error: None,
+            tokens: Tokens::default(),
+            transcript: Vec::new(),
+        }
+    }
+
+    pub fn log(&mut self, line: String) {
+        if self.transcript.len() >= MAX_TRANSCRIPT {
+            self.transcript.remove(0);
+        }
+        self.transcript.push(line);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Run {
+    pub id: String,
+    /// A copy of the flow as it was when the run started, so editing the template later changes nothing.
+    pub flow: Flow,
+    /// What the user typed.
+    #[serde(default)]
+    pub goal: String,
+    /// What to build, after the grilling step. Every node is shown this.
+    pub brief: String,
+    /// The git folder agents work in; builders get a worktree of it.
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub grill: Option<Grill>,
+    #[serde(default)]
+    pub baseline: Baseline,
+    /// Use outside the nodes: writing prompts and grilling.
+    #[serde(default)]
+    pub overhead: Tokens,
+    pub status: RunStatus,
+    pub nodes: HashMap<String, NodeRun>,
+    /// Nodes the user has let start.
+    pub approved: HashSet<String>,
+    /// Judge feedback waiting for the node it was sent back to.
+    pub feedback: HashMap<String, String>,
+    pub retries_used: u8,
+    pub created: i64,
+}
+
+impl Run {
+    pub fn new(id: String, flow: Flow, brief: String, created: i64) -> Run {
+        let nodes = flow.nodes.iter().map(|n| (n.id.clone(), NodeRun::new())).collect();
+        Run {
+            id,
+            flow,
+            goal: brief.clone(),
+            brief,
+            project: String::new(),
+            grill: None,
+            baseline: Baseline::default(),
+            overhead: Tokens::default(),
+            status: RunStatus::Running,
+            nodes,
+            approved: HashSet::new(),
+            feedback: HashMap::new(),
+            retries_used: 0,
+            created,
+        }
+    }
+
+    /// Use by every node so far, and by the grilling.
+    pub fn tokens(&self) -> Tokens {
+        let mut t = self.overhead;
+        for n in self.nodes.values() {
+            t.add(&n.tokens);
+        }
+        t
+    }
+
+    /// After a restart, anything that was running did not finish.
+    pub fn mark_interrupted(&mut self) {
+        for n in self.nodes.values_mut() {
+            if n.status == NodeStatus::Running {
+                n.status = NodeStatus::Interrupted;
+            }
+        }
+        if self.status == RunStatus::Running {
+            self.status = RunStatus::Paused {
+                pause: Pause::Failed { node: String::new(), message: "ttm restarted while this run was going".into() },
+            };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orch::graph::{Budget, Engine, Node, Role};
+
+    fn run() -> Run {
+        let node = |id: &str| Node {
+            id: id.into(),
+            name: id.into(),
+            role: Role::Researcher,
+            engine: Engine::Claude,
+            model: "sonnet".into(),
+            system_prompt: String::new(),
+            checkpoint: false,
+            token_cap: None,
+            x: 0.0,
+            y: 0.0,
+        };
+        let flow = Flow {
+            id: "f".into(),
+            name: "F".into(),
+            nodes: vec![node("a"), node("b")],
+            edges: vec![],
+            max_retries: 2,
+            budget: Budget::default(),
+        };
+        Run::new("r1".into(), flow, "brief".into(), 100)
+    }
+
+    #[test]
+    fn a_new_run_has_every_node_pending() {
+        let r = run();
+        assert_eq!(r.nodes.len(), 2);
+        assert!(r.nodes.values().all(|n| n.status == NodeStatus::Pending && n.attempts == 0));
+        assert_eq!(r.status, RunStatus::Running);
+    }
+
+    #[test]
+    fn tokens_add_up_across_nodes() {
+        let mut r = run();
+        r.nodes.get_mut("a").unwrap().tokens = Tokens { input: 1, output: 2, cache_read: 3, cache_write: 4 };
+        r.nodes.get_mut("b").unwrap().tokens = Tokens { input: 10, output: 20, cache_read: 30, cache_write: 40 };
+        assert_eq!(r.tokens(), Tokens { input: 11, output: 22, cache_read: 33, cache_write: 44 });
+    }
+
+    #[test]
+    fn a_restart_marks_running_nodes_interrupted_and_pauses_the_run() {
+        let mut r = run();
+        r.nodes.get_mut("a").unwrap().status = NodeStatus::Done;
+        r.nodes.get_mut("b").unwrap().status = NodeStatus::Running;
+        r.mark_interrupted();
+        assert_eq!(r.nodes["a"].status, NodeStatus::Done);
+        assert_eq!(r.nodes["b"].status, NodeStatus::Interrupted);
+        assert!(matches!(r.status, RunStatus::Paused { .. }));
+    }
+
+    #[test]
+    fn the_transcript_keeps_only_the_latest_lines() {
+        let mut n = NodeRun::new();
+        for i in 0..(MAX_TRANSCRIPT + 5) {
+            n.log(format!("line {i}"));
+        }
+        assert_eq!(n.transcript.len(), MAX_TRANSCRIPT);
+        assert_eq!(n.transcript[0], "line 5");
+    }
+
+    #[test]
+    fn a_run_survives_a_json_round_trip() {
+        let mut r = run();
+        r.status = RunStatus::Paused { pause: Pause::Approval { node: "b".into() } };
+        r.approved.insert("a".into());
+        let back: Run = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+    }
+}

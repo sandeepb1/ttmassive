@@ -19,6 +19,7 @@ mod modelmenu;
 mod modes;
 mod notify;
 mod ops;
+mod orch;
 mod placeholder;
 mod pty;
 mod question;
@@ -82,6 +83,8 @@ pub struct AppState {
     pub branches: gitinfo::Branches,
     /// Newer releases on GitHub and installing one.
     pub update: selfupdate::Updater,
+    /// Orchestrator mode: multi-agent flows and their runs.
+    pub orch: orch::service::Service,
 }
 
 #[derive(Parser)]

@@ -83,6 +83,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/groups", get(list_groups))
         .route("/api/layouts", get(get_layouts).put(put_layouts))
         .route("/api/groups/{name}/start", post(start_group))
+        .merge(crate::orch::api::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()

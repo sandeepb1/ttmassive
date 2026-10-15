@@ -70,6 +70,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         teamclaude: crate::teamclaude::Probes::new(),
         branches: crate::gitinfo::Branches::new(),
         update: crate::selfupdate::Updater::new(),
+        orch: crate::orch::service::Service::new(&data_dir),
         data_dir,
         cfg,
         auth,
