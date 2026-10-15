@@ -12,7 +12,7 @@ import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
 import { Sidebar } from './Sidebar';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, emptyFlow, flowProblem, gauges, getCatalog, newCustomNode, newNode, roleDef, setCatalog, tidy } from './model';
+import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
 import type { Flow, FlowLists, Models, Role, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
 
 const PHONE = '(max-width: 699px)';
@@ -125,6 +125,11 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     setFlowState(f);
   }, []);
   const [dirty, setDirty] = useState(false);
+  // Whether the flow has been changed since it was opened or saved: leaving it then asks first.
+  const edited = useRef(false);
+  // The sidebar's level: the list of flows, or the open flow with its executions.
+  const [nav, setNav] = useState<'flows' | 'flow'>('flow');
+  const [loaded, setLoaded] = useState(false);
   const [runId, setRunId] = useState<string | null>(initialRun);
   const [run, setRun] = useState<Run | null>(null);
   const [link, setLink] = useState(true);
@@ -171,12 +176,19 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       }
       if (f.ok) {
         setLists(f.data);
-        // The editor behind a run opened from a link starts on a starter too, not on a blank page.
-        if (f.data.starters[0]) setFlow(cloneFlow(f.data.starters[0]));
+        // The editor starts on the flow used most recently, so what is on screen is one of the flows in the list. With
+        // no flows yet it starts on a template, not a blank page.
+        const latest = flowEntries(f.data.saved, rs.ok ? rs.data : []).find((e) => e.saved);
+        const open = latest && f.data.saved.find((x) => x.id === latest.id);
+        if (open) (setFlow(structuredClone(open)), setDirty(false));
+        else if (f.data.starters[0]) setFlow(cloneFlow(f.data.starters[0]));
       }
       if (rs.ok) setRuns(rs.data);
       if (u.ok) setUsage(u.data);
       setRecents(d);
+      // Someone with flows or past executions starts at their list; a new user starts in the editor.
+      if (!initialRun && ((f.ok && f.data.saved.length) || (rs.ok && rs.data.length))) setNav('flows');
+      setLoaded(true);
     })();
     // Once, when the mode opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -237,6 +249,17 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     if (run) void refreshRuns();
   }, [run?.status.state, refreshRuns]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // An execution belongs to a flow. Opening one (from a link, say) opens its flow too: the saved one if there is
+  // one, otherwise the flow as it was then, which becomes a flow again when it is saved.
+  useEffect(() => {
+    if (!run || !loaded || run.flow.id === flowRef.current.id) return;
+    const savedFlow = lists.saved.find((f) => f.id === run.flow.id);
+    setFlow(structuredClone(savedFlow ?? run.flow));
+    setDirty(!savedFlow);
+    edited.current = false;
+    setNav('flow');
+  }, [run?.id, loaded, lists.saved, setFlow]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const act = useCallback(
     async <T,>(call: () => Promise<{ ok: true; data: T } | { ok: false; error: string }>, then?: (d: T) => void) => {
       setBusy(true);
@@ -281,6 +304,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     (update: (f: Flow) => Flow) => {
       setFlow(update(flowRef.current));
       setDirty(true);
+      edited.current = true;
     },
     [setFlow],
   );
@@ -296,6 +320,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     [editFlow, models],
   );
 
+  const entries = useMemo(() => flowEntries(lists.saved, runs), [lists.saved, runs]);
+  const isSaved = lists.saved.some((f) => f.id === flow.id);
   const shown = run ? run.flow : flow;
   const editable = !run;
   const problem = useMemo(() => flowProblem(flow), [flow]);
@@ -303,16 +329,57 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const showList = phone || view === 'list';
   const meters = useMemo(() => gauges(shown, run, usage), [shown, run, usage]);
 
-  const openFlow = (f: Flow, starter: boolean) => {
+  /** Leaving a flow that has been changed asks first; returns whether to go on. */
+  const mayLeave = () => !edited.current || confirm(`Discard your unsaved changes to “${flow.name}”?`);
+  const fit = () => window.setTimeout(() => setFitToken((t) => t + 1), 0);
+  /** Show a flow in the editor: a template or new flow as an unsaved copy, a saved one as it is. */
+  const edit = (f: Flow, unsaved: boolean) => {
     setRunId(null);
-    setFlow(starter ? cloneFlow(f) : structuredClone(f));
-    setDirty(starter);
+    setFlow(f);
+    setDirty(unsaved);
+    edited.current = false;
+    setSelected(null);
+    setNav('flow');
+    fit();
+  };
+  const openEntry = async (e: FlowEntry) => {
+    if (e.id !== flow.id && !mayLeave()) return;
+    const savedFlow = lists.saved.find((f) => f.id === e.id);
+    if (savedFlow) {
+      if (e.id !== flow.id) edit(structuredClone(savedFlow), false);
+      else (setRunId(null), setNav('flow'));
+    } else if (e.last) {
+      // Only its executions are left: open the flow as it was in the latest one.
+      const r = await orch.getRun(e.last.id);
+      if (r.ok) edit(structuredClone(r.data.flow), true);
+      else say(r.error);
+    }
+  };
+  const useTemplate = (f: Flow) => {
+    if (!mayLeave()) return;
+    edit(cloneFlow(f), true);
+    setSideOpen(false);
+  };
+  const newFlow = () => {
+    if (!mayLeave()) return;
+    edit(emptyFlow(newFlowId(), 'New flow'), false);
+    setSideOpen(false);
+  };
+  const duplicate = (e: FlowEntry) => {
+    const f = lists.saved.find((x) => x.id === e.id);
+    if (!f || !mayLeave()) return;
+    edit({ ...cloneFlow(f), name: `${f.name} copy`.slice(0, 60) }, true);
+    setSideOpen(false);
+  };
+  const toDesign = () => {
+    setRunId(null);
     setSelected(null);
     setSideOpen(false);
   };
   const openRun = (id: string) => {
     setRunId(id);
     setSelected(null);
+    setNav('flow');
     setSideOpen(false);
   };
   const select = (id: string | null) => {
@@ -322,24 +389,26 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const save = () =>
     void act(() => orch.saveFlow(flow), () => {
       setDirty(false);
+      edited.current = false;
       say('Flow saved');
       void refreshLists();
     });
-  const removeFlow = (f: Flow) => {
-    if (!confirm(`Delete the flow “${f.name}”?`)) return;
-    void act(() => orch.deleteFlow(f.id), () => void refreshLists());
+  const removeFlow = (e: FlowEntry) => {
+    const kept = e.runs.length ? ` Its ${e.runs.length === 1 ? 'execution stays' : `${e.runs.length} executions stay`} in your list, marked “Runs only”.` : '';
+    if (!confirm(`Delete the flow “${e.name}”?${kept}`)) return;
+    void act(() => orch.deleteFlow(e.id), () => {
+      void refreshLists();
+      if (e.id === flow.id) edit(emptyFlow(newFlowId(), 'New flow'), false), setNav('flows');
+    });
   };
   const suggest = (goal: string) =>
     void act(
       () => orch.suggest(goal),
       (f) => {
-        setRunId(null);
-        setFlow(f);
-        setDirty(true);
-        setSelected(null);
+        edit(f, true);
+        edited.current = true;
         setSuggesting(false);
         setSideOpen(false);
-        window.setTimeout(() => setFitToken((t) => t + 1), 0);
         say('Here is a flow for it. Change anything, then run it.');
       },
     );
@@ -373,16 +442,38 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   };
   const copyText = (t: string) => void navigator.clipboard?.writeText(t).then(() => say('Copied'), () => say('Could not copy'));
 
+  // Running a flow saves it first, so every execution has a flow to live under.
   const createRun = (goal: string, project: string, skipGrill: boolean) =>
     void act(
-      () => orch.createRun({ flow, goal, project, skipGrill }),
+      async () => {
+        if (dirty || !isSaved) {
+          const saved = await orch.saveFlow(flow);
+          if (!saved.ok) return { ok: false as const, error: saved.error };
+        }
+        return orch.createRun({ flow, goal, project, skipGrill });
+      },
       (r) => {
         setDialog(false);
+        setDirty(false);
+        edited.current = false;
         setRun(r);
         setRunId(r.id);
         setSelected(null);
+        setNav('flow');
+        void refreshLists();
       },
     );
+
+  /** Put an older execution's design back in the editor, as the flow's current design. */
+  const useThisVersion = () => {
+    if (!run) return;
+    if (edited.current && !confirm('Replace your unsaved changes with this older version?')) return;
+    setFlow(structuredClone(run.flow));
+    setDirty(true);
+    edited.current = false;
+    setRunId(null);
+    fit();
+  };
 
   return (
     <>
@@ -391,7 +482,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           <Icon name="back" />
         </button>
         {!wide && (
-          <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label="Runs and flows" onClick={() => setSideOpen((o) => !o)}>
+          <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label="Flows and executions" onClick={() => setSideOpen((o) => !o)}>
             <Icon name="menu" />
           </button>
         )}
@@ -425,18 +516,14 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              className="mc-btn"
-              onClick={() => {
-                setFlow(cloneFlow(run!.flow));
-                setDirty(true);
-                setRunId(null);
-              }}
-              title="Edit a copy of this flow"
-            >
-              <Icon name="edit" /> <span className="mc-hide-narrow">Edit a copy</span>
-            </button>
+            <>
+              <button type="button" className="mc-btn mc-hide-narrow" onClick={useThisVersion} title="Put this execution's design back in the editor">
+                <Icon name="retry" /> Use this version
+              </button>
+              <button type="button" className="mc-btn" onClick={toDesign}>
+                <Icon name="edit" /> <span className="mc-hide-narrow">Back to</span> design
+              </button>
+            </>
           )}
           {!phone && (
             <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={showList ? 'Show the chart' : 'Show a list'} onClick={() => setView(showList ? 'canvas' : 'list')}>
@@ -452,20 +539,34 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       </header>
 
       <div className="mc-body">
-        <aside className="mc-side" data-open={sideOpen} aria-label="Runs and flows">
+        <aside className="mc-side" data-open={sideOpen} aria-label="Flows and executions">
+          {!loaded ? (
+            <p className="mc-empty" role="status">
+              Loading…
+            </p>
+          ) : (
           <Sidebar
-            runs={runs}
-            flows={lists}
-            runId={runId}
+            level={nav}
+            entries={entries}
+            starters={lists.starters}
             flowId={flow.id}
-            onNewRun={() => (runId && setRunId(null), setSideOpen(false), setDialog(true))}
-            onOpenRun={openRun}
-            onOpenFlow={openFlow}
-            onNewFlow={() => openFlow(emptyFlow(newFlowId(), 'New flow'), false)}
+            flowName={flow.name}
+            saved={isSaved}
+            dirty={dirty}
+            runId={runId}
+            canRun={!problem}
+            onOpenFlow={(e) => void openEntry(e)}
+            onUseStarter={useTemplate}
+            onNewFlow={newFlow}
             onSuggest={() => (setError(null), setSuggesting(true))}
-            onDuplicateFlow={(f) => openFlow({ ...f, name: `${f.name} copy`.slice(0, 60) }, true)}
-            onDeleteFlow={removeFlow}
+            onDuplicate={duplicate}
+            onDelete={removeFlow}
+            onBack={() => setNav('flows')}
+            onDesign={toDesign}
+            onOpenRun={openRun}
+            onNewRun={() => (setSideOpen(false), setDialog(true))}
           />
+          )}
         </aside>
 
         <main className="mc-stage" data-list={showList}>

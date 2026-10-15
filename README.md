@@ -733,9 +733,15 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
   enforced on what it may do, not on its name: an agent that changes files always reports a change and asks first, and
   one that gives verdicts can never be able to change files, so a reviewer cannot edit what it reviews. A custom agent
   that gives a verdict can send work back like a judge, and its role can be edited later in the details panel. **Write with Sonnet** drafts an agent's
-  instructions. **Save** keeps a flow; two starters are built in. In the **Flows** tab, **Suggest** takes a description
-  of the work and has Sonnet design the team (it opens for you to change; nothing runs), and the copy button on a
-  saved flow opens a duplicate to edit, so a flow can serve as a template.
+  instructions. **Save** keeps a flow. On the **Flows** list, **Suggest** takes a description
+  of the work and has Sonnet design the team (it opens for you to change; nothing runs), the copy button on a
+  saved flow opens a duplicate to edit, and **Templates** holds the built-in starters.
+- **Flows and executions.** The sidebar is a tree, one list at a time. The top level lists your flows, newest run
+  first, each with its agent count and how many times it has run. Open a flow and you see **Design** (the chart) and
+  **Executions**: every run of that flow, newest first, kept as its history. **New run** starts another. Running an
+  unsaved flow saves it first. Opening an execution shows exactly what ran, read-only; **Back to design** returns to
+  the editor and **Use this version** puts that execution's flow back in the editor. Deleting a flow keeps its
+  executions, listed as "Runs only". Leaving a flow with unsaved edits asks first.
 - **A run** starts with **Run**: say what you want and pick a project folder (a git repository with at least one
   commit). Opus asks up to three rounds of questions, then writes a brief you can edit. Each question offers two to four
   choices with its suggested one already ticked (some let you tick several), and **Something else…** opens a box for

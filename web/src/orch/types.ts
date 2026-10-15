@@ -148,10 +148,14 @@ export interface Run {
 
 export interface RunSummary {
   id: string;
+  /** The flow this is an execution of. It may no longer be saved. */
+  flowId: string;
   flowName: string;
   goal: string;
   status: RunStatus;
   created: number;
+  /** Everything the agents read and wrote, cache included. */
+  tokens: number;
 }
 
 export interface Models {

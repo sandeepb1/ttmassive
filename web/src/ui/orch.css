@@ -407,6 +407,38 @@ textarea.mc-field {
   color: var(--mc-faint);
   font-size: 0.75rem;
 }
+.mc-flow-title {
+  margin: 0 0 0.5rem;
+  overflow: hidden;
+  font-size: 1.0625rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mc-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mc-disclose {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: 100%;
+  margin: 1rem 0 0.5rem;
+  padding: 0.25rem 0;
+  border: 0;
+  background: none;
+  color: var(--mc-faint);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.mc-disclose:hover {
+  color: var(--mc-dim);
+}
 .mc-li {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   awaitingApproval, cacheBreakCount, fmtDuration, modelShown, summary,
+  flowEntries, runsLabel, runsOf, whenLabel,
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes,
 } from './model.ts';
-import type { Flow, Models, Role, Run, UsageSnapshot } from './types.ts';
+import type { Flow, Models, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
 const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'] };
 const at = { x: 0, y: 0 };
@@ -378,4 +379,55 @@ test('a flow with a custom role that has no definition is not accepted by the se
   const f = line();
   const n = newCustomNode(f, customReviewer('read', 'report'), 'You look things up and report what you found, with where you found it.', models, at);
   assert.equal(flowProblem({ ...f, nodes: [...f.nodes, n] }), null);
+});
+
+// ---------------------------------------------------------------------------- flows and their executions
+
+const summary_ = (id: string, flowId: string, created: number, flowName = flowId): RunSummary =>
+  ({ id, flowId, flowName, goal: `goal ${id}`, status: { state: 'done' }, created, tokens: 100 });
+
+test('a flow lists its own executions, newest first, and no one else’s', () => {
+  const runs = [summary_('a', 'f1', 10), summary_('b', 'f2', 20), summary_('c', 'f1', 30)];
+  assert.deepEqual(runsOf(runs, 'f1').map((r) => r.id), ['c', 'a']);
+  assert.deepEqual(runsOf(runs, 'f2').map((r) => r.id), ['b']);
+  assert.deepEqual(runsOf(runs, 'none'), []);
+});
+
+test('the sidebar lists flows, the most recently run first, then flows never run by name', () => {
+  const f = (id: string, name: string): Flow => ({ ...emptyFlow(id, name), nodes: [newNode(emptyFlow(id, name), def('builder'), models, at)] });
+  const saved = [f('z', 'Zebra'), f('a', 'Alpha'), f('m', 'Mid')];
+  const entries = flowEntries(saved, [summary_('r1', 'm', 50), summary_('r2', 'z', 90), summary_('r3', 'm', 70)]);
+  assert.deepEqual(entries.map((e) => e.name), ['Zebra', 'Mid', 'Alpha']);
+  assert.equal(entries[1]!.runs.length, 2);
+  assert.equal(entries[1]!.last!.id, 'r3');
+  assert.equal(entries[2]!.last, null, 'never run');
+  assert.deepEqual(entries.map((e) => e.saved), [true, true, true]);
+  assert.equal(entries[0]!.agents, 1);
+});
+
+test('executions of a flow that is no longer saved still appear, marked as runs only', () => {
+  const entries = flowEntries([], [summary_('r1', 'gone', 10, 'Old flow'), summary_('r2', 'gone', 20, 'Old flow renamed')]);
+  assert.equal(entries.length, 1);
+  assert.deepEqual({ saved: entries[0]!.saved, agents: entries[0]!.agents, name: entries[0]!.name, n: entries[0]!.runs.length }, { saved: false, agents: null, name: 'Old flow renamed', n: 2 });
+});
+
+test('a saved flow takes its name from the flow, not from its old executions', () => {
+  const saved = [{ ...emptyFlow('f1', 'Current name'), nodes: [] }];
+  const [e] = flowEntries(saved, [summary_('r1', 'f1', 10, 'An older name')]);
+  assert.equal(e!.name, 'Current name');
+});
+
+test('run counts read naturally', () => {
+  assert.deepEqual([0, 1, 2, 12].map(runsLabel), ['Never run', '1 run', '2 runs', '12 runs']);
+});
+
+test('an execution’s time is told as today, yesterday, or a date', () => {
+  const now = new Date(2026, 9, 15, 20, 0); // 15 Oct 2026, 20:00 local
+  const at = (y: number, mo: number, d: number, h: number, mi: number) => Math.floor(new Date(y, mo, d, h, mi).getTime() / 1000);
+  assert.equal(whenLabel(at(2026, 9, 15, 19, 4), now), 'Today 19:04');
+  assert.equal(whenLabel(at(2026, 9, 14, 8, 5), now), 'Yesterday 08:05');
+  assert.equal(whenLabel(at(2026, 9, 12, 14, 20), now), '12 Oct 14:20');
+  assert.equal(whenLabel(at(2025, 11, 31, 23, 59), now), '31 Dec 2025 23:59', 'another year says which');
+  // Just after midnight is still "Today" even though it is less than a day ago.
+  assert.equal(whenLabel(at(2026, 9, 15, 0, 5), new Date(2026, 9, 15, 0, 30)), 'Today 00:05');
 });

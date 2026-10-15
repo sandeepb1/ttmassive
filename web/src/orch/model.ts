@@ -3,7 +3,7 @@
 // The server checks everything again; these rules exist so the page can say no before asking.
 
 import type {
-  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, Stage, Tokens, UsageSnapshot,
+  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
 // ---------------------------------------------------------------------------- roles
@@ -337,6 +337,57 @@ export function summary(run: Run): Summary {
     cheaper,
     cacheBreaks: cacheBreakCount(run),
   };
+}
+
+// ---------------------------------------------------------------------------- flows and their executions
+
+/** A flow as the sidebar lists it, with its executions. */
+export interface FlowEntry {
+  id: string;
+  name: string;
+  /** In the saved list. False for a flow that was never saved or has been deleted but still has executions. */
+  saved: boolean;
+  agents: number | null;
+  /** Newest first. */
+  runs: RunSummary[];
+  last: RunSummary | null;
+}
+
+/** The executions of one flow, newest first. */
+export const runsOf = (runs: RunSummary[], flowId: string): RunSummary[] =>
+  runs.filter((r) => r.flowId === flowId).sort((a, b) => b.created - a.created);
+
+/** Every saved flow, and every flow that only survives as executions. The ones used most recently come first; a flow
+ *  never run goes after them, by name. */
+export function flowEntries(saved: Flow[], runs: RunSummary[]): FlowEntry[] {
+  const entry = (id: string, name: string, isSaved: boolean, agents: number | null): FlowEntry => {
+    const mine = runsOf(runs, id);
+    return { id, name, saved: isSaved, agents, runs: mine, last: mine[0] ?? null };
+  };
+  const out = saved.map((f) => entry(f.id, f.name, true, f.nodes.length));
+  const known = new Set(saved.map((f) => f.id));
+  for (const id of new Set(runs.map((r) => r.flowId))) {
+    if (known.has(id)) continue;
+    const latest = runsOf(runs, id)[0]!;
+    out.push(entry(id, latest.flowName, false, null));
+  }
+  return out.sort((a, b) => (b.last?.created ?? -1) - (a.last?.created ?? -1) || a.name.localeCompare(b.name));
+}
+
+export function runsLabel(n: number): string {
+  return n === 0 ? 'Never run' : n === 1 ? '1 run' : `${n} runs`;
+}
+
+/** "Today 19:04", "Yesterday 08:10", "12 Oct 14:20": when an execution started, for a list that keeps history. */
+export function whenLabel(unixSeconds: number, now: Date = new Date()): string {
+  const d = new Date(unixSeconds * 1000);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((day(now) - day(d)) / 86_400_000);
+  if (days === 0) return `Today ${hm}`;
+  if (days === 1) return `Yesterday ${hm}`;
+  const month = d.toLocaleString('en-GB', { month: 'short' });
+  return `${d.getDate()} ${month}${d.getFullYear() === now.getFullYear() ? '' : ` ${d.getFullYear()}`} ${hm}`;
 }
 
 export const sumTokens = (list: Tokens[]): Tokens =>

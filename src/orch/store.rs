@@ -21,10 +21,14 @@ pub struct Store {
 #[serde(rename_all = "camelCase")]
 pub struct RunSummary {
     pub id: String,
+    /// The flow this is an execution of. It may no longer be saved (deleted, or run before it was saved).
+    pub flow_id: String,
     pub flow_name: String,
     pub goal: String,
     pub status: super::run::RunStatus,
     pub created: i64,
+    /// Everything the agents read and wrote, cache included.
+    pub tokens: u64,
 }
 
 impl Store {
@@ -100,7 +104,10 @@ impl Store {
         let mut v: Vec<RunSummary> = self
             .all_runs()
             .into_iter()
-            .map(|r| RunSummary { id: r.id, flow_name: r.flow.name, goal: r.goal, status: r.status, created: r.created })
+            .map(|r| {
+                let tokens = r.tokens().total();
+                RunSummary { id: r.id, flow_id: r.flow.id, flow_name: r.flow.name, goal: r.goal, status: r.status, created: r.created, tokens }
+            })
             .collect();
         v.sort_by(|a, b| b.created.cmp(&a.created));
         v
@@ -184,6 +191,20 @@ mod tests {
         let list = s.list_runs();
         assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["new", "old"]);
         assert_eq!(list[1].goal, "first");
+        assert_eq!(list[0].flow_id, "starter-feature", "a run says which flow it belongs to");
+        assert_eq!(list[0].tokens, 0);
+    }
+
+    #[test]
+    fn the_summary_carries_the_flow_id_and_token_total_under_the_names_the_page_reads() {
+        let dir = tmp("summary");
+        let s = Store::new(&dir);
+        let mut r = Run::new("r1".into(), starters::all().remove(0), "g".into(), 5);
+        r.overhead = crate::orch::usage::Tokens { input: 1, output: 2, cache_read: 3, cache_write: 4 };
+        s.save_run(&r).unwrap();
+        let v = serde_json::to_value(s.list_runs()).unwrap();
+        assert_eq!(v[0]["flowId"], "starter-feature");
+        assert_eq!(v[0]["tokens"], 10);
     }
 
     #[test]
