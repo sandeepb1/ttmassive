@@ -58,8 +58,10 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[], label = 'Action
   menu.showPopover();
 
   // Below the button, right-aligned with it; flipped above or pulled in when it would leave the screen.
+  // The session list redraws on its poll, which replaces the button the menu came from; a detached button
+  // measures as the top-left corner, so the menu stays where it was instead of jumping there.
   const place = () =>
-    computePosition(anchor, menu, {
+    !anchor.isConnected ? Promise.resolve() : computePosition(anchor, menu, {
       strategy: 'fixed',
       placement: 'bottom-end',
       middleware: [

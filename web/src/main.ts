@@ -6,6 +6,7 @@ import { initUiScale } from './scale';
 import { SessionSidebar, type SessionView } from './sessions';
 import { UsageView } from './usage';
 import { Layout } from './layout';
+import { initSidebarResize } from './sidebar-resize';
 import { edgeSwipe } from './gestures';
 import { RightBar } from './rightbar';
 import { armBell } from './bell';
@@ -44,6 +45,7 @@ armBell();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const layout = new Layout($('app'));
+initSidebarResize($('app'));
 let sidebar: SessionSidebar | null = null;
 let rightbar: RightBar | null = null;
 let settings: SettingsSheet | null = null;
