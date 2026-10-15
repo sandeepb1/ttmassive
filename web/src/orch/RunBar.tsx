@@ -1,8 +1,10 @@
 // The strip over the canvas while a run is shown: where it is, what it has used, and what it needs from you.
 
+import { useEffect, useState } from 'react';
+import { orch } from './api';
 import { Icon, StatusPill } from './bits';
-import { builderBranches, cacheBreakCount, cacheHit, fmtDuration, fmtTokens, pauseInfo, runTokens, summary, totalTokens } from './model';
-import type { Run } from './types';
+import { builderBranches, cacheBreakCount, cacheHit, fmtDuration, fmtTokens, pauseInfo, runTokens, summary, totalTokens, writes } from './model';
+import type { RepoState, Run } from './types';
 
 interface Props {
   run: Run;
@@ -12,6 +14,64 @@ interface Props {
   onResume: () => void;
   onCancel: () => void;
   onCopy: (text: string) => void;
+}
+
+/**
+ * Builders work on copies made from the project's latest commit. When the project cannot give one, say so before a
+ * builder hits it (or after, if it already has) and offer to set it up, then carry on.
+ */
+function GitNotice({ run, busy, onFixed }: { run: Run; busy: boolean; onFixed: (wasFailed: boolean) => void }) {
+  const pending = run.flow.nodes.some((n) => writes(n) && run.nodes[n.id]?.status !== 'done');
+  const active = run.status.state === 'running' || run.status.state === 'paused';
+  const [state, setState] = useState<RepoState | null>(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const check = run.project && pending && active;
+  // Look again when the run changes state: a builder failing is when the answer matters most.
+  const key = `${run.id}:${run.status.state}:${run.status.state === 'paused' ? run.status.pause.kind : ''}`;
+  useEffect(() => {
+    if (!check) return setState(null);
+    let stale = false;
+    void orch.projectState(run.project).then((r) => !stale && setState(r.ok ? r.data.state : null));
+    return () => {
+      stale = true;
+    };
+  }, [key, check, run.project]);
+  if (!check || !state || state === 'ready') return null;
+
+  const failedOnIt = run.status.state === 'paused' && run.status.pause.kind === 'failed' && /git repository/i.test(run.status.pause.message);
+  const fix = async () => {
+    setWorking(true);
+    setError(null);
+    const r = await orch.projectInit(run.project);
+    setWorking(false);
+    if (!r.ok) return setError(r.error);
+    setState(r.data.state);
+    if (r.data.state === 'ready') onFixed(failedOnIt);
+  };
+  return (
+    <div className="mc-notice" data-tone={failedOnIt ? 'bad' : 'warn'} role="alert">
+      <div className="mc-notice-title">{state === 'missing' ? 'The project folder is gone' : state === 'noCommits' ? 'The project has no commits yet' : 'The project is not a git repository'}</div>
+      <p className="mc-notice-detail">
+        {state === 'missing'
+          ? `${run.project} was not found, so a builder has nowhere to work.`
+          : 'A builder works on its own copy of the project, made from its latest commit, so it needs one.'}
+      </p>
+      {state !== 'missing' && (
+        <>
+          <div className="mc-notice-actions">
+            <button type="button" className="mc-btn mc-btn-primary" disabled={busy || working} onClick={() => void fix()}>
+              <Icon name="branch" /> {working ? 'Setting up…' : failedOnIt ? 'Set up git and try again' : 'Set up git here'}
+            </button>
+          </div>
+          <p className="mc-notice-detail mc-mono">
+            {state === 'notARepo' ? 'git init, then a first commit of' : 'A first commit of'} what is in {run.project}, leaving out anything its ignore rules exclude.
+          </p>
+        </>
+      )}
+      {error && <p className="mc-error">{error}</p>}
+    </div>
+  );
 }
 
 export function RunBar({ run, busy, link, onApprove, onResume, onCancel, onCopy }: Props) {
@@ -59,6 +119,8 @@ export function RunBar({ run, busy, link, onApprove, onResume, onCancel, onCopy 
           </button>
         )}
       </div>
+
+      <GitNotice run={run} busy={busy} onFixed={(wasFailed) => wasFailed && onResume()} />
 
       {info && (
         <div className="mc-notice" data-tone={failed ? 'bad' : undefined} role="alert">
