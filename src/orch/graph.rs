@@ -255,6 +255,32 @@ impl Flow {
         None
     }
 
+    /// Every node on a forward path from `from` to `to`, both included: what a judge sending work back
+    /// to `from` makes redo. A parallel branch that merely sits between them in run order is not on one.
+    pub fn between(&self, from: &str, to: &str) -> Vec<&str> {
+        fn reach<'a>(flow: &'a Flow, start: &'a str, forward: bool) -> HashSet<&'a str> {
+            let mut seen: HashSet<&str> = HashSet::new();
+            let mut stack = vec![start];
+            while let Some(n) = stack.pop() {
+                if !seen.insert(n) {
+                    continue;
+                }
+                for e in flow.edges.iter().filter(|e| e.kind == EdgeKind::Forward) {
+                    if forward && e.from == n {
+                        stack.push(e.to.as_str());
+                    } else if !forward && e.to == n {
+                        stack.push(e.from.as_str());
+                    }
+                }
+            }
+            seen
+        }
+        let (Some(a), Some(b)) = (self.node(from), self.node(to)) else { return Vec::new() };
+        let down = reach(self, a.id.as_str(), true);
+        let up = reach(self, b.id.as_str(), false);
+        self.nodes.iter().map(|n| n.id.as_str()).filter(|id| down.contains(id) && up.contains(id)).collect()
+    }
+
     /// Ids of nodes whose output feeds `id`, in edge order.
     pub fn inputs_of(&self, id: &str) -> Vec<&str> {
         self.edges
@@ -346,6 +372,19 @@ mod tests {
         assert_eq!(f.nearest_writer("an"), Some("build2"));
         // The retry edge is not a dependency, so it must not be followed.
         assert_eq!(f.nearest_writer("build"), None);
+    }
+
+    #[test]
+    fn between_is_the_nodes_on_a_path_not_the_ones_beside_it() {
+        let f = line();
+        assert_eq!(f.between("build", "judge"), vec!["build", "judge"]);
+        assert_eq!(f.between("res", "judge"), vec!["res", "build", "judge"]);
+        // A branch that hangs off the builder but does not lead to the judge is not between them.
+        let mut g = line();
+        g.nodes.push(node("aside", Role::Analyst));
+        g.edges.push(edge("e5", "build", "aside", EdgeKind::Forward));
+        assert_eq!(g.between("build", "judge"), vec!["build", "judge"]);
+        assert!(g.between("judge", "build").is_empty(), "no forward path backwards");
     }
 
     #[test]

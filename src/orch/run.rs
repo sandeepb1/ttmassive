@@ -91,6 +91,9 @@ pub struct NodeRun {
     /// Use over all attempts.
     pub tokens: Tokens,
     pub transcript: Vec<String>,
+    /// The agent's own conversation id after its latest finished turn, for opening it in a live session.
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 impl NodeRun {
@@ -102,6 +105,7 @@ impl NodeRun {
             error: None,
             tokens: Tokens::default(),
             transcript: Vec::new(),
+            session: None,
         }
     }
 

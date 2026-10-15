@@ -42,7 +42,7 @@ fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: us
         system_prompt: default_prompt(role).into(),
         checkpoint: false,
         token_cap: None,
-        x: layer as f64 * 300.0,
+        x: layer as f64 * 280.0,
         y: row as f64 * 180.0,
     }
 }

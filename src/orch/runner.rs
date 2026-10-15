@@ -27,6 +27,8 @@ pub struct EngineRunner {
     threads: Mutex<HashMap<String, codex::Thread>>,
     /// Codex threads that are in the middle of a turn, so a cancel can stop them.
     active: std::sync::Mutex<HashSet<String>>,
+    /// Builders can start together, and `git worktree add` on one repository must not overlap itself.
+    worktree_lock: Mutex<()>,
 }
 
 /// One line of a transcript: the first line of `s`, cut short.
@@ -95,7 +97,20 @@ impl EngineRunner {
             claude: Mutex::default(),
             threads: Mutex::default(),
             active: std::sync::Mutex::default(),
+            worktree_lock: Mutex::new(()),
         }
+    }
+
+    /// Where a builder's worktree is.
+    pub fn worktree_dir(&self, node_id: &str) -> PathBuf {
+        worktree::path(&self.worktrees, &self.run_id, node_id)
+    }
+
+    /// Let go of a node's headless agent, so a person can take over its conversation without two
+    /// processes writing to it. A later turn on that node starts a fresh agent.
+    pub async fn release(&self, node_id: &str) {
+        self.claude.lock().await.remove(node_id); // dropping the agent ends its process
+        self.threads.lock().await.remove(node_id);
     }
 
     /// Stop any Codex turn still running. Claude agents die when the turn's future is dropped.
@@ -112,6 +127,7 @@ impl EngineRunner {
     /// at that builder's worktree, because that is where the work is; any other reader gets the project.
     async fn cwd(&self, node: &Node) -> Result<PathBuf> {
         if !node.role.read_only() {
+            let _one_at_a_time = self.worktree_lock.lock().await;
             return worktree::ensure(&self.project, &self.worktrees, &self.run_id, &node.id).await;
         }
         if let Some(writer) = self.flow.nearest_writer(&node.id) {

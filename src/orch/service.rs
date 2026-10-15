@@ -369,6 +369,43 @@ impl Service {
         json!({"saved": self.store.list_flows(), "starters": super::starters::all()})
     }
 
+    /// Open a builder's conversation in a live ttm session, in its worktree, so a person can carry on with
+    /// it directly. Its headless agent is let go first: two processes must not write to one conversation.
+    pub async fn pop_out(&self, st: &Arc<AppState>, run_id: &str, node_id: &str) -> Result<String, Fail> {
+        let live = self.live(run_id)?;
+        let (node, session, working) = {
+            let run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
+            let node = run.flow.node(node_id).cloned().ok_or(Fail::NotFound)?;
+            let nr = run.nodes.get(node_id).ok_or(Fail::NotFound)?;
+            (node, nr.session.clone(), nr.status == NodeStatus::Running)
+        };
+        if node.role != super::graph::Role::Builder {
+            return Err(Fail::Bad("only a builder can be opened in a live session".into()));
+        }
+        if working {
+            return Err(Fail::Conflict("it is working right now: stop the run first, or wait for it to finish".into()));
+        }
+        let session = session.ok_or_else(|| Fail::Conflict("it has not finished a turn yet, so there is no conversation to continue".into()))?;
+        let dir = live.runner.worktree_dir(node_id);
+        if !dir.is_dir() {
+            return Err(Fail::Conflict("its worktree is gone".into()));
+        }
+        let wanted = match node.engine {
+            super::graph::Engine::Claude => crate::config::Agent::Claude,
+            super::graph::Engine::Codex => crate::config::Agent::Codex,
+        };
+        let preset = st
+            .cfg
+            .presets
+            .iter()
+            .find(|p| p.agent() == wanted)
+            .ok_or_else(|| Fail::Bad(format!("no preset in the config starts {}", if wanted == crate::config::Agent::Claude { "Claude Code" } else { "Codex" })))?;
+        live.runner.release(node_id).await;
+        let name = format!("orch-{node_id}-{}", &run_id[..run_id.len().min(10)]);
+        let req = crate::sessions::NewSession { preset: Some(&preset.name), name: Some(&name), group: None, exact: false, yolo: false, dir: Some(dir) };
+        crate::sessions::create_resuming(st, req, Some(&session)).await.map_err(Fail::Internal)
+    }
+
     pub fn save_flow(&self, flow: &Flow) -> Result<(), Fail> {
         flow.validate().map_err(Fail::Bad)?;
         self.store.save_flow(flow).context("saving the flow")?;

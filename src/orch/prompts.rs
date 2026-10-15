@@ -26,7 +26,7 @@ broadly, cheap and fast), analyst (weighs findings, recommends), judge (reviews 
 (the only role that changes files).\n\
 Engines: claude (models opus, sonnet, haiku) or codex (models are given with the goal).\n\
 Rules: use as few agents as the goal needs, at most 8. Start with one orchestrator. Use the cheapest model that \
-can do the job: opus only for planning and judging, sonnet or a small codex model for reading and searching. A \
+can do the job: opus only for the orchestrator and the judge; sonnet (or a small codex model) for researchers, searchers and analysts; haiku for simple lookups. A \
 builder is followed by a judge, and the judge's edge back to the builder is marked retry. Mark checkpoint true on \
 the first agent after the orchestrator and on every builder, so the user approves the plan and approves before \
 files change. Each system_prompt is 2 to 5 sentences: the agent's job, what to hand back, what not to do. Never put \
@@ -150,7 +150,7 @@ fn lay_out(flow: &mut Flow) {
     for (col, layer) in layers.iter().enumerate() {
         for (row, id) in layer.iter().enumerate() {
             if let Some(n) = flow.nodes.iter_mut().find(|n| n.id == *id) {
-                n.x = col as f64 * 300.0;
+                n.x = col as f64 * 280.0;
                 n.y = row as f64 * 180.0;
             }
         }
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(f.validate(), Ok(()));
         assert_eq!(f.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec!["n1", "n2", "n3"]);
         assert_eq!(f.edges[2].kind, EdgeKind::Retry);
-        assert_eq!((f.nodes[0].x, f.nodes[1].x, f.nodes[2].x), (0.0, 300.0, 600.0));
+        assert_eq!((f.nodes[0].x, f.nodes[1].x, f.nodes[2].x), (0.0, 280.0, 560.0));
         assert!(f.nodes[1].checkpoint);
         // An empty prompt falls back to the role's default.
         assert_eq!(f.nodes[1].system_prompt, starters::default_prompt(Role::Builder));

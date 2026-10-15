@@ -586,6 +586,11 @@ fn name_for_dir(preset: &str, dir: &std::path::Path) -> Option<String> {
 
 /// Start a new detached session, from a preset or as a plain shell.
 pub async fn create(st: &AppState, req: NewSession<'_>) -> Result<String> {
+    create_resuming(st, req, None).await
+}
+
+/// Like `create`, but a Claude or Codex agent picks up the conversation `resume` instead of starting fresh.
+pub async fn create_resuming(st: &AppState, req: NewSession<'_>, resume: Option<&str>) -> Result<String> {
     let preset: Option<&Preset> = match req.preset {
         Some(p) => Some(
             st.cfg.presets.iter().find(|x| x.name == p).with_context(|| format!("unknown preset {p:?}"))?,
@@ -617,7 +622,7 @@ pub async fn create(st: &AppState, req: NewSession<'_>) -> Result<String> {
         anyhow::ensure!(d.is_dir(), "{} is not a folder", d.display());
         spec.dir = Some(d);
     }
-    launch(st, &id, &uid, &spec, preset, None).await?;
+    launch(st, &id, &uid, &spec, preset, resume).await?;
     let project = spec.dir.clone();
     st.sessions.insert(
         id.clone(),
@@ -628,6 +633,8 @@ pub async fn create(st: &AppState, req: NewSession<'_>) -> Result<String> {
             spec,
             group: req.group.map(str::to_owned),
             created: now_secs(),
+            // So a later restore carries on the same conversation.
+            agent_session_id: resume.map(str::to_owned),
             ..Default::default()
         },
     );

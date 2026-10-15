@@ -79,7 +79,6 @@ pub fn args(spec: &Spec) -> Vec<String> {
         "--strict-mcp-config",
         "--disable-slash-commands",
         "--exclude-dynamic-system-prompt-sections",
-        "--no-session-persistence",
     ]
     .map(String::from)
     .to_vec();
@@ -88,6 +87,11 @@ pub fn args(spec: &Spec) -> Vec<String> {
         a.extend(["--append-system-prompt".into(), spec.system_prompt.clone()]);
     }
     a.extend(["--json-schema".into(), spec.schema.to_string()]);
+    // Only a builder's conversation is kept on disk, so a person can open it in a live session later.
+    // Everyone else leaves nothing behind in the user's own history.
+    if spec.access != Access::Write {
+        a.push("--no-session-persistence".into());
+    }
     match spec.access {
         Access::None => a.extend(["--tools".into(), String::new()]),
         Access::ReadOnly => {
@@ -147,6 +151,7 @@ pub fn parse(line: &str) -> Event {
             tokens: v.get("usage").map(Tokens::from_claude).unwrap_or_default(),
             cost_usd: v.get("total_cost_usd").and_then(Value::as_f64).unwrap_or(0.0),
             is_error: v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+            session: v.get("session_id").and_then(Value::as_str).map(String::from),
         }),
         _ => Event::Other,
     }
@@ -159,6 +164,7 @@ pub fn user_line(prompt: &str) -> String {
 
 /// A running agent.
 pub struct Agent {
+    session: Option<String>,
     child: Child,
     stdin: ChildStdin,
     lines: tokio::io::Lines<BufReader<ChildStdout>>,
@@ -183,7 +189,7 @@ impl Agent {
             .context("could not start claude")?;
         let stdin = child.stdin.take().context("no stdin")?;
         let stdout = child.stdout.take().context("no stdout")?;
-        Ok(Agent { child, stdin, lines: BufReader::new(stdout).lines() })
+        Ok(Agent { session: None, child, stdin, lines: BufReader::new(stdout).lines() })
     }
 
     /// Send one prompt and read events until the turn is done. `on_event` sees every event, so the
@@ -194,8 +200,12 @@ impl Agent {
         self.stdin.flush().await?;
         while let Some(line) = self.lines.next_line().await? {
             let ev = parse(&line);
+            if let Event::Init { session_id, .. } = &ev {
+                self.session = Some(session_id.clone());
+            }
             on_event(&ev);
-            if let Event::Done(o) = ev {
+            if let Event::Done(mut o) = ev {
+                o.session = o.session.or_else(|| self.session.clone());
                 return Ok(o);
             }
         }
@@ -246,7 +256,7 @@ mod tests {
         for access in [Access::None, Access::ReadOnly, Access::Inspect, Access::Write] {
             let a = args(&spec(access));
             assert_eq!(after(&a, "--setting-sources"), Some("project"));
-            for f in ["--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"] {
+            for f in ["--strict-mcp-config", "--disable-slash-commands"] {
                 assert!(has(&a, f), "missing {f}");
             }
             assert_eq!(after(&a, "--model"), Some("sonnet"));
@@ -291,6 +301,20 @@ mod tests {
             assert!(!has(&a, "--settings"));
             assert!(!after(&a, "--tools").unwrap_or("").contains("Bash"));
         }
+    }
+
+    #[test]
+    fn only_a_builders_conversation_is_kept_so_it_can_be_opened_live() {
+        for access in [Access::None, Access::ReadOnly, Access::Inspect] {
+            assert!(has(&args(&spec(access)), "--no-session-persistence"), "{access:?} leaves nothing behind");
+        }
+        assert!(!has(&args(&spec(Access::Write)), "--no-session-persistence"));
+    }
+
+    #[test]
+    fn the_result_carries_the_conversation_id() {
+        let Event::Done(o) = parse(r#"{"type":"result","session_id":"abc-123","structured_output":{}}"#) else { panic!() };
+        assert_eq!(o.session.as_deref(), Some("abc-123"));
     }
 
     #[test]

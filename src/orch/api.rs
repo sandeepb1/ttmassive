@@ -57,6 +57,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/runs/{id}/approve", post(approve))
         .route("/api/orch/runs/{id}/resume", post(resume))
         .route("/api/orch/runs/{id}/cancel", post(cancel))
+        .route("/api/orch/runs/{id}/popout", post(pop_out))
         .route("/api/orch/events", get(events))
 }
 
@@ -164,6 +165,11 @@ async fn resume(State(st): St, Path(id): Path<String>) -> Result<Response, Fail>
 
 async fn cancel(State(st): St, Path(id): Path<String>) -> Result<Response, Fail> {
     Ok(json_nocache(st.orch.cancel(&id)?))
+}
+
+async fn pop_out(State(st): St, Path(id): Path<String>, Json(b): Json<ApproveBody>) -> Result<Response, Fail> {
+    let session = st.orch.pop_out(&st, &id, &b.node).await?;
+    Ok(json_nocache(json!({ "session": session })))
 }
 
 #[derive(Deserialize)]

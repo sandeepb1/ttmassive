@@ -30,4 +30,6 @@ pub struct Outcome {
     pub tokens: Tokens,
     pub cost_usd: f64,
     pub is_error: bool,
+    /// The agent's own conversation id, so a person can later open it in a live session.
+    pub session: Option<String>,
 }
