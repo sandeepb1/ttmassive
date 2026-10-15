@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   awaitingApproval, cacheBreakCount, fmtDuration, modelShown, summary,
-  addEdge, answersFor, cacheHit, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
+  addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes,
 } from './model.ts';
@@ -192,9 +192,61 @@ test('gauges show the run’s share of each window and turn red at the budget', 
   assert.deepEqual(gauges(claudeOnly, null, null).map((x) => x.engine), ['claude']);
 });
 
-test('blank answers take the recommended one', () => {
-  const pending = [{ recommended: 'SQLite' }, { recommended: 'yes' }];
-  assert.deepEqual(answersFor(pending, { 1: ' no ' }), ['SQLite', 'no']);
+const single = { text: 'Which database?', recommended: 'SQLite', options: ['SQLite', 'Postgres', 'Files'], multiple: false };
+const several = { text: 'Which matter most?', recommended: 'Views', options: ['Views', 'Labels', 'Snippets', 'Calendar'], multiple: true };
+const wordy = { text: 'Anything else?', recommended: 'No' };
+
+test('a question starts with the suggestion ticked, so continuing takes it', () => {
+  assert.deepEqual(startingAnswer(single), { chosen: ['SQLite'], other: false, text: '' });
+  assert.deepEqual(answersFor([single, several, wordy], {}), ['SQLite', 'Views', 'No']);
+});
+
+test('choosing an option answers with its words, and one choice replaces another', () => {
+  let p = startingAnswer(single);
+  p = choose(single, p, 'Postgres');
+  assert.equal(answerFor(single, p), 'Postgres');
+  p = choose(single, p, 'Files');
+  assert.deepEqual(p.chosen, ['Files']);
+});
+
+test('a multiple-choice question joins what was ticked, in the order offered', () => {
+  let p = startingAnswer(several); // Views
+  p = choose(several, p, 'Snippets');
+  p = choose(several, p, 'Labels');
+  assert.equal(answerFor(several, p), 'Views; Labels; Snippets');
+  p = choose(several, p, 'Views'); // untick
+  assert.equal(answerFor(several, p), 'Labels; Snippets');
+  // Unticking everything falls back to the suggestion rather than sending nothing.
+  p = choose(several, choose(several, p, 'Labels'), 'Snippets');
+  assert.equal(answerFor(several, p), 'Views');
+});
+
+test('Something else sends what was typed; blank takes the suggestion', () => {
+  let p = writeInstead(single, startingAnswer(single));
+  assert.deepEqual(p.chosen, [], 'a single-choice question drops its tick');
+  assert.equal(answerFor(single, p), 'SQLite', 'nothing typed yet: the suggestion');
+  p = { ...p, text: '  DuckDB, because it is embedded  ' };
+  assert.equal(answerFor(single, p), 'DuckDB, because it is embedded');
+  // Picking an option again puts the typed answer down.
+  assert.equal(answerFor(single, choose(single, p, 'Files')), 'Files');
+});
+
+test('in a multiple-choice question the words are added to the ticks', () => {
+  let p = choose(several, startingAnswer(several), 'Labels'); // Views; Labels
+  p = { ...writeInstead(several, p), text: 'Search' };
+  assert.equal(answerFor(several, p), 'Views; Labels; Search');
+});
+
+test('a question with no choices is a text box, and one with a single option is not a choice', () => {
+  assert.equal(hasChoices(wordy), false);
+  assert.equal(hasChoices({ ...single, options: ['Only'] }), false);
+  assert.equal(answersFor([wordy], { 0: { chosen: [], other: false, text: ' Maybe later ' } })[0], 'Maybe later');
+  assert.equal(answersFor([wordy], {})[0], 'No');
+});
+
+test('a stale tick that is no longer an option is never sent', () => {
+  const p = { chosen: ['Mongo'], other: false, text: '' };
+  assert.equal(answerFor(single, p), 'SQLite');
 });
 
 test('a finished run says which branch holds each builder’s work', () => {

@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
 import { Icon, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, consistent } from './model';
-import type { Capability, Flow, Output, Run } from './types';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, choose, consistent, hasChoices, startingAnswer, writeInstead, type Answer } from './model';
+import type { Capability, Flow, Output, Question, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
 
@@ -128,6 +128,52 @@ export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: 
       </p>
       {error && <p className="mc-error">{error}</p>}
     </Dialog>
+  );
+}
+
+/** One question: choices to tick, with "Something else" to write an answer, or a text box if it has no choices. */
+function Ask({ q, answer, onChange }: { q: Question; answer: Answer; onChange: (a: Answer) => void }) {
+  if (!hasChoices(q)) {
+    return (
+      <div className="mc-q">
+        <p className="mc-q-text">{q.text}</p>
+        <textarea className="mc-field" rows={2} value={answer.text} placeholder={q.recommended || 'Your answer'} onChange={(e) => onChange({ ...answer, text: e.target.value })} />
+      </div>
+    );
+  }
+  const kind = q.multiple ? 'checkbox' : 'radio';
+  return (
+    <div className="mc-q" role={q.multiple ? 'group' : 'radiogroup'} aria-label={q.text}>
+      <p className="mc-q-text">{q.text}</p>
+      {q.multiple && <p className="mc-hint" style={{ margin: '-0.25rem 0 0.4rem' }}>Choose any that apply.</p>}
+      <div className="mc-opts">
+        {q.options!.map((o) => {
+          const on = answer.chosen.includes(o) && (q.multiple || !answer.other);
+          return (
+            <button key={o} type="button" role={kind} aria-checked={on} className="mc-opt" onClick={() => onChange(choose(q, answer, o))}>
+              <span className="mc-opt-mark" data-kind={kind} aria-hidden="true">{on && <Icon name="check" />}</span>
+              <span className="mc-opt-text">{o}</span>
+              {o === q.recommended && <span className="mc-opt-tag">Suggested</span>}
+            </button>
+          );
+        })}
+        <button type="button" role={kind} aria-checked={answer.other} className="mc-opt" onClick={() => onChange(answer.other ? { ...answer, other: false } : writeInstead(q, answer))}>
+          <span className="mc-opt-mark" data-kind={kind} aria-hidden="true">{answer.other && <Icon name="check" />}</span>
+          <span className="mc-opt-text">Something else…</span>
+        </button>
+      </div>
+      {answer.other && (
+        <textarea
+          className="mc-field mc-opt-write"
+          rows={2}
+          autoFocus
+          value={answer.text}
+          placeholder="Your own answer"
+          aria-label={`Your own answer to: ${q.text}`}
+          onChange={(e) => onChange({ ...answer, text: e.target.value })}
+        />
+      )}
+    </div>
   );
 }
 
@@ -298,10 +344,10 @@ export function GrillDialog({ run, thinking, error, onAnswer, onStart, onStop }:
   onStop: () => void;
 }) {
   const g = run.grill;
-  const [typed, setTyped] = useState<Record<number, string>>({});
+  const [picks, setPicks] = useState<Record<number, Answer>>({});
   const [brief, setBrief] = useState(g?.brief ?? '');
   // A new round (or a new brief) starts with a clean form.
-  useEffect(() => setTyped({}), [g?.round]);
+  useEffect(() => setPicks({}), [g?.round]);
   useEffect(() => setBrief(g?.brief ?? ''), [g?.brief]);
   const pending = g?.pending ?? [];
 
@@ -325,18 +371,10 @@ export function GrillDialog({ run, thinking, error, onAnswer, onStart, onStop }:
     body = (
       <>
         <p className="mc-hint" style={{ margin: '0 0 1rem' }}>
-          Round {g!.round} of 3. Leave an answer empty to take the suggested one.
+          Round {g!.round} of 3. The suggested answer is ticked: change what you like, or just continue.
         </p>
         {pending.map((q, i) => (
-          <div key={`${g!.round}-${i}`} className="mc-q">
-            <p className="mc-q-text">{q.text}</p>
-            <textarea className="mc-field" rows={2} value={typed[i] ?? ''} placeholder={q.recommended || 'Your answer'} onChange={(e) => setTyped({ ...typed, [i]: e.target.value })} />
-            {q.recommended && (
-              <button type="button" className="mc-btn mc-btn-sm mc-btn-quiet mc-q-use" onClick={() => setTyped({ ...typed, [i]: q.recommended })}>
-                <Icon name="check" /> Use the suggestion
-              </button>
-            )}
-          </div>
+          <Ask key={`${g!.round}-${i}`} q={q} answer={picks[i] ?? startingAnswer(q)} onChange={(a) => setPicks((cur) => ({ ...cur, [i]: a }))} />
         ))}
       </>
     );
@@ -345,7 +383,7 @@ export function GrillDialog({ run, thinking, error, onAnswer, onStart, onStop }:
         <button type="button" className="mc-btn" onClick={onStop}>
           Stop
         </button>
-        <button type="button" className="mc-btn mc-btn-primary" onClick={() => onAnswer(answersFor(pending, typed))}>
+        <button type="button" className="mc-btn mc-btn-primary" onClick={() => onAnswer(answersFor(pending, picks))}>
           Continue
         </button>
       </>

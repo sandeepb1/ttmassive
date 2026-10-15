@@ -737,7 +737,9 @@ sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run
   of the work and has Sonnet design the team (it opens for you to change; nothing runs), and the copy button on a
   saved flow opens a duplicate to edit, so a flow can serve as a template.
 - **A run** starts with **Run**: say what you want and pick a project folder (a git repository with at least one
-  commit). Opus asks up to three rounds of questions, each with a suggested answer, then writes a brief you can edit.
+  commit). Opus asks up to three rounds of questions, then writes a brief you can edit. Each question offers two to four
+  choices with its suggested one already ticked (some let you tick several), and **Something else…** opens a box for
+  your own words, so continuing without touching anything takes every suggestion.
   Nothing starts until you press **Start the run**. Agents run in the background, not in terminal sessions, and are
   handed only the results of the agents wired into them. An agent starts as soon as everything wired into it has
   finished, so branches that do not depend on each other run **at the same time**. If one fails, or a limit is

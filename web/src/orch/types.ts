@@ -112,7 +112,12 @@ export type RunStatus =
 
 export interface Question {
   text: string;
+  /** The answer the orchestrator would pick; one of `options` when there are any. */
   recommended: string;
+  /** Two to four answers to choose from. Absent or empty for a question that is answered in words. */
+  options?: string[];
+  /** More than one option can be chosen together. */
+  multiple?: boolean;
 }
 
 export interface Grill {

@@ -983,6 +983,73 @@ textarea.mc-field {
   font-weight: 600;
   line-height: 1.4;
 }
+.mc-opts {
+  display: grid;
+  gap: 0.375rem;
+}
+.mc-opt {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-md);
+  background: var(--mc-bg);
+  text-align: left;
+  line-height: 1.35;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: border-color 0.12s, background 0.12s;
+}
+.mc-opt:hover {
+  background: var(--mc-raise);
+}
+.mc-opt:focus-visible {
+  outline: 2px solid var(--mc-glow);
+  outline-offset: 2px;
+}
+.mc-opt[aria-checked='true'] {
+  border-color: var(--mc-glow);
+  background: color-mix(in oklch, var(--mc-glow) 10%, var(--mc-bg));
+}
+.mc-opt-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid var(--mc-faint);
+  border-radius: 50%;
+  color: oklch(0.2 0.03 230);
+}
+.mc-opt-mark[data-kind='checkbox'] {
+  border-radius: var(--radius-sm);
+}
+.mc-opt[aria-checked='true'] .mc-opt-mark {
+  border-color: var(--mc-glow);
+  background: var(--mc-glow);
+}
+.mc-opt-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mc-opt-tag {
+  flex: none;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--mc-glow) 16%, transparent);
+  color: var(--mc-glow);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mc-opt-write {
+  margin-top: 0.5rem;
+}
 .mc-q-use {
   margin-top: 0.3rem;
 }
@@ -1142,7 +1209,8 @@ textarea.mc-field {
     min-height: 44px;
     font-size: 16px;
   }
-  #orch .mc-row-btn {
+  #orch .mc-row-btn,
+  #orch .mc-opt {
     min-height: 44px;
   }
   #orch .react-flow__handle {

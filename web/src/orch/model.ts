@@ -3,7 +3,7 @@
 // The server checks everything again; these rules exist so the page can say no before asking.
 
 import type {
-  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, Models, Output, Pause, Role, RoleDef, Run, RunStatus, Stage, Tokens, UsageSnapshot,
+  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
 // ---------------------------------------------------------------------------- roles
@@ -392,7 +392,48 @@ export function gauges(flow: Flow, run: Run | null, usage: UsageSnapshot | null)
 
 // ---------------------------------------------------------------------------- grilling
 
-/** Answers to send: what was typed, or the recommended answer where nothing was. */
-export function answersFor(pending: { recommended: string }[], typed: Record<number, string>): string[] {
-  return pending.map((q, i) => (typed[i] ?? '').trim() || q.recommended);
+/** What the user has done with one question. */
+export interface Answer {
+  /** The options ticked. */
+  chosen: string[];
+  /** "Something else" was chosen, so `text` is the answer. */
+  other: boolean;
+  text: string;
+}
+
+/** A question as first shown: the recommended answer ticked, so continuing takes the suggestion. */
+export function startingAnswer(q: Question): Answer {
+  return { chosen: q.options?.length && q.recommended ? [q.recommended] : [], other: false, text: '' };
+}
+
+/** Does this question offer choices? Without any it is a text box with the suggestion as its placeholder. */
+export const hasChoices = (q: Question): boolean => (q.options?.length ?? 0) >= 2;
+
+/** Tick or untick an option. A single-choice question holds one; a multiple-choice one holds any number, in the order
+ *  the options are offered. Choosing an option puts "Something else" down, and the other way round. */
+export function choose(q: Question, pick: Answer, option: string): Answer {
+  const options = q.options ?? [];
+  if (!q.multiple) return { ...pick, chosen: [option], other: false };
+  const has = pick.chosen.includes(option);
+  const next = options.filter((o) => (o === option ? !has : pick.chosen.includes(o)));
+  return { ...pick, chosen: next, other: false };
+}
+
+/** Switch to writing an answer. In a multiple-choice question the ticks stay, and the words are added to them. */
+export function writeInstead(q: Question, pick: Answer): Answer {
+  return { ...pick, other: true, chosen: q.multiple ? pick.chosen : [] };
+}
+
+/** The words to send for one question. */
+export function answerFor(q: Question, pick: Answer): string {
+  const typed = pick.text.trim();
+  if (!hasChoices(q)) return typed || q.recommended;
+  const picked = pick.chosen.filter((o) => q.options!.includes(o));
+  if (pick.other) return q.multiple ? [...picked, typed].filter(Boolean).join('; ') || q.recommended : typed || q.recommended;
+  return picked.length ? picked.join('; ') : q.recommended;
+}
+
+/** The answers to send, in order. Anything left untouched takes the suggestion. */
+export function answersFor(pending: Question[], picks: Record<number, Answer>): string[] {
+  return pending.map((q, i) => answerFor(q, picks[i] ?? startingAnswer(q)));
 }
