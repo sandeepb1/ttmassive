@@ -11,7 +11,14 @@ export interface ToastOptions {
   /** Extra classes, for a hook the host's styles can find. */
   cls?: string;
   /** `run` gets the button, to relabel it, and a function that closes the toast. */
-  action?: { label: string; run: (button: HTMLButtonElement, dismiss: () => void) => void };
+  action?: ToastAction;
+  /** More than one button, in order. */
+  actions?: ToastAction[];
+}
+
+export interface ToastAction {
+  label: string;
+  run: (button: HTMLButtonElement, dismiss: () => void) => void;
 }
 
 export function toast(host: HTMLElement, message: string, opts: ToastOptions = {}): () => void {
@@ -28,8 +35,8 @@ export function toast(host: HTMLElement, message: string, opts: ToastOptions = {
     clearTimeout(entry.timer);
     if (live.get(host) === entry) live.delete(host);
   };
-  if (opts.action) {
-    const a = button({ variant: 'ghost', size: 'sm', cls: '-my-1 shrink-0 text-accent-text', onClick: () => opts.action!.run(a, dismiss) }, opts.action.label);
+  for (const act of opts.actions ?? (opts.action ? [opts.action] : [])) {
+    const a = button({ variant: 'ghost', size: 'sm', cls: '-my-1 shrink-0 text-accent-text', onClick: () => act.run(a, dismiss) }, act.label);
     a.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the keyboard where it was
     node.append(a);
   }

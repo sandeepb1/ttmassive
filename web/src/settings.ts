@@ -41,6 +41,7 @@ import { chip, chipClass, setChipOn } from './ui/chip';
 import { input, select } from './ui/input';
 import { sheetBlock, sheetHint, sheetLabel } from './ui/sheet-parts';
 import { stepper } from './ui/stepper';
+import { updatesBlock } from './server-update';
 import { PRESETS, type PresetId } from './tiling';
 import { MAX_PANES_LIMIT, type LayoutSettings } from './workspace';
 import { ThemePicker } from './theme-picker';
@@ -151,6 +152,7 @@ export class SettingsSheet extends Sheet {
       { id: 'terminal', label: 'Terminal', blocks: [...this.terminalSizeBlock(), ...this.terminalLookBlocks(), this.keyboardBlock()] },
       { id: 'sessions', label: 'Sessions', blocks: [this.panesBlock()] },
       { id: 'notifications', label: 'Notifications', blocks: [this.notif, this.soundsBlock()] },
+      { id: 'updates', label: 'Updates', blocks: [updatesBlock(this.host, () => this.close())] },
       { id: 'account', label: 'Account', blocks: [this.tunnel, sheetBlock(sheetLabel('Account'), out)] },
     ];
     this.renderSections(sections);

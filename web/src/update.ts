@@ -1,57 +1,86 @@
-// A new build is out while the app has been open for days (an installed app is rarely closed). Pages are fetched
-// network-first, so a fresh launch always has the newest build; this is for the one that has been running.
+// A new version is out while the app has been open for days (an installed app is rarely closed). Two kinds:
 //
-// - coming back from the background after a while: reload quietly, unless something is half typed;
-// - still in use: after a long time, offer it in a toast, never reload under the user's hands.
+// - the page is behind the server (it was updated, or a deploy landed). Pages are fetched network-first, so a fresh
+//   launch always has the newest build: coming back after a while reloads quietly unless something is half typed,
+//   otherwise a toast offers the reload;
+// - the server is behind a newer GitHub release (server-update.ts): a toast offers to install it.
+//
+// Both are checked on launch and whenever the app comes back to the foreground, nothing in between.
 
+import { fetchUpdate, offerServerUpdate } from './server-update';
+import { failureNews, shouldOffer } from './server-update-model';
 import { toast } from './ui/toast';
 import { buildOf, isStale } from './update-model';
 
 const BACKGROUND_MS = 60_000; // away this long counts as "put down", so a reload costs nothing
-const OFFER_AFTER_MS = 30 * 60_000; // in use this long without a reload: offer one
-const CHECK_EVERY_MS = 10 * 60_000;
+const SEEN_KEY = 'ttm.update.failureSeen';
+
+function seenAt(): number {
+  try {
+    return Number(localStorage.getItem(SEEN_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
 
 let watching = false;
 
 export function watchForUpdates(host: HTMLElement) {
   if (watching) return; // showApp runs again after every sign-in
   watching = true;
-  const running = buildOf(document.documentElement.outerHTML);
-  if (!running) return; // dev server
-  const loadedAt = Date.now();
+  const running = buildOf(document.documentElement.outerHTML); // null on a dev server
   let hiddenAt = 0;
-  let offered = false;
+  let checking = false;
+  let reloadOffered = false;
+  let offered: string | null = null;
 
-  const latest = async () => {
+  const latestBuild = async () => {
     const r = await fetch('/', { cache: 'no-store' }).catch(() => null);
     return r?.ok ? buildOf(await r.text()) : null;
   };
   /** Text in a box that nobody has sent: reloading would lose it. */
   const halfTyped = () => [...document.querySelectorAll('textarea')].some((t) => t.value.trim() !== '' && !t.classList.contains('xterm-helper-textarea'));
 
-  const offer = () => {
-    if (offered) return;
-    offered = true;
-    toast(host, 'A new version is ready', {
-      ms: 600_000,
-      action: { label: 'Reload', run: () => location.reload() },
-    });
+  const check = async (away: number) => {
+    if (checking) return;
+    checking = true;
+    try {
+      if (running && isStale(running, await latestBuild())) {
+        if (away >= BACKGROUND_MS && !halfTyped()) {
+          location.reload();
+        } else if (!reloadOffered) {
+          reloadOffered = true;
+          toast(host, 'A new version is ready', { ms: 600_000, action: { label: 'Reload', run: () => location.reload() } });
+        }
+        return; // reloading comes first; the server's own update is offered afterwards if it is still news
+      }
+      const u = await fetchUpdate();
+      if (!u) return;
+      const failed = failureNews(u.lastResult, seenAt());
+      if (failed && u.lastResult) {
+        try {
+          localStorage.setItem(SEEN_KEY, String(u.lastResult.at));
+        } catch {
+          // Without storage it is told again next launch.
+        }
+        toast(host, failed, { ms: 15_000 });
+      } else if (shouldOffer(u, offered)) {
+        offered = u.latest;
+        offerServerUpdate(host, u);
+      }
+    } finally {
+      checking = false;
+    }
   };
 
-  document.addEventListener('visibilitychange', async () => {
+  document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       hiddenAt = Date.now();
       return;
     }
     const away = hiddenAt ? Date.now() - hiddenAt : 0;
     hiddenAt = 0;
-    if (!isStale(running, await latest())) return;
-    if (away >= BACKGROUND_MS && !halfTyped()) location.reload();
-    else if (Date.now() - loadedAt >= OFFER_AFTER_MS) offer();
+    void check(away);
   });
-
-  window.setInterval(async () => {
-    if (document.hidden || Date.now() - loadedAt < OFFER_AFTER_MS) return;
-    if (isStale(running, await latest())) offer();
-  }, CHECK_EVERY_MS);
+  void check(0);
 }

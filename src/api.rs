@@ -77,6 +77,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/meta", post(session_meta))
         .route("/api/usage", get(get_usage))
         .route("/api/tunnel", get(get_tunnel))
+        .route("/api/update", get(get_update).post(post_update))
         .route("/api/dirs", get(recent_dirs))
         .route("/api/browse", get(browse_dirs))
         .route("/api/groups", get(list_groups))
@@ -202,6 +203,33 @@ fn is_local_host(headers: &HeaderMap) -> bool {
 async fn get_tunnel(State(st): State<Arc<AppState>>) -> impl IntoResponse {
     let v = st.tunnel.lock().map_or(serde_json::Value::Null, |t| t.to_json());
     ([(header::CACHE_CONTROL, "no-store")], Json(v))
+}
+
+#[derive(Deserialize)]
+struct UpdateQuery {
+    #[serde(default)]
+    refresh: u8,
+}
+
+/// Newer releases, and whether this server can install one. A client coming to the foreground
+/// calls this; GitHub is asked at most every 15 minutes unless `refresh=1`.
+async fn get_update(State(st): State<Arc<AppState>>, Query(q): Query<UpdateQuery>) -> impl IntoResponse {
+    ([(header::CACHE_CONTROL, "no-store")], Json(st.update.status(&st, q.refresh == 1).await))
+}
+
+#[derive(Deserialize)]
+struct InstallBody {
+    version: String,
+}
+
+async fn post_update(State(st): State<Arc<AppState>>, Json(b): Json<InstallBody>) -> Response {
+    match st.update.install(&st, &b.version).await {
+        Ok(()) => {
+            crate::selfupdate::restart_soon(st);
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(e) => (StatusCode::CONFLICT, format!("{e:#}")).into_response(),
+    }
 }
 
 async fn get_layouts(State(st): State<Arc<AppState>>) -> impl IntoResponse {

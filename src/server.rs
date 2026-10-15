@@ -20,8 +20,11 @@ async fn shutdown_signal(st: &AppState) {
 }
 
 pub async fn serve(cfg: Config) -> Result<()> {
-    tmux::check_installed().await?;
     let data_dir = cfg.data_dir()?;
+    // Before anything that can fail: a freshly installed binary that keeps dying is replaced
+    // by the previous one here.
+    let trial = crate::selfupdate::on_boot(&data_dir);
+    tmux::check_installed().await?;
     let sock = cfg.socket_path()?;
     control::check_path(&sock)?;
     // Refuse to run twice; removed again when `serve` returns.
@@ -66,6 +69,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         memory: crate::memory::Memory::new(),
         teamclaude: crate::teamclaude::Probes::new(),
         branches: crate::gitinfo::Branches::new(),
+        update: crate::selfupdate::Updater::new(),
         data_dir,
         cfg,
         auth,
@@ -92,6 +96,10 @@ pub async fn serve(cfg: Config) -> Result<()> {
     let mut control_task = tokio::spawn(control::serve(state.clone(), sock.clone()));
     tokio::spawn(sessions::reconcile_loop(state.clone()));
     tracing::info!("ttm {} listening on http://{bind}", env!("CARGO_PKG_VERSION"));
+    if let Some(p) = trial {
+        crate::selfupdate::confirm_later(state.data_dir.clone(), p);
+    }
+    tokio::spawn(crate::selfupdate::check_loop(state.clone()));
     let tunnel_task = state.cfg.tunnel.map(|p| {
         tokio::spawn(crate::tunnel::run(state.clone(), p, state.cfg.tunnel_token.clone()))
     });
@@ -117,5 +125,10 @@ pub async fn serve(cfg: Config) -> Result<()> {
     scrollback::snapshot_all(&state).await;
     sessions::save(&state).await;
     let _ = std::fs::remove_file(&sock);
+    if state.update.restart_requested() {
+        // A new binary is in place. Not 0, so systemd restarts us too.
+        drop(_pid);
+        std::process::exit(crate::selfupdate::RESTART_CODE);
+    }
     Ok(())
 }

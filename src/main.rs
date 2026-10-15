@@ -25,6 +25,7 @@ mod question;
 mod resume;
 mod screen;
 mod scrollback;
+mod selfupdate;
 mod search;
 mod server;
 mod subagents;
@@ -79,6 +80,8 @@ pub struct AppState {
     pub teamclaude: teamclaude::Probes,
     /// The git branch of each session's folder, looked up off the runtime.
     pub branches: gitinfo::Branches,
+    /// Newer releases on GitHub and installing one.
+    pub update: selfupdate::Updater,
 }
 
 #[derive(Parser)]
