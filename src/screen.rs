@@ -245,12 +245,60 @@ fn find_yes_no(lines: &[String]) -> Option<Prompt> {
     })
 }
 
+/// An unnumbered selector menu: a cursor line and its siblings above an "Enter to confirm · Esc to cancel" footer.
+/// Claude Code's folder-trust dialog is one ("❯ No, exit" / "Yes, I trust this folder"). There are no numbers to
+/// anchor on and `clean` has stripped the indentation, so this is deliberately narrow: the options are the block
+/// of 2 to 6 short lines directly above that exact footer, separated from the text above by a blank line, with
+/// exactly one carrying the cursor. A shell prompt or an ordinary list has no such footer and is left alone.
+fn find_plain_menu(screen: &str) -> Option<Prompt> {
+    let lines: Vec<String> = screen.lines().map(clean).collect(); // blank lines stay: they bound the block
+    let footer = lines.iter().rposition(|l| !l.is_empty())?;
+    let f = lines[footer].to_ascii_lowercase();
+    if !(f.contains("enter to confirm") && f.contains("esc to cancel")) {
+        return None;
+    }
+    let mut hi = footer;
+    while hi > 0 && lines[hi - 1].is_empty() {
+        hi -= 1;
+    }
+    let mut lo = hi;
+    while lo > 0 && !lines[lo - 1].is_empty() {
+        lo -= 1;
+    }
+    let block = &lines[lo..hi];
+    if !(2..=6).contains(&block.len()) || block.iter().any(|l| l.chars().count() > 80) {
+        return None;
+    }
+    let is_cursor = |l: &String| l.chars().next().is_some_and(|c| SELECTORS.contains(&c));
+    if block.iter().filter(|l| is_cursor(l)).count() != 1 {
+        return None;
+    }
+    let choices: Vec<Choice> = block
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let selected = is_cursor(l);
+            let label = if selected { l.chars().skip(1).collect::<String>().trim().to_owned() } else { l.clone() };
+            Choice { index: i + 1, label, selected, hotkey: None }
+        })
+        .collect();
+    // The question is somewhere in the paragraph above: the nearest line with a '?' (the terminal may have wrapped
+    // it anywhere), else the nearest line of text.
+    let above: Vec<&String> = lines[..lo].iter().rev().filter(|l| !l.is_empty()).take(8).collect();
+    let q_at = above.iter().position(|l| l.contains('?')).unwrap_or(0);
+    let question = above.get(q_at).map(|s| s.to_string()).unwrap_or_default();
+    let mut context: Vec<String> =
+        above.iter().enumerate().filter(|(i, _)| *i != q_at).take(MAX_CONTEXT).map(|(_, l)| l.to_string()).collect();
+    context.reverse();
+    Some(Prompt { kind: PromptKind::Menu, id: prompt_id(&question, &choices), question, context, choices })
+}
+
 pub fn analyze(screen: &str) -> Analysis {
     let all: Vec<String> = screen.lines().map(clean).filter(|l| !l.is_empty()).collect();
     let lines: Vec<String> = all[all.len().saturating_sub(WINDOW)..].to_vec();
     let tail: Vec<String> = lines[lines.len().saturating_sub(6)..].to_vec();
 
-    let prompt = find_menu(&lines).or_else(|| find_yes_no(&lines));
+    let prompt = find_menu(&lines).or_else(|| find_yes_no(&lines)).or_else(|| find_plain_menu(screen));
     let bottom = &lines[lines.len().saturating_sub(10)..];
     let working = bottom.iter().any(|l| {
         let l = l.to_ascii_lowercase();
@@ -375,6 +423,85 @@ mod tests {
         assert_eq!(p.choices[1].hotkey.as_deref(), Some("a"));
         assert_eq!(approve_index(&p), 1);
         assert_eq!(deny_index(&p), 3);
+    }
+
+    const CLAUDE_TRUST: &str = "\
+Accessing workspace:
+
+/Users/sandeep
+
+Quick safety check: Is this a project you
+created or one you trust? (Like your own code,
+a well-known open source project, or work from
+your team). If not, take a moment to review
+what's in this folder first.
+
+Claude Code'll be able to read, edit, and
+execute files here.
+
+Security guide
+
+❯ No, exit
+  Yes, I trust this folder
+
+Enter to confirm · Esc to cancel
+";
+
+    #[test]
+    fn claude_trust_dialog_is_a_prompt() {
+        let a = analyze(CLAUDE_TRUST);
+        assert_eq!(a.activity, Activity::Waiting);
+        let p = a.prompt.expect("the trust dialog is a question");
+        assert_eq!(p.kind, PromptKind::Menu);
+        let labels: Vec<&str> = p.choices.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["No, exit", "Yes, I trust this folder"]);
+        assert!(p.choices[0].selected && !p.choices[1].selected);
+        assert!(p.question.contains("trust"), "question was {:?}", p.question);
+    }
+
+    #[test]
+    fn trust_dialog_yes_and_no_walk_the_cursor() {
+        let p = analyze(CLAUDE_TRUST).prompt.unwrap();
+        assert_eq!(approve_index(&p), 2);
+        assert_eq!(deny_index(&p), 1);
+        // The cursor starts on "No, exit": yes is one Down then Enter, no is just Enter.
+        assert_eq!(steps_for(&p, 2), Some(vec![Step::Key("Down"), Step::Key("Enter")]));
+        assert_eq!(steps_for(&p, 1), Some(vec![Step::Key("Enter")]));
+    }
+
+    #[test]
+    fn trust_dialog_with_the_cursor_moved_down() {
+        let moved = CLAUDE_TRUST.replace("❯ No, exit\n  Yes, I trust", "  No, exit\n❯ Yes, I trust");
+        let p = analyze(&moved).prompt.unwrap();
+        assert!(!p.choices[0].selected && p.choices[1].selected);
+        assert_eq!(steps_for(&p, 1), Some(vec![Step::Key("Up"), Step::Key("Enter")]));
+        assert_eq!(steps_for(&p, 2), Some(vec![Step::Key("Enter")]));
+    }
+
+    #[test]
+    fn a_shell_prompt_is_not_a_plain_menu() {
+        let shell = "~/code\n❯ git status\nOn branch main\n\n~/code\n❯ ";
+        assert!(analyze(shell).prompt.is_none());
+    }
+
+    #[test]
+    fn a_list_without_the_confirm_footer_is_not_a_plain_menu() {
+        let list = CLAUDE_TRUST.replace("Enter to confirm · Esc to cancel", "↑↓ to navigate · Esc to close");
+        assert!(analyze(&list).prompt.is_none());
+    }
+
+    #[test]
+    fn a_lone_option_or_two_cursors_are_not_a_menu() {
+        let one = CLAUDE_TRUST.replace("  Yes, I trust this folder\n", "");
+        assert!(analyze(&one).prompt.is_none());
+        let two = CLAUDE_TRUST.replace("  Yes, I trust", "❯ Yes, I trust");
+        assert!(analyze(&two).prompt.is_none());
+    }
+
+    #[test]
+    fn an_answered_trust_dialog_is_gone() {
+        let after = format!("{CLAUDE_TRUST}\nWelcome to Claude Code\n> ");
+        assert!(analyze(&after).prompt.is_none());
     }
 
     #[test]
