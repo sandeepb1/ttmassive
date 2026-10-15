@@ -2,8 +2,8 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { Icon, ROLE_ICON } from './bits';
-import { ROLE_INFO, cacheHit, fmtTokens, modelShown, totalTokens } from './model';
+import { Icon, iconFor } from './bits';
+import { cacheHit, decides, fmtTokens, modelShown, roleLabel, totalTokens, writes } from './model';
 import type { FlowNode, NodeRun } from './types';
 
 export interface CardData extends Record<string, unknown> {
@@ -34,11 +34,11 @@ export function CardBody({ node, run, waiting }: Pick<CardData, 'node' | 'run' |
     <>
       <div className="mc-card-head">
         <span className="mc-role">
-          <Icon name={ROLE_ICON[node.role]} />
+          <Icon name={iconFor(node)} />
         </span>
         <div style={{ minWidth: 0 }}>
           <div className="mc-card-name">{node.name}</div>
-          <div className="mc-card-role">{ROLE_INFO[node.role].label}</div>
+          <div className="mc-card-role">{roleLabel(node)}</div>
         </div>
         <span className="mc-card-state">
           <State run={run} waiting={waiting} />
@@ -92,8 +92,8 @@ function AgentCardImpl({ data }: NodeProps) {
       <CardBody node={node} run={run} waiting={waiting} />
       <Handle id="out" type="source" position={Position.Right} />
       {/* A judge sends work back along the bottom; the builder it goes to takes it there. */}
-      {node.role === 'judge' && <Handle id="back-out" type="source" position={Position.Bottom} title="Drag to a builder to send work back" />}
-      {node.role === 'builder' && <Handle id="back-in" type="target" position={Position.Bottom} />}
+      {decides(node) && <Handle id="back-out" type="source" position={Position.Bottom} title="Drag to an agent that changes files, to send work back" />}
+      {writes(node) && <Handle id="back-in" type="target" position={Position.Bottom} />}
     </div>
   );
 }

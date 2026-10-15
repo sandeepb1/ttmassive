@@ -2,9 +2,9 @@
 // the settings of the whole flow (budget, retries).
 
 import { useState } from 'react';
-import { Icon, ROLE_ICON, Field, Switch } from './bits';
-import { ROLE_INFO, cacheHit, fmtTokens, modelShown, totalTokens } from './model';
-import type { Engine, Flow, FlowNode, Models, NodeRun, Run } from './types';
+import { Icon, iconFor, Field, Switch } from './bits';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, cacheHit, consistent, fmtTokens, modelShown, roleBlurb, roleLabel, totalTokens, writes } from './model';
+import type { Capability, Engine, Flow, FlowNode, Models, NodeRun, Output, Run } from './types';
 
 interface Props {
   flow: Flow;
@@ -92,13 +92,54 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
   return (
     <>
       <div className="mc-section" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--mc-dim)' }}>
-        <Icon name={ROLE_ICON[node.role]} /> <span>{ROLE_INFO[node.role].label}</span>
-        <span style={{ color: 'var(--mc-faint)' }}>· {ROLE_INFO[node.role].blurb}</span>
+        <Icon name={iconFor(node)} /> <span>{roleLabel(node)}</span>
+        <span style={{ color: 'var(--mc-faint)' }}>· {roleBlurb(node)}</span>
       </div>
+      {node.custom && editable && (
+        <div className="mc-section">
+          <div className="mc-grid2">
+            <Field label="Role name">
+              <input className="mc-field" value={node.custom.label} maxLength={40} onChange={(e) => onNode(node.id, { custom: { ...node.custom!, label: e.target.value } })} />
+            </Field>
+            <Field label="May">
+              <select
+                className="mc-field"
+                value={node.custom.capability}
+                onChange={(e) => {
+                  const capability = e.target.value as Capability;
+                  onNode(node.id, { custom: { ...node.custom!, capability, output: consistent(capability, node.custom!.output) }, checkpoint: capability === 'write' ? true : node.checkpoint });
+                }}
+              >
+                {(Object.keys(CAPABILITY_SHORT) as Capability[]).map((c) => (
+                  <option key={c} value={c}>
+                    {CAPABILITY_SHORT[c]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          <Field label="Hands back" hint={node.custom.capability === 'write' ? 'An agent that changes files reports the change.' : 'A verdict lets it send work back to an agent that changes files.'}>
+            <select
+              className="mc-field"
+              value={node.custom.output}
+              disabled={node.custom.capability === 'write'}
+              onChange={(e) => onNode(node.id, { custom: { ...node.custom!, output: e.target.value as Output } })}
+            >
+              {(Object.keys(OUTPUT_TEXT) as Output[])
+                .filter((o) => (node.custom!.capability === 'write' ? o === 'change' : o !== 'change'))
+                .map((o) => (
+                  <option key={o} value={o}>
+                    {OUTPUT_TEXT[o]}
+                  </option>
+                ))}
+            </select>
+          </Field>
+        </div>
+      )}
 
       {nr && <RunDetail nr={nr} node={node} feedback={feedback} />}
 
-      {nr && node.role === 'builder' && (
+      {nr && writes(node) && (
         <div className="mc-section">
           <button
             type="button"

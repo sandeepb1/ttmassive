@@ -3,19 +3,74 @@
 // The server checks everything again; these rules exist so the page can say no before asking.
 
 import type {
-  Budget, EdgeKind, Flow, FlowEdge, FlowNode, Models, Pause, Role, Run, RunStatus, Tokens, UsageSnapshot,
+  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, Models, Output, Pause, Role, RoleDef, Run, RunStatus, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
-export const ROLES: Role[] = ['orchestrator', 'researcher', 'search', 'analyst', 'judge', 'builder'];
+// ---------------------------------------------------------------------------- roles
 
-export const ROLE_INFO: Record<Role, { label: string; blurb: string }> = {
-  orchestrator: { label: 'Orchestrator', blurb: 'Plans the work' },
-  researcher: { label: 'Researcher', blurb: 'Reads code and sources' },
-  search: { label: 'Search', blurb: 'Finds files and facts, fast' },
-  analyst: { label: 'Analyst', blurb: 'Weighs findings, recommends' },
-  judge: { label: 'Judge', blurb: 'Reviews and can send work back' },
-  builder: { label: 'Builder', blurb: 'The only one that changes files' },
+/** The six roles the first version shipped with: used until the server's list arrives, and in tests. */
+const FIRST_SIX: RoleDef[] = [
+  { id: 'orchestrator', label: 'Orchestrator', blurb: 'Plans the work', stage: 'plan', icon: 'workflow', capability: 'read', output: 'plan', core: true, checkpoint: false, prefer: 'claude', claudeModel: 'opus', prompt: 'You are the orchestrator. Turn the brief into a short, concrete plan the other agents can follow. Do not do the work yourself.' },
+  { id: 'researcher', label: 'Researcher', blurb: 'Reads code and sources', stage: 'gather', icon: 'book', capability: 'read', output: 'report', core: true, checkpoint: false, prefer: 'claude', claudeModel: 'sonnet', prompt: 'You are a researcher. Find out what is needed to do the task well and report findings with their sources. Do not change files.' },
+  { id: 'search', label: 'Search', blurb: 'Finds files and facts, fast', stage: 'gather', icon: 'search', capability: 'read', output: 'report', core: true, checkpoint: false, prefer: 'codex', claudeModel: 'haiku', codexModel: 'gpt-6-luna', prompt: 'You are a search agent. Locate the files, symbols and facts the task touches and report exact locations. Do not change files.' },
+  { id: 'analyst', label: 'Analyst', blurb: 'Weighs findings, recommends', stage: 'gather', icon: 'scale', capability: 'read', output: 'report', core: true, checkpoint: false, prefer: 'claude', claudeModel: 'sonnet', prompt: 'You are an analyst. Weigh the findings you are given, point out risks, and recommend one approach with reasons. Do not change files.' },
+  { id: 'builder', label: 'Builder', blurb: 'The one that changes files', stage: 'build', icon: 'hammer', capability: 'write', output: 'change', core: true, checkpoint: true, prefer: 'codex', claudeModel: 'sonnet', codexModel: 'gpt-6.1-sol', prompt: 'You are the builder. Do the work described by the plan and findings, keep changes small, run the checks, and report what you changed.' },
+  { id: 'judge', label: 'Judge', blurb: 'Reviews, and can send work back', stage: 'check', icon: 'gavel', capability: 'inspect', output: 'verdict', core: true, checkpoint: false, prefer: 'claude', claudeModel: 'opus', prompt: 'You are a strict reviewer. Approve only if the work is correct and complete; otherwise reject and say exactly what to fix.' },
+];
+
+let catalog: RoleDef[] = FIRST_SIX;
+
+/** The roles the server offers. Called once they have loaded. */
+export function setCatalog(defs: RoleDef[]) {
+  catalog = defs.length ? defs : FIRST_SIX;
+}
+export const getCatalog = (): RoleDef[] => catalog;
+export const roleDef = (id: Role): RoleDef | undefined => catalog.find((d) => d.id === id);
+
+/** What an agent may do. A custom role says so itself; a built-in one is looked up. */
+export const capabilityOf = (n: Pick<FlowNode, 'role' | 'custom'>): Capability => n.custom?.capability ?? roleDef(n.role)?.capability ?? 'read';
+export const outputOf = (n: Pick<FlowNode, 'role' | 'custom'>): Output => n.custom?.output ?? roleDef(n.role)?.output ?? 'report';
+/** Changes files, in its own worktree. */
+export const writes = (n: Pick<FlowNode, 'role' | 'custom'>) => capabilityOf(n) === 'write';
+/** Hands back a decision, so it may send work back to an earlier agent. */
+export const decides = (n: Pick<FlowNode, 'role' | 'custom'>) => outputOf(n) === 'verdict';
+export const roleLabel = (n: Pick<FlowNode, 'role' | 'custom'>): string => n.custom?.label ?? roleDef(n.role)?.label ?? 'Agent';
+export const roleBlurb = (n: Pick<FlowNode, 'role' | 'custom'>): string => (n.custom ? 'A role you defined' : (roleDef(n.role)?.blurb ?? ''));
+export const roleIconName = (n: Pick<FlowNode, 'role' | 'custom'>): string => (n.custom ? 'wand' : (roleDef(n.role)?.icon ?? 'agent'));
+
+export const CAPABILITY_TEXT: Record<Capability, string> = {
+  read: 'Reads and searches',
+  inspect: 'Reads, and runs checks in a sandbox',
+  write: 'Changes files in its own copy',
 };
+/** Short enough for a dropdown. */
+export const CAPABILITY_SHORT: Record<Capability, string> = {
+  read: 'Read only',
+  inspect: 'Read and run checks',
+  write: 'Change files',
+};
+
+export const OUTPUT_TEXT: Record<Output, string> = {
+  plan: 'A plan',
+  report: 'A report of findings',
+  change: 'A change it made',
+  verdict: 'A verdict: approve or reject',
+};
+
+/** The same rules the server applies to a role it generates: a writer reports a change and nothing else does,
+ *  so a reviewer can never come out able to edit what it reviews. */
+export function consistent(capability: Capability, output: Output): Output {
+  if (capability === 'write') return 'change';
+  return output === 'change' ? 'report' : output;
+}
+
+export const STAGES: { id: Stage; label: string }[] = [
+  { id: 'plan', label: 'Plan' },
+  { id: 'gather', label: 'Gather' },
+  { id: 'build', label: 'Build' },
+  { id: 'check', label: 'Check' },
+  { id: 'deliver', label: 'Deliver' },
+];
 
 const MAX_NODES = 24;
 const LAYER_W = 280;
@@ -29,37 +84,45 @@ export function freeId(taken: string[], prefix: string): string {
   for (let i = 1; ; i++) if (!used.has(`${prefix}${i}`)) return `${prefix}${i}`;
 }
 
-/** Cheap and quick for reading, the strongest model for the roles that decide. Every node can change it. */
-export function defaultModel(role: Role, models: Models): { engine: 'claude' | 'codex'; model: string } {
-  const codex = (name: string) => models.codex.includes(name);
-  if (role === 'orchestrator' || role === 'judge') return { engine: 'claude', model: 'opus' };
-  if (role === 'builder') return codex('gpt-6.1-sol') ? { engine: 'codex', model: 'gpt-6.1-sol' } : { engine: 'claude', model: 'sonnet' };
-  if (role === 'search') return codex('gpt-6-luna') ? { engine: 'codex', model: 'gpt-6-luna' } : { engine: 'claude', model: 'haiku' };
-  return { engine: 'claude', model: 'sonnet' };
+/** The model a new agent of this role starts on: what the role prefers, if that model is on offer. */
+export function defaultModel(def: RoleDef, models: Models): { engine: 'claude' | 'codex'; model: string } {
+  if (def.prefer === 'codex' && def.codexModel && models.codex.includes(def.codexModel)) return { engine: 'codex', model: def.codexModel };
+  return { engine: 'claude', model: models.claude.includes(def.claudeModel) ? def.claudeModel : (models.claude[0] ?? def.claudeModel) };
 }
 
-const DEFAULT_PROMPT: Record<Role, string> = {
-  orchestrator: 'You are the orchestrator. Turn the brief into a short, concrete plan the other agents can follow. Do not do the work yourself.',
-  researcher: 'You are a researcher. Find out what is needed to do the task well and report findings with their sources. Do not change files.',
-  search: 'You are a search agent. Locate the files, symbols and facts the task touches and report exact locations. Do not change files.',
-  analyst: 'You are an analyst. Weigh the findings you are given, point out risks, and recommend one approach with reasons. Do not change files.',
-  judge: 'You are a strict reviewer. Approve only if the work is correct and complete; otherwise reject and say exactly what to fix.',
-  builder: 'You are the builder. Do the work described by the plan and findings, keep changes small, run the checks, and report what you changed.',
+const uniqueName = (flow: Flow, label: string) => {
+  const same = flow.nodes.filter((n) => roleLabel(n) === label).length;
+  return same ? `${label} ${same + 1}` : label;
 };
 
-export function newNode(flow: Flow, role: Role, models: Models, at: { x: number; y: number }): FlowNode {
-  const { engine, model } = defaultModel(role, models);
-  const same = flow.nodes.filter((n) => n.role === role).length;
-  const label = ROLE_INFO[role].label;
+export function newNode(flow: Flow, def: RoleDef, models: Models, at: { x: number; y: number }): FlowNode {
+  const { engine, model } = defaultModel(def, models);
   return {
     id: freeId(flow.nodes.map((n) => n.id), 'n'),
-    name: same ? `${label} ${same + 1}` : label,
-    role,
+    name: uniqueName(flow, def.label),
+    role: def.id,
     engine,
     model,
-    systemPrompt: DEFAULT_PROMPT[role],
-    // A builder changes files, so it waits for the user by default.
-    checkpoint: role === 'builder',
+    systemPrompt: def.prompt,
+    checkpoint: def.checkpoint,
+    tokenCap: null,
+    keepModel: false,
+    x: Math.round(at.x),
+    y: Math.round(at.y),
+  };
+}
+
+/** An agent in a role the user designed. It starts on a balanced Claude model; every node can change it. */
+export function newCustomNode(flow: Flow, role: CustomRole, instructions: string, models: Models, at: { x: number; y: number }): FlowNode {
+  return {
+    id: freeId(flow.nodes.map((n) => n.id), 'n'),
+    name: uniqueName(flow, role.label),
+    role: 'custom',
+    custom: { ...role, output: consistent(role.capability, role.output) },
+    engine: 'claude',
+    model: models.claude.includes('sonnet') ? 'sonnet' : (models.claude[0] ?? 'sonnet'),
+    systemPrompt: instructions,
+    checkpoint: role.capability === 'write',
     tokenCap: null,
     keepModel: false,
     x: Math.round(at.x),
@@ -100,8 +163,8 @@ export function connectionProblem(flow: Flow, from: string, to: string, kind: Ed
     if (reaches(flow.edges, to, from)) return 'That would make a loop; only a judge’s retry edge may go back';
     return null;
   }
-  if (a.role !== 'judge') return 'Only a judge can send work back';
-  if (b.role !== 'builder') return 'A judge can only send work back to a builder';
+  if (!decides(a)) return 'Only an agent that gives a verdict can send work back';
+  if (!writes(b)) return 'Work can only be sent back to an agent that changes files';
   if (!reaches(flow.edges, to, from)) return 'Send work back to an agent that runs before the judge';
   return null;
 }
@@ -197,10 +260,10 @@ export function pauseInfo(run: Run): PauseInfo | null {
   switch (p.kind) {
     case 'approval': {
       const n = run.flow.nodes.find((x) => x.id === p.node);
-      const writes = n && n.role === 'builder';
+      const changes = !!n && writes(n);
       return {
         title: `${name(p.node)} is ready to start`,
-        detail: writes ? 'It will change files in its own copy of the project. Look at the plan, then approve.' : 'Look at what came before, then approve.',
+        detail: changes ? 'It will change files in its own copy of the project. Look at the plan, then approve.' : 'Look at what came before, then approve.',
         primary: { label: `Approve ${name(p.node)}`, action: 'approve', node: p.node },
       };
     }
@@ -224,7 +287,7 @@ export function pauseInfo(run: Run): PauseInfo | null {
 /** Where a builder's work is kept: its own branch in the project, in its own worktree. */
 export function builderBranches(run: Run): { node: string; name: string; branch: string }[] {
   return run.flow.nodes
-    .filter((n) => n.role === 'builder' && (run.nodes[n.id]?.attempts ?? 0) > 0)
+    .filter((n) => writes(n) && (run.nodes[n.id]?.attempts ?? 0) > 0)
     .map((n) => ({ node: n.id, name: n.name, branch: `ttm-orch/${run.id}-${n.id}` }));
 }
 

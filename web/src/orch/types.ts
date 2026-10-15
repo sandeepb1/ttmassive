@@ -1,6 +1,34 @@
 // The server's orchestrator JSON, as the page sees it. Field names are the ones src/orch/*.rs write.
 
-export type Role = 'orchestrator' | 'researcher' | 'search' | 'analyst' | 'judge' | 'builder';
+/** A built-in role's id, or `custom`. The server's catalog (`/api/orch/roles`) says which exist. */
+export type Role = string;
+export type Capability = 'read' | 'inspect' | 'write';
+export type Output = 'plan' | 'report' | 'change' | 'verdict';
+export type Stage = 'plan' | 'gather' | 'build' | 'check' | 'deliver';
+
+/** What makes a custom role what it is; kept on the node. */
+export interface CustomRole {
+  label: string;
+  capability: Capability;
+  output: Output;
+}
+
+/** A built-in role, as the server describes it. */
+export interface RoleDef {
+  id: Role;
+  label: string;
+  blurb: string;
+  stage: Stage;
+  icon: string;
+  capability: Capability;
+  output: Output;
+  core: boolean;
+  checkpoint: boolean;
+  prefer: Engine;
+  claudeModel: string;
+  codexModel?: string | null;
+  prompt: string;
+}
 export type Engine = 'claude' | 'codex';
 export type EdgeKind = 'forward' | 'retry';
 
@@ -8,6 +36,8 @@ export interface FlowNode {
   id: string;
   name: string;
   role: Role;
+  /** Present exactly when `role` is `custom`. */
+  custom?: CustomRole | null;
   engine: Engine;
   model: string;
   systemPrompt: string;

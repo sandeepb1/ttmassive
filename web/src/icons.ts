@@ -2,13 +2,13 @@
 // names, so the set can change without touching them.
 
 import {
-  ArrowDown, ArrowLeft, ArrowUp, BookOpen, Bot, ChevronDown, ChevronRight, ChevronUp, Columns2, Command, createElement, Dot, Ellipsis, FileCheck, FileText, Folder,
+  ArrowDown, ArrowLeft, ArrowUp, BookOpen, Bot, Bug, ChevronDown, ChevronRight, ChevronUp, Columns2, Command, createElement, Dot, Ellipsis, FileCheck, FileText, Folder,
   Gavel, GitBranch, Globe, Hammer, Grid2x2, Image, Info, Layers, ListChecks, Menu, Minus, PanelLeft, PanelRight, Pause, Pencil, Play, Plus, Radar, RotateCcw, Route,
   Save, Scale, Search, ShieldAlert, SlidersHorizontal, Sparkles, Square, Terminal, Trash2, WandSparkles, Workflow, X, Check, CircleAlert,
   type IconNode,
 } from 'lucide';
 
-export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command' | 'memory' | 'route' | 'more' | 'arrow-up' | 'arrow-down' | 'stop' | 'minus' | 'shield-alert' | 'play' | 'pause' | 'check' | 'alert' | 'back' | 'save' | 'trash' | 'wand' | 'retry' | 'radar' | 'workflow' | 'book' | 'scale' | 'gavel' | 'hammer';
+export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command' | 'memory' | 'route' | 'more' | 'arrow-up' | 'arrow-down' | 'stop' | 'minus' | 'shield-alert' | 'play' | 'pause' | 'check' | 'alert' | 'back' | 'save' | 'trash' | 'wand' | 'retry' | 'radar' | 'workflow' | 'book' | 'scale' | 'gavel' | 'hammer' | 'bug';
 
 const NODES: Record<IconName, IconNode> = {
   shell: Terminal,
@@ -60,6 +60,7 @@ const NODES: Record<IconName, IconNode> = {
   scale: Scale,
   gavel: Gavel,
   hammer: Hammer,
+  bug: Bug,
 };
 
 /** The category a tool belongs to, for its icon and tint. */
@@ -89,6 +90,9 @@ export function toolCategory(tool: string): ToolCategory {
 export function toolIconName(cat: ToolCategory): IconName {
   return cat === 'other' ? 'dot' : cat;
 }
+
+/** Whether `name` is an icon we have: the server names a role's icon, and a name we lack falls back to a generic one. */
+export const hasIcon = (name: string): name is IconName => Object.hasOwn(NODES, name);
 
 export function icon(name: IconName, cls = 'icon-svg'): SVGSVGElement {
   return createElement(NODES[name], { width: 16, height: 16, 'aria-hidden': 'true', class: cls }) as SVGSVGElement;

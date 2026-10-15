@@ -735,6 +735,62 @@ textarea.mc-field {
   padding: 0 0.625rem;
 }
 
+/* The "More roles" panel that opens above the palette */
+.mc-addpanel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.5rem);
+  width: min(22rem, calc(100vw - 2rem));
+  max-height: min(28rem, 60vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-lg);
+  background: var(--mc-panel);
+  box-shadow: 0 1rem 2.5rem oklch(0 0 0 / 0.55);
+}
+.mc-addgroup {
+  display: grid;
+  gap: 0.125rem;
+  margin-bottom: 0.5rem;
+}
+.mc-addgroup:last-child {
+  margin-bottom: 0;
+}
+.mc-addgroup > .mc-label {
+  margin: 0.25rem 0.5rem 0.125rem;
+}
+.mc-addrow {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.mc-addrow:hover,
+.mc-addrow:focus-visible {
+  background: var(--mc-hover);
+  outline: none;
+}
+.mc-addtext {
+  display: grid;
+  min-width: 0;
+}
+.mc-addname {
+  font-weight: 600;
+}
+.mc-addblurb {
+  color: var(--mc-faint);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
 /* The run bar floating over the top of the canvas */
 .mc-runbar {
   position: absolute;

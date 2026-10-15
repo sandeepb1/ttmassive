@@ -1,7 +1,7 @@
 // Calls to /api/orch. A failure comes back as a message to show; a 401 reloads the page to the login.
 
 import { fetchRecentDirs, type RecentDir } from '../dirs';
-import type { Flow, FlowLists, Models, Role, Run, RunSummary, UsageSnapshot } from './types';
+import type { Capability, CustomRole, Flow, FlowLists, Models, Output, Role, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -43,8 +43,11 @@ export const orch = {
   flows: () => send<FlowLists>('GET', `${base}/flows`),
   saveFlow: (f: Flow) => send<void>('PUT', `${base}/flows/${encodeURIComponent(f.id)}`, f),
   deleteFlow: (id: string) => send<void>('DELETE', `${base}/flows/${encodeURIComponent(id)}`),
-  nodePrompt: (role: Role, name: string, goal: string) =>
-    send<{ systemPrompt: string }>('POST', `${base}/node-prompt`, { role, name, goal }),
+  roles: () => send<RoleDef[]>('GET', `${base}/roles`),
+  nodePrompt: (role: Role, custom: CustomRole | null | undefined, name: string, goal: string) =>
+    send<{ systemPrompt: string }>('POST', `${base}/node-prompt`, { role, custom: custom ?? null, name, goal }),
+  customRole: (description: string) =>
+    send<{ label: string; capability: Capability; output: Output; instructions: string }>('POST', `${base}/custom-role`, { description }),
   runs: () => send<RunSummary[]>('GET', `${base}/runs`),
   getRun: (id: string) => send<Run>('GET', run(id)),
   createRun: (req: { flow: Flow; goal: string; project: string; skipGrill: boolean }) => send<Run>('POST', `${base}/runs`, req),

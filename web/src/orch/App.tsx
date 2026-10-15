@@ -4,16 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import type { RecentDir } from '../dirs';
 import { orch, watchRun } from './api';
-import { Icon, ROLE_ICON } from './bits';
-import { GrillDialog, NewRunDialog, SuggestDialog } from './Dialogs';
+import { Icon, iconFor } from './bits';
+import { CustomRoleDialog, GrillDialog, NewRunDialog, SuggestDialog, type RoleDraft } from './Dialogs';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
 import { Inspector } from './Inspector';
 import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
 import { Sidebar } from './Sidebar';
 import { UsageMeters } from './UsageMeters';
-import { ROLES, ROLE_INFO, emptyFlow, flowProblem, gauges, newNode, tidy } from './model';
-import type { Flow, FlowLists, Models, Role, Run, RunSummary, UsageSnapshot } from './types';
+import { CAPABILITY_TEXT, STAGES, emptyFlow, flowProblem, gauges, getCatalog, newCustomNode, newNode, roleDef, setCatalog, tidy } from './model';
+import type { Flow, FlowLists, Models, Role, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
 
 const PHONE = '(max-width: 699px)';
 const WIDE = '(min-width: 1100px)';
@@ -32,15 +32,77 @@ function useMedia(query: string): boolean {
 const newFlowId = () => `f${Date.now().toString(36)}`;
 const cloneFlow = (f: Flow): Flow => ({ ...structuredClone(f), id: newFlowId() });
 
-function Palette({ count, onAdd }: { count: number; onAdd: (role: Role, at: { x: number; y: number }) => void }) {
+/** The agents that can be added, grouped by where they sit in a flow, with the ones most flows need first. */
+function AddAgent({ roles, count, onAdd, onCustom }: { roles: RoleDef[]; count: number; onAdd: (role: Role, at: { x: number; y: number }) => void; onCustom: () => void }) {
   const center = useViewportCenter();
+  const [open, setOpen] = useState(false);
+  const core = roles.filter((r) => r.core);
+  const add = (role: Role) => {
+    onAdd(role, center(count));
+    setOpen(false);
+  };
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  }, [open]);
   return (
     <div className="mc-palette" role="toolbar" aria-label="Add an agent">
-      {ROLES.map((role) => (
-        <button key={role} type="button" className="mc-btn" title={ROLE_INFO[role].blurb} onClick={() => onAdd(role, center(count))}>
-          <Icon name={ROLE_ICON[role]} /> {ROLE_INFO[role].label}
+      {open && (
+        <div className="mc-addpanel" role="menu" aria-label="All roles">
+          {STAGES.map((st) => {
+            const list = roles.filter((r) => r.stage === st.id);
+            if (!list.length) return null;
+            return (
+              <div key={st.id} className="mc-addgroup">
+                <label className="mc-label">{st.label}</label>
+                {list.map((r) => (
+                  <button key={r.id} type="button" role="menuitem" className="mc-addrow" onClick={() => add(r.id)}>
+                    <span className="mc-role">
+                      <Icon name={iconFor({ role: r.id })} />
+                    </span>
+                    <span className="mc-addtext">
+                      <span className="mc-addname">{r.label}</span>
+                      <span className="mc-addblurb">
+                        {r.blurb} · {CAPABILITY_TEXT[r.capability].toLowerCase()}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+          <div className="mc-addgroup">
+            <label className="mc-label">Your own</label>
+            <button
+              type="button"
+              role="menuitem"
+              className="mc-addrow"
+              onClick={() => {
+                setOpen(false);
+                onCustom();
+              }}
+            >
+              <span className="mc-role">
+                <Icon name="wand" />
+              </span>
+              <span className="mc-addtext">
+                <span className="mc-addname">Custom role…</span>
+                <span className="mc-addblurb">Describe a job; Sonnet writes the instructions</span>
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
+      {core.map((r) => (
+        <button key={r.id} type="button" className="mc-btn" title={r.blurb} onClick={() => add(r.id)}>
+          <Icon name={iconFor({ role: r.id })} /> {r.label}
         </button>
       ))}
+      <button type="button" className="mc-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Icon name="plus" /> More roles
+      </button>
     </div>
   );
 }
@@ -73,6 +135,11 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const [view, setView] = useState<'canvas' | 'list'>('canvas');
   const [dialog, setDialog] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
+  const [roles, setRoles] = useState<RoleDef[]>(getCatalog());
+  const [customOpen, setCustomOpen] = useState(false);
+  const [draft, setDraft] = useState<RoleDraft | null>(null);
+  const [designing, setDesigning] = useState(false);
+  const [customError, setCustomError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,8 +163,12 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
 
   useEffect(() => {
     void (async () => {
-      const [m, f, rs, u, d] = await Promise.all([orch.models(), orch.flows(), orch.runs(), orch.usage(), orch.recentDirs()]);
+      const [m, f, rs, u, d, ro] = await Promise.all([orch.models(), orch.flows(), orch.runs(), orch.usage(), orch.recentDirs(), orch.roles()]);
       if (m.ok) setModels(m.data);
+      if (ro.ok) {
+        setCatalog(ro.data);
+        setRoles(ro.data);
+      }
       if (f.ok) {
         setLists(f.data);
         // The editor behind a run opened from a link starts on a starter too, not on a blank page.
@@ -215,7 +286,9 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   );
   const addNode = useCallback(
     (role: Role, at: { x: number; y: number }) => {
-      const n = newNode(flowRef.current, role, models, at);
+      const def = roleDef(role);
+      if (!def) return;
+      const n = newNode(flowRef.current, def, models, at);
       editFlow((f) => ({ ...f, nodes: [...f.nodes, n] }));
       setSelected(n.id);
       setInspOpen(true);
@@ -270,6 +343,27 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         say('Here is a flow for it. Change anything, then run it.');
       },
     );
+  const designRole = async (description: string) => {
+    setDesigning(true);
+    setCustomError(null);
+    const r = await orch.customRole(description);
+    setDesigning(false);
+    if (r.ok) setDraft({ label: r.data.label, capability: r.data.capability, output: r.data.output, instructions: r.data.instructions });
+    else setCustomError(r.error);
+  };
+  const addCustom = (d: RoleDraft) => {
+    const n = newCustomNode(flowRef.current, { label: d.label, capability: d.capability, output: d.output }, d.instructions, models, (() => {
+      const c = document.querySelector('.mc-stage')?.getBoundingClientRect();
+      const k = flowRef.current.nodes.length % 5;
+      return { x: (c ? c.width / 2 : 300) - 116 + k * 26, y: (c ? c.height / 2 : 200) - 60 + k * 26 };
+    })());
+    editFlow((f) => ({ ...f, nodes: [...f.nodes, n] }));
+    setSelected(n.id);
+    setInspOpen(true);
+    setCustomOpen(false);
+    setDraft(null);
+    say('Role added. Connect it to the other agents.');
+  };
   const popOut = async (runIdNow: string, node: string) => {
     const r = await orch.popOut(runIdNow, node);
     if (r.ok) {
@@ -381,7 +475,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           ) : (
             <ReactFlowProvider>
               <FlowCanvas flow={shown} run={run} selected={selected} editable={editable} onFlow={editFlow} onSelect={select} onProblem={say} fitToken={fitToken} viewKey={run ? `run-${run.id}` : flow.id} />
-              {editable && <Palette count={flow.nodes.length} onAdd={addNode} />}
+              {editable && <AddAgent roles={roles} count={flow.nodes.length} onAdd={addNode} onCustom={() => (setDraft(null), setCustomError(null), setCustomOpen(true))} />}
             </ReactFlowProvider>
           )}
           {editable && flow.nodes.length === 0 && (
@@ -402,6 +496,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               {toast}
             </div>
           )}
+          {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
           {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
           {dialog && <NewRunDialog flow={flow} recents={recents} busy={busy} error={error} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
           {run?.status.state === 'grilling' && (
@@ -428,7 +523,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             onFlow={(patch) => editFlow((f) => ({ ...f, ...patch }))}
             onDelete={(id) => (editFlow((f) => ({ ...f, nodes: f.nodes.filter((n) => n.id !== id), edges: f.edges.filter((e) => e.from !== id && e.to !== id) })), setSelected(null))}
             onWritePrompt={async (n) => {
-              const r = await orch.nodePrompt(n.role, n.name, run?.goal ?? shown.name);
+              const r = await orch.nodePrompt(n.role, n.custom, n.name, run?.goal ?? shown.name);
               if (!r.ok) {
                 say(r.error);
                 return null;

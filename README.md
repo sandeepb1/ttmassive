@@ -708,10 +708,24 @@ A team of agents on one task. Open it from **Orchestrator** at the bottom of the
 **Orchestrator mode…** in the command bar. It covers the whole screen with a flow chart; **←** goes back to your
 sessions, which keep running underneath. Its address is `#orch/`, or `#orch/<run>` for a run you can bookmark.
 
-- **A flow** is agents joined by arrows: who hands its result to whom. Add an orchestrator, researcher, search,
-  analyst, judge or builder from the bar under the chart, drag from one agent's right dot to the next one's left dot,
-  and give each a **Claude Code** model (opus, sonnet, haiku) or a **Codex** one (the list is asked of Codex itself).
-  A judge's bottom dot drags to an earlier builder to **send work back**. **Write with Sonnet** drafts an agent's
+- **A flow** is agents joined by arrows: who hands its result to whom. Add agents from the bar under the chart
+  (the four most flows need, and **More roles** for the rest), drag from one agent's right dot to the next one's left
+  dot, and give each a **Claude Code** model (opus, sonnet, haiku) or a **Codex** one (the list is asked of Codex
+  itself). An agent that gives a verdict has a bottom dot that drags to an earlier agent that changes files, to
+  **send work back**.
+- **Roles.** Nine, chosen from published evidence on multi-agent systems (see `docs/research/multi-agent-roles.md`
+  for the sources and what could not be verified), in stages: *Plan* (orchestrator, architect), *Gather* (search,
+  researcher, analyst, debugger), *Build* (builder), *Check* (judge) and *Deliver* (reporter). Each is a fixed set of
+  instructions plus two properties that decide what it may do and what it hands back: it **reads**, **reads and runs
+  checks** in a sandbox, or **changes files** (in its own copy of the project); and it hands back a plan, a report, a
+  change, or a verdict. The research's advice is built in: one writer per piece of work, a judge that runs the checks
+  and a different model from the builder, and most flows of three to five agents. The five starters (Feature, Bug fix,
+  Refactor, Code review, Research report) are those flow shapes.
+- **Custom roles.** **More roles → Custom role…**: describe a job in your own words and Sonnet picks what it may do and
+  what it hands back and writes its instructions; you check and change all of it before it is added. The rules are
+  enforced on what it may do, not on its name: an agent that changes files always reports a change and asks first, and
+  one that gives verdicts can never be able to change files, so a reviewer cannot edit what it reviews. A custom agent
+  that gives a verdict can send work back like a judge, and its role can be edited later in the details panel. **Write with Sonnet** drafts an agent's
   instructions. **Save** keeps a flow; two starters are built in. In the **Flows** tab, **Suggest** takes a description
   of the work and has Sonnet design the team (it opens for you to change; nothing runs), and the copy button on a
   saved flow opens a duplicate to edit, so a flow can serve as a template.

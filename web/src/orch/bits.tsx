@@ -1,23 +1,21 @@
 // Small shared pieces: icons, the switch, the status pill.
 
 import { memo, useMemo, type ReactNode } from 'react';
-import { icon, type IconName } from '../icons';
+import { hasIcon, icon, type IconName } from '../icons';
 import { statusLabel } from './model';
-import type { Role, RunStatus } from './types';
+import { roleIconName } from './model';
+import type { FlowNode, RunStatus } from './types';
 
 export const Icon = memo(function Icon({ name }: { name: IconName }) {
   const html = useMemo(() => icon(name).outerHTML, [name]);
   return <span className="mc-ico" aria-hidden="true" style={{ display: 'inline-flex' }} dangerouslySetInnerHTML={{ __html: html }} />;
 });
 
-export const ROLE_ICON: Record<Role, IconName> = {
-  orchestrator: 'workflow',
-  researcher: 'book',
-  search: 'search',
-  analyst: 'radar',
-  judge: 'scale',
-  builder: 'hammer',
-};
+/** The icon for an agent's role. A role the server names an icon we do not have still gets one. */
+export function iconFor(n: Pick<FlowNode, 'role' | 'custom'>): IconName {
+  const name = roleIconName(n);
+  return hasIcon(name) ? name : 'agent';
+}
 
 export function Switch({ on, onChange, label, hint, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; hint?: string; disabled?: boolean }) {
   return (

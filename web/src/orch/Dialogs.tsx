@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
 import { Icon, Field, Switch } from './bits';
-import { answersFor } from './model';
-import type { Flow, Run } from './types';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, consistent } from './model';
+import type { Capability, Flow, Output, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
 
@@ -127,6 +127,123 @@ export function NewRunDialog({ flow, recents, busy, error, onCreate, onClose }: 
         Stops at {b.stopWindowPct}% of any plan window, or when the run has used {b.claudePct}% of Claude’s or {b.codexPct}% of Codex’s 5-hour window. Change these in the flow settings.
       </p>
       {error && <p className="mc-error">{error}</p>}
+    </Dialog>
+  );
+}
+
+/** What the user ends up with from the custom-role dialog. */
+export interface RoleDraft {
+  label: string;
+  capability: Capability;
+  output: Output;
+  instructions: string;
+}
+
+export function CustomRoleDialog({ busy, error, draft, onDesign, onAdd, onClose }: {
+  busy: boolean;
+  error: string | null;
+  /** Set once Sonnet has designed the role; the user can then change anything before adding it. */
+  draft: RoleDraft | null;
+  onDesign: (description: string) => void;
+  onAdd: (d: RoleDraft) => void;
+  onClose: () => void;
+}) {
+  const [description, setDescription] = useState('');
+  const [d, setD] = useState<RoleDraft | null>(draft);
+  useEffect(() => setD(draft), [draft]);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => ref.current?.focus(), []);
+  const set = (patch: Partial<RoleDraft>) => setD((cur) => {
+    if (!cur) return cur;
+    const next = { ...cur, ...patch };
+    return { ...next, output: consistent(next.capability, next.output) };
+  });
+
+  if (!d) {
+    return (
+      <Dialog
+        title="Custom role"
+        onClose={busy ? undefined : onClose}
+        foot={
+          <>
+            <button type="button" className="mc-btn" disabled={busy} onClick={onClose}>
+              Cancel
+            </button>
+            <button type="button" className="mc-btn mc-btn-primary" disabled={busy || description.trim().length < 8} onClick={() => onDesign(description.trim())}>
+              <Icon name="wand" /> {busy ? 'Designing…' : 'Design with Sonnet'}
+            </button>
+          </>
+        }
+      >
+        <Field label="What should this agent do?" hint="Describe the job in your own words. Sonnet picks what it may do, what it hands back, and writes its instructions. You can change all of it before it is added.">
+          <textarea
+            ref={ref}
+            className="mc-field"
+            rows={5}
+            value={description}
+            maxLength={2000}
+            disabled={busy}
+            placeholder="e.g. Check the change for security problems such as injection and unsafe input handling, and reject it if it finds any"
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </Field>
+        {busy && (
+          <div className="mc-thinking" role="status">
+            <span className="mc-spinner" /> Designing the role…
+          </div>
+        )}
+        {error && <p className="mc-error">{error}</p>}
+      </Dialog>
+    );
+  }
+
+  const ok = d.label.trim() !== '' && d.instructions.trim().length >= 40;
+  return (
+    <Dialog
+      title="Check the role"
+      onClose={onClose}
+      foot={
+        <>
+          <button type="button" className="mc-btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="mc-btn mc-btn-primary" disabled={!ok} onClick={() => onAdd({ ...d, label: d.label.trim(), instructions: d.instructions.trim() })}>
+            <Icon name="plus" /> Add to the flow
+          </button>
+        </>
+      }
+    >
+      <Field label="Name">
+        <input className="mc-field" value={d.label} maxLength={40} onChange={(e) => set({ label: e.target.value })} />
+      </Field>
+      <div className="mc-grid2">
+        <Field label="May">
+          <select className="mc-field" value={d.capability} onChange={(e) => set({ capability: e.target.value as Capability })}>
+            {(Object.keys(CAPABILITY_SHORT) as Capability[]).map((c) => (
+              <option key={c} value={c}>
+                {CAPABILITY_SHORT[c]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Hands back">
+          <select className="mc-field" value={d.output} disabled={d.capability === 'write'} onChange={(e) => set({ output: e.target.value as Output })}>
+            {(Object.keys(OUTPUT_TEXT) as Output[])
+              .filter((o) => (d.capability === 'write' ? o === 'change' : o !== 'change'))
+              .map((o) => (
+                <option key={o} value={o}>
+                  {OUTPUT_TEXT[o]}
+                </option>
+              ))}
+          </select>
+        </Field>
+      </div>
+      <p className="mc-hint" style={{ margin: '0 0 1rem' }}>
+        {d.capability === 'write' ? 'It will ask you before it starts, and work in its own copy of the project.' : d.output === 'verdict' ? 'It can send work back to an agent that changes files.' : 'It cannot change any file.'}
+      </p>
+      <Field label="Instructions" hint="Sent the same way on every turn, so the prompt cache holds. The goal is given separately.">
+        <textarea className="mc-field" rows={8} value={d.instructions} maxLength={2000} onChange={(e) => set({ instructions: e.target.value })} />
+      </Field>
     </Dialog>
   );
 }

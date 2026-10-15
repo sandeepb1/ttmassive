@@ -3,16 +3,18 @@ import assert from 'node:assert/strict';
 import {
   awaitingApproval, cacheBreakCount, fmtDuration, modelShown, summary,
   addEdge, answersFor, cacheHit, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
-  builderBranches, newNode, pauseInfo, removeNode, runOrder, runTokens, statusLabel, tidy,
+  builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
+  setCatalog, STAGES, statusLabel, tidy, writes,
 } from './model.ts';
 import type { Flow, Models, Role, Run, UsageSnapshot } from './types.ts';
 
 const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'] };
 const at = { x: 0, y: 0 };
+const def = (id: Role) => roleDef(id)!;
 
 function line(): Flow {
   let f = emptyFlow('f', 'Line');
-  for (const r of ['orchestrator', 'researcher', 'builder', 'judge'] as Role[]) f = { ...f, nodes: [...f.nodes, newNode(f, r, models, at)] };
+  for (const r of ['orchestrator', 'researcher', 'builder', 'judge'] as Role[]) f = { ...f, nodes: [...f.nodes, newNode(f, def(r), models, at)] };
   const [a, b, c, d] = f.nodes.map((n) => n.id) as [string, string, string, string];
   f = addEdge(f, a, b, 'forward');
   f = addEdge(f, b, c, 'forward');
@@ -26,20 +28,22 @@ test('ids are the first free one', () => {
 });
 
 test('roles get sensible default models, falling back when Codex has none', () => {
-  assert.deepEqual(defaultModel('judge', models), { engine: 'claude', model: 'opus' });
-  assert.deepEqual(defaultModel('builder', models), { engine: 'codex', model: 'gpt-6.1-sol' });
-  assert.deepEqual(defaultModel('search', models), { engine: 'codex', model: 'gpt-6-luna' });
-  const none: Models = { claude: ['opus'], codex: [] };
-  assert.deepEqual(defaultModel('builder', none), { engine: 'claude', model: 'sonnet' });
-  assert.deepEqual(defaultModel('search', none), { engine: 'claude', model: 'haiku' });
+  assert.deepEqual(defaultModel(def('judge'), models), { engine: 'claude', model: 'opus' });
+  assert.deepEqual(defaultModel(def('builder'), models), { engine: 'codex', model: 'gpt-6.1-sol' });
+  assert.deepEqual(defaultModel(def('search'), models), { engine: 'codex', model: 'gpt-6-luna' });
+  const none: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: [] };
+  assert.deepEqual(defaultModel(def('builder'), none), { engine: 'claude', model: 'sonnet' });
+  assert.deepEqual(defaultModel(def('search'), none), { engine: 'claude', model: 'haiku' });
+  // A role's preferred model that is not on offer falls back to one that is, not to a name that may not exist.
+  assert.deepEqual(defaultModel(def('builder'), { claude: ['opus'], codex: [] }), { engine: 'claude', model: 'opus' });
 });
 
 test('a new builder waits for approval and a second node of a role is numbered', () => {
   const f = line();
   assert.equal(f.nodes[2]!.checkpoint, true);
   assert.equal(f.nodes[1]!.checkpoint, false);
-  assert.equal(newNode(f, 'builder', models, at).name, 'Builder 2');
-  assert.equal(newNode(f, 'search', models, at).name, 'Search');
+  assert.equal(newNode(f, def('builder'), models, at).name, 'Builder 2');
+  assert.equal(newNode(f, def('search'), models, at).name, 'Search');
 });
 
 test('removing an agent removes its edges', () => {
@@ -61,11 +65,11 @@ test('retry edges: judge to an earlier builder only', () => {
   const f = line();
   assert.equal(connectionProblem(f, 'n4', 'n3', 'retry'), null);
   assert.match(connectionProblem(f, 'n3', 'n3', 'retry')!, /itself/);
-  assert.match(connectionProblem(f, 'n2', 'n3', 'retry')!, /Only a judge/);
-  assert.match(connectionProblem(f, 'n4', 'n2', 'retry')!, /builder/);
+  assert.match(connectionProblem(f, 'n2', 'n3', 'retry')!, /verdict/);
+  assert.match(connectionProblem(f, 'n4', 'n2', 'retry')!, /changes files/);
   // A builder that runs after the judge cannot be sent back to.
   let g = f;
-  g = { ...g, nodes: [...g.nodes, newNode(g, 'builder', models, at)] };
+  g = { ...g, nodes: [...g.nodes, newNode(g, def('builder'), models, at)] };
   g = addEdge(g, 'n4', 'n5', 'forward');
   assert.match(connectionProblem(g, 'n4', 'n5', 'retry')!, /before/);
 });
@@ -88,7 +92,7 @@ test('a retry edge does not change the layout, and a loop gives no layout', () =
 
 test('branches share a column', () => {
   let f = line();
-  f = { ...f, nodes: [...f.nodes, newNode(f, 'search', models, at)] };
+  f = { ...f, nodes: [...f.nodes, newNode(f, def('search'), models, at)] };
   f = addEdge(f, 'n1', 'n5', 'forward');
   f = addEdge(f, 'n5', 'n3', 'forward');
   assert.deepEqual(layers(f)[1], ['n2', 'n5']);
@@ -101,7 +105,7 @@ test('flowProblem says what stops a flow being saved', () => {
   assert.match(flowProblem(emptyFlow('f', ''))!, /name/);
   assert.match(flowProblem(emptyFlow('f', 'x'))!, /at least one/);
   assert.match(flowProblem(addEdge(line(), 'n4', 'n1', 'forward'))!, /loop/);
-  assert.match(flowProblem(addEdge(line(), 'n2', 'n3', 'retry'))!, /judge/);
+  assert.match(flowProblem(addEdge(line(), 'n2', 'n3', 'retry'))!, /verdict/);
   const bad = line();
   bad.budget.claudePct = 0;
   assert.match(flowProblem(bad)!, /Budget/);
@@ -238,4 +242,81 @@ test('a run summary counts what happened', () => {
   assert.equal(s.sentBack, 1);
   assert.equal(s.tokens, 210, 'two agents of 100 tokens each, plus 10 of overhead (the questions)');
   assert.equal(summary({ ...r, finished: null }).duration, null);
+});
+
+// ---------------------------------------------------------------------------- roles
+
+const customReviewer = (capability: 'read' | 'inspect' | 'write', output: 'plan' | 'report' | 'change' | 'verdict') =>
+  ({ label: 'Security reviewer', capability, output }) as const;
+
+test('a custom role is treated by what it may do, not by its name', () => {
+  let f = line(); // n1 orchestrator, n2 researcher, n3 builder, n4 judge
+  const reviewer = newCustomNode(f, customReviewer('inspect', 'verdict'), 'You review the change for security problems and report each with evidence.', models, at);
+  assert.equal(reviewer.role, 'custom');
+  assert.equal(reviewer.name, 'Security reviewer');
+  assert.equal(reviewer.checkpoint, false, 'it changes nothing, so it does not ask first');
+  f = { ...f, nodes: [...f.nodes, reviewer] };
+  f = addEdge(f, 'n3', reviewer.id, 'forward');
+  // It gives a verdict, so it may send work back to the builder, exactly like the built-in judge.
+  assert.equal(connectionProblem(f, reviewer.id, 'n3', 'retry'), null);
+  assert.equal(decides(reviewer), true);
+  assert.equal(writes(reviewer), false);
+  assert.equal(roleLabel(reviewer), 'Security reviewer');
+});
+
+test('a custom writer asks first and can be sent work back, and a custom reader cannot send it', () => {
+  const f = line();
+  const writer = newCustomNode(f, customReviewer('write', 'plan'), 'You make the change described and report exactly what you changed.', models, at);
+  assert.equal(writer.checkpoint, true);
+  assert.equal(writer.custom!.output, 'change', 'a writer reports a change whatever was asked for');
+  assert.equal(writes(writer), true);
+  const reader = newCustomNode(f, customReviewer('read', 'report'), 'You look things up and report what you found, with where you found it.', models, at);
+  const g = { ...f, nodes: [...f.nodes, reader] };
+  assert.match(connectionProblem(g, reader.id, 'n3', 'retry')!, /verdict/);
+});
+
+test('the same consistency rules as the server', () => {
+  assert.equal(consistent('write', 'verdict'), 'change');
+  assert.equal(consistent('write', 'report'), 'change');
+  assert.equal(consistent('read', 'change'), 'report');
+  assert.equal(consistent('inspect', 'change'), 'report');
+  assert.equal(consistent('inspect', 'verdict'), 'verdict');
+  assert.equal(consistent('read', 'plan'), 'plan');
+});
+
+test('a reviewer can never be made able to write, whatever it is asked for', () => {
+  for (const out of ['plan', 'report', 'change', 'verdict'] as const) {
+    assert.notEqual(consistent('read', out), 'change');
+    assert.notEqual(consistent('inspect', out), 'change');
+  }
+  // The only way to a verdict is without write access.
+  assert.notEqual(consistent('write', 'verdict'), 'verdict');
+});
+
+test('the catalog drives roles, labels and icons, and an unknown role is safe', () => {
+  setCatalog([{ ...def('builder'), id: 'welder', label: 'Welder', blurb: 'Joins things', icon: 'hammer' }]);
+  try {
+    assert.equal(roleLabel({ role: 'welder' }), 'Welder');
+    assert.equal(roleIconName({ role: 'welder' }), 'hammer');
+    assert.equal(writes({ role: 'welder' }), true);
+    // A role the page does not know reads and reports: the safe default, never write.
+    assert.equal(writes({ role: 'mystery' }), false);
+    assert.equal(roleLabel({ role: 'mystery' }), 'Agent');
+  } finally {
+    setCatalog([]); // back to the built-in six
+  }
+  assert.equal(roleLabel({ role: 'builder' }), 'Builder');
+  assert.equal(roleIconName({ custom: { label: 'X', capability: 'read', output: 'report' }, role: 'custom' }), 'wand');
+});
+
+test('every built-in role the page knows is offered in a stage, with the stages in flow order', () => {
+  const stages = STAGES.map((s) => s.id);
+  for (const d of getCatalog()) assert.ok(stages.includes(d.stage), d.id);
+  assert.deepEqual(stages, ['plan', 'gather', 'build', 'check', 'deliver']);
+});
+
+test('a flow with a custom role that has no definition is not accepted by the server, and the page agrees it is a custom role', () => {
+  const f = line();
+  const n = newCustomNode(f, customReviewer('read', 'report'), 'You look things up and report what you found, with where you found it.', models, at);
+  assert.equal(flowProblem({ ...f, nodes: [...f.nodes, n] }), null);
 });
