@@ -193,6 +193,8 @@ pub struct Output {
     pub text: String,
     pub credits: u64,
     pub usd: f64,
+    /// The same answer as data, for clients that take it: the tool's `outputSchema` describes it.
+    pub structured: Option<serde_json::Value>,
 }
 
 impl<T> Call<T> {

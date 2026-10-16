@@ -30,6 +30,14 @@ fn tool_result(id: &Value, text: String, is_error: bool) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": text}], "isError": is_error}})
 }
 
+/// A result that also carries the answer as data, which the tool's `outputSchema` describes. Only a success has any: a
+/// client that expects data from a tool with a schema accepts an error without it.
+fn data_result(id: &Value, text: String, data: Value) -> Value {
+    let mut v = tool_result(id, text, false);
+    v["result"]["structuredContent"] = data;
+    v
+}
+
 /// Answer one JSON-RPC message. `None` for a notification, which gets no answer.
 pub async fn handle_message(msg: &Value, token: &str, leases: &Leases, pool: Option<&Pool>) -> Option<Value> {
     let id = msg.get("id")?.clone();
@@ -59,7 +67,10 @@ pub async fn handle_message(msg: &Value, token: &str, leases: &Leases, pool: Opt
             let allowed = || leases.get(token).is_some_and(|l| !l.over_web_cap());
             let record = |credits: u64, usd: f64| leases.record_web(token, credits, usd);
             match tools::call(pool, Some(&Budget { allowed: &allowed, record: &record }), name, &args).await {
-                Ok(out) => tool_result(&id, out.text, false),
+                Ok(out) => match out.structured {
+                    Some(data) => data_result(&id, out.text, data),
+                    None => tool_result(&id, out.text, false),
+                },
                 Err(e) => tool_result(&id, format!("{e:#}"), true),
             }
         }
@@ -158,6 +169,38 @@ mod tests {
         let spent = l.get(&t).unwrap().spent;
         assert_eq!(spent.credits, 3, "2 for the search and 1 for the page");
         assert!((spent.web_usd - 0.03).abs() < 1e-9, "priced at the account's rate: {}", spent.web_usd);
+    }
+
+    #[tokio::test]
+    async fn the_tools_declare_their_data_and_a_success_carries_it() {
+        let (l, c) = (Leases::new(), firecrawl().await);
+        let list = handle_message(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), "t", &l, Some(&c)).await.unwrap();
+        for tool in list["result"]["tools"].as_array().unwrap() {
+            assert_eq!(tool["outputSchema"]["type"], "object", "{}", tool["name"]);
+        }
+        let t = l.mint("fc", "web", "tag", None);
+        let ok = handle_message(&call("web_search", json!({"query": "rust"})), &t, &l, Some(&c)).await.unwrap();
+        let r = &ok["result"];
+        assert_eq!(r["isError"], false);
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("1. A — https://a.test"), "the text is what a model reads");
+        assert_eq!(r["structuredContent"]["source"], "Firecrawl");
+        assert_eq!(r["structuredContent"]["results"][0]["url"], "https://a.test");
+        assert_eq!((r["structuredContent"]["credits"].clone(), r["structuredContent"]["costUsd"].clone()), (json!(2), json!(0.02)));
+    }
+
+    #[tokio::test]
+    async fn an_error_carries_no_data_because_a_client_does_not_expect_any() {
+        let (l, c) = (Leases::new(), firecrawl().await);
+        let t = l.mint("fc", "web", "tag", None);
+        let bad = handle_message(&call("scrape", json!({"url": "http://localhost:3000"})), &t, &l, Some(&c)).await.unwrap();
+        assert_eq!(bad["result"]["isError"], true);
+        assert!(bad["result"].get("structuredContent").is_none());
+        l.set_web_cap("tag", Some(0.001));
+        handle_message(&call("web_search", json!({"query": "rust"})), &t, &l, Some(&c)).await.unwrap();
+        let capped = handle_message(&call("web_search", json!({"query": "rust"})), &t, &l, Some(&c)).await.unwrap();
+        assert!(capped["result"]["isError"] == true && capped["result"].get("structuredContent").is_none(), "a refusal at the cap is an error too");
+        let gone = handle_message(&call("web_search", json!({"query": "x"})), "no-such-token", &l, Some(&c)).await.unwrap();
+        assert!(gone["result"]["isError"] == true && gone["result"].get("structuredContent").is_none());
     }
 
     #[tokio::test]

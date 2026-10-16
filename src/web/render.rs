@@ -21,6 +21,31 @@ pub fn cut(s: &str, max: usize) -> String {
     format!("{}\n\n[… {} more characters left out]", s.chars().take(max).collect::<String>(), n - max)
 }
 
+/// The hits with each snippet cut to the size the text shows.
+pub fn capped_hits(hits: &[SearchHit]) -> Vec<SearchHit> {
+    hits.iter().map(|h| SearchHit { snippet: cut(&h.snippet, 300), ..h.clone() }).collect()
+}
+
+/// The page with its text cut to `max`.
+pub fn capped_page(p: &Page, max: usize) -> Page {
+    Page { markdown: cut(&p.markdown, max), ..p.clone() }
+}
+
+/// The crawl with each page cut to `per_page`, and pages left out once the whole would pass `total` characters.
+pub fn capped_crawl(c: &Crawl, per_page: usize, total: usize) -> Crawl {
+    let mut used = 0usize;
+    let mut pages = Vec::new();
+    for p in &c.pages {
+        let page = capped_page(p, per_page);
+        used += page.markdown.chars().count();
+        pages.push(page);
+        if used > total {
+            break;
+        }
+    }
+    Crawl { pages }
+}
+
 pub fn search(hits: &[SearchHit]) -> String {
     if hits.is_empty() {
         return "No results.".into();
@@ -92,6 +117,19 @@ mod tests {
 
     fn pg(title: &str, url: &str, md: &str) -> Page {
         Page { url: url.into(), title: title.into(), markdown: md.into() }
+    }
+
+    #[test]
+    fn the_data_is_cut_to_the_sizes_the_text_is() {
+        let long = hit("T", "u", &"y".repeat(400));
+        let capped = capped_hits(&[long.clone()]);
+        assert!(capped[0].snippet.contains("100 more characters") && capped[0].title == "T");
+        assert_eq!(capped_page(&pg("P", "u", &"x".repeat(50)), 10).markdown.chars().take(10).collect::<String>(), "xxxxxxxxxx");
+        assert!(capped_page(&pg("P", "u", "short"), 10).markdown == "short");
+        let big = Crawl { pages: (0..5).map(|i| pg("P", &format!("u{i}"), &"z".repeat(100))).collect() };
+        assert_eq!(capped_crawl(&big, 100, 250).pages.len(), 3, "pages stop once the total is passed");
+        assert_eq!(capped_crawl(&big, 100, 10_000).pages.len(), 5);
+        assert!(capped_crawl(&Crawl { pages: vec![] }, 10, 10).pages.is_empty());
     }
 
     #[test]
