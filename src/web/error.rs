@@ -18,6 +18,8 @@ pub enum Kind {
     BadKey,
     /// Too many requests; try again after a while.
     RateLimited,
+    /// This service will not handle that address; another may.
+    Unsupported,
     /// The request itself was refused (bad arguments, an address it will not fetch): another account would say the same.
     Rejected,
 }
@@ -36,6 +38,7 @@ impl Kind {
             Kind::Exhausted => "is out of credits",
             Kind::BadKey => "refused its key",
             Kind::RateLimited => "is rate limited",
+            Kind::Unsupported => "does not support that address",
             Kind::Rejected => "refused the request",
         }
     }

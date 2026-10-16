@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::error::{self, Kind, ProviderError};
 use super::render;
-use super::types::{Crawl, Fetched, MapEntry, Page, SearchHit, SiteMap};
+use super::types::{Crawl, Fetched, MapEntry, Page, SearchHit, SearchOpts, SiteMap};
 use crate::secrets::Account;
 
 pub const DEFAULT_URL: &str = "https://api.firecrawl.dev";
@@ -86,8 +86,15 @@ impl Client {
         Ok(Balance { remaining: n("remainingCredits").context("no balance in the answer")?, plan: n("planCredits").unwrap_or(0) })
     }
 
-    pub async fn search_hits(&self, query: &str, limit: u32) -> Result<Fetched<Vec<SearchHit>>> {
-        let v = self.call(reqwest::Method::POST, "/v2/search", Some(json!({"query": query, "limit": limit.clamp(1, MAX_SEARCH)}))).await?;
+    pub async fn search_hits(&self, query: &str, limit: u32, opts: SearchOpts) -> Result<Fetched<Vec<SearchHit>>> {
+        let mut body = json!({"query": query, "limit": limit.clamp(1, MAX_SEARCH)});
+        if let Some(r) = opts.recency {
+            body["tbs"] = json!(r.tbs());
+        }
+        if opts.news {
+            body["sources"] = json!(["news"]);
+        }
+        let v = self.call(reqwest::Method::POST, "/v2/search", Some(body)).await?;
         Ok(Fetched { value: parse_search(&v), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) })
     }
 
@@ -128,7 +135,7 @@ impl Client {
     }
 
     pub async fn search(&self, query: &str, limit: u32) -> Result<Output> {
-        let f = self.search_hits(query, limit).await?;
+        let f = self.search_hits(query, limit, SearchOpts::default()).await?;
         Ok(Output { text: render::search(&f.value), credits: f.credits })
     }
 
@@ -183,8 +190,15 @@ fn text(r: &Value, k: &str) -> String {
 }
 
 fn parse_search(v: &Value) -> Vec<SearchHit> {
-    let web = v.pointer("/data/web").or_else(|| v.get("data")).and_then(Value::as_array).cloned().unwrap_or_default();
-    web.iter().map(|r| SearchHit { title: text(r, "title"), url: text(r, "url"), snippet: text(r, "description"), published: None, score: None }).collect()
+    let web = v.pointer("/data/web").or_else(|| v.pointer("/data/news")).or_else(|| v.get("data")).and_then(Value::as_array).cloned().unwrap_or_default();
+    web.iter()
+        .map(|r| {
+            // News items call the description a snippet, and carry a date.
+            let snippet = if r.get("description").is_some() { text(r, "description") } else { text(r, "snippet") };
+            let published = Some(text(r, "date")).filter(|d| !d.is_empty());
+            SearchHit { title: text(r, "title"), url: text(r, "url"), snippet, published, score: None }
+        })
+        .collect()
 }
 
 fn parse_page(d: &Value) -> Page {

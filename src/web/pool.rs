@@ -9,11 +9,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 
 use super::client::Client;
+use super::tavily;
 use super::error::ProviderError;
-use super::types::{Call, Crawl, Fetched, Page, Provider, SearchHit, SiteMap, Tool};
+use super::types::{Call, Crawl, Fetched, Page, Provider, SearchHit, SearchOpts, SiteMap, Tool};
 
 enum Backend {
     Firecrawl(Client),
+    Tavily(tavily::Client),
 }
 
 /// One account in the pool.
@@ -30,33 +32,42 @@ impl Member {
         Member { id: id.into(), usd_per_credit, backend: Backend::Firecrawl(client) }
     }
 
+    pub fn tavily(id: &str, usd_per_credit: f64, client: tavily::Client) -> Member {
+        Member { id: id.into(), usd_per_credit, backend: Backend::Tavily(client) }
+    }
+
     pub fn provider(&self) -> Provider {
         match self.backend {
             Backend::Firecrawl(_) => Provider::Firecrawl,
+            Backend::Tavily(_) => Provider::Tavily,
         }
     }
 
-    async fn search(&self, query: &str, limit: u32) -> Result<Fetched<Vec<SearchHit>>> {
+    async fn search(&self, query: &str, limit: u32, opts: SearchOpts) -> Result<Fetched<Vec<SearchHit>>> {
         match &self.backend {
-            Backend::Firecrawl(c) => c.search_hits(query, limit).await,
+            Backend::Firecrawl(c) => c.search_hits(query, limit, opts).await,
+            Backend::Tavily(c) => c.search_hits(query, limit, opts).await,
         }
     }
 
     async fn scrape(&self, url: &str) -> Result<Fetched<Page>> {
         match &self.backend {
             Backend::Firecrawl(c) => c.scrape_page(url).await,
+            Backend::Tavily(c) => c.scrape_page(url).await,
         }
     }
 
     async fn map(&self, url: &str, limit: u32) -> Result<Fetched<SiteMap>> {
         match &self.backend {
             Backend::Firecrawl(c) => c.map_site(url, limit).await,
+            Backend::Tavily(c) => c.map_site(url, limit).await,
         }
     }
 
     async fn crawl(&self, url: &str, limit: u32) -> Result<Fetched<Crawl>> {
         match &self.backend {
             Backend::Firecrawl(c) => c.crawl_site(url, limit).await,
+            Backend::Tavily(c) => c.crawl_site(url, limit).await,
         }
     }
 }
@@ -131,8 +142,8 @@ impl Pool {
         found.into_iter().map(|(.., m)| m).collect()
     }
 
-    pub async fn search(&self, query: &str, limit: u32, budget: Option<&Budget<'_>>) -> Result<Call<Vec<SearchHit>>> {
-        self.run(Tool::Search, budget, async |m: &Member| m.search(query, limit).await, |v: &Vec<SearchHit>| v.is_empty()).await
+    pub async fn search(&self, query: &str, limit: u32, opts: SearchOpts, budget: Option<&Budget<'_>>) -> Result<Call<Vec<SearchHit>>> {
+        self.run(Tool::Search, budget, async |m: &Member| m.search(query, limit, opts).await, |v: &Vec<SearchHit>| v.is_empty()).await
     }
 
     pub async fn scrape(&self, url: &str, budget: Option<&Budget<'_>>) -> Result<Call<Page>> {
@@ -239,7 +250,7 @@ mod tests {
         let (a, a_hits) = mock(200, FOUND).await;
         let (b, b_hits) = mock(200, FOUND).await;
         let (p, _) = pool(vec![member("a", &a, 0.01), member("b", &b, 0.5)]);
-        let call = p.search("rust", 5, None).await.unwrap();
+        let call = p.search("rust", 5, SearchOpts::default(), None).await.unwrap();
         assert_eq!((call.source, call.credits, call.notes.len()), (Some(Provider::Firecrawl), 2, 0));
         assert!((call.usd - 0.02).abs() < 1e-9, "priced at the serving account's rate: {}", call.usd);
         assert_eq!((a_hits.load(Ordering::SeqCst), b_hits.load(Ordering::SeqCst)), (1, 0));
@@ -250,11 +261,11 @@ mod tests {
         let (a, a_hits) = mock(402, r#"{"error": "Insufficient credits"}"#).await;
         let (b, b_hits) = mock(200, FOUND).await;
         let (p, cool) = pool(vec![member("a", &a, 0.01), member("b", &b, 0.01)]);
-        let call = p.search("rust", 5, None).await.unwrap();
+        let call = p.search("rust", 5, SearchOpts::default(), None).await.unwrap();
         assert_eq!(call.value[0].title, "A");
         assert_eq!(call.notes, vec!["Firecrawl is out of credits".to_string()]);
         assert_eq!(cool.resting("a"), Some("is out of credits"));
-        p.search("rust", 5, None).await.unwrap();
+        p.search("rust", 5, SearchOpts::default(), None).await.unwrap();
         assert_eq!((a_hits.load(Ordering::SeqCst), b_hits.load(Ordering::SeqCst)), (1, 2), "the second call did not ask a again");
     }
 
@@ -263,8 +274,8 @@ mod tests {
         let (a, a_hits) = mock(503, "{}").await;
         let (b, _) = mock(200, FOUND).await;
         let (p, cool) = pool(vec![member("a", &a, 0.01), member("b", &b, 0.01)]);
-        p.search("x", 5, None).await.unwrap();
-        p.search("x", 5, None).await.unwrap();
+        p.search("x", 5, SearchOpts::default(), None).await.unwrap();
+        p.search("x", 5, SearchOpts::default(), None).await.unwrap();
         assert_eq!(a_hits.load(Ordering::SeqCst), 2);
         assert_eq!(cool.resting("a"), None);
     }
@@ -274,7 +285,7 @@ mod tests {
         let (a, _) = mock(429, r#"{"error": "slow down"}"#).await;
         let (b, _) = mock(200, FOUND).await;
         let (p, cool) = pool(vec![member("a", &a, 0.01), member("b", &b, 0.01)]);
-        p.search("x", 5, None).await.unwrap();
+        p.search("x", 5, SearchOpts::default(), None).await.unwrap();
         assert_eq!(cool.resting("a"), Some("is rate limited"));
         let later = Instant::now() + Duration::from_secs(61);
         assert_eq!(cool.resting_at("a", later), None, "and then is asked again");
@@ -292,7 +303,7 @@ mod tests {
             s.0 += c;
             s.1 += u;
         };
-        let call = p.search("x", 5, Some(&Budget { allowed: &allowed, record: &record })).await.unwrap();
+        let call = p.search("x", 5, SearchOpts::default(), Some(&Budget { allowed: &allowed, record: &record })).await.unwrap();
         assert_eq!(call.notes, vec!["Firecrawl found nothing".to_string()]);
         assert_eq!(call.credits, 3, "the empty attempt's credit and the answer's two");
         let (c, u) = *spent.lock().unwrap();
@@ -305,7 +316,7 @@ mod tests {
         let (a, _) = mock(200, NONE).await;
         let (b, _) = mock(200, NONE).await;
         let (p, _) = pool(vec![member("a", &a, 0.01), member("b", &b, 0.01)]);
-        let call = p.search("x", 5, None).await.unwrap();
+        let call = p.search("x", 5, SearchOpts::default(), None).await.unwrap();
         assert!(call.value.is_empty() && call.source.is_none());
         assert_eq!(call.notes.len(), 2);
         assert_eq!(call.credits, 2);
@@ -316,9 +327,9 @@ mod tests {
         let (a, _) = mock(401, r#"{"error": "bad key"}"#).await;
         let (b, _) = mock(503, "{}").await;
         let (p, _) = pool(vec![member("a", &a, 0.01), member("b", &b, 0.01)]);
-        let err = p.search("x", 5, None).await.unwrap_err().to_string();
+        let err = p.search("x", 5, SearchOpts::default(), None).await.unwrap_err().to_string();
         assert!(err.starts_with("No web account could search:") && err.contains("refused its key") && err.contains("had a server error"), "{err}");
-        assert_eq!(Pool::new(vec![], HashMap::new(), Arc::default()).search("x", 5, None).await.unwrap_err().to_string(), "No web account is set up to search.");
+        assert_eq!(Pool::new(vec![], HashMap::new(), Arc::default()).search("x", 5, SearchOpts::default(), None).await.unwrap_err().to_string(), "No web account is set up to search.");
     }
 
     #[tokio::test]
@@ -341,11 +352,11 @@ mod tests {
         let record = |c: u64, _: f64| {
             used.fetch_add(c as usize, Ordering::SeqCst);
         };
-        let call = p.search("x", 5, Some(&Budget { allowed: &allowed, record: &record })).await.unwrap();
+        let call = p.search("x", 5, SearchOpts::default(), Some(&Budget { allowed: &allowed, record: &record })).await.unwrap();
         assert!(call.value.is_empty() && call.notes.iter().any(|n| n.contains("cost cap")), "{:?}", call.notes);
         assert_eq!(b_hits.load(Ordering::SeqCst), 0);
         let none_left = || false;
-        let err = p.search("x", 5, Some(&Budget { allowed: &none_left, record: &record })).await.unwrap_err().to_string();
+        let err = p.search("x", 5, SearchOpts::default(), Some(&Budget { allowed: &none_left, record: &record })).await.unwrap_err().to_string();
         assert!(err.contains("cost cap"), "{err}");
     }
 
@@ -356,9 +367,37 @@ mod tests {
         let cool = Arc::new(Cooldowns::default());
         let order = HashMap::from([(Tool::Search, vec!["b".to_string()])]);
         let p = Pool::new(vec![member("a", &a, 0.01), member("b", &b, 0.01)], order, cool);
-        p.search("x", 5, None).await.unwrap();
+        p.search("x", 5, SearchOpts::default(), None).await.unwrap();
         assert_eq!((a_hits.load(Ordering::SeqCst), b_hits.load(Ordering::SeqCst)), (0, 1));
         assert_eq!(p.candidates(Tool::Scrape).iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["a", "b"], "other tools keep the default");
+    }
+
+    #[tokio::test]
+    async fn tavily_takes_over_when_firecrawl_has_no_credits() {
+        let (fc, _) = mock(402, r#"{"error": "Insufficient credits"}"#).await;
+        let app = Router::new()
+            .route("/search", post(|| async { axum::Json(serde_json::json!({"usage": {"credits": 1}, "results": [{"title": "T", "url": "https://t.test", "content": "c", "score": 0.7}]})) }))
+            .route("/extract", post(|| async { axum::Json(serde_json::json!({"usage": {"credits": 1}, "results": [{"url": "https://x.test", "raw_content": "from tavily"}]})) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tv = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (p, _) = pool(vec![member("fc", &fc, 0.01), Member::tavily("tv", 0.008, tavily::Client::with(&tv, "tvly-k"))]);
+        // Tavily is first for search by default, so it answers outright.
+        let call = p.search("x", 5, SearchOpts::default(), None).await.unwrap();
+        assert_eq!((call.source, call.credits, call.value[0].score), (Some(Provider::Tavily), 1, Some(0.7)));
+        assert!((call.usd - 0.008).abs() < 1e-9);
+        // Scrape is Firecrawl's first, then Tavily's: with Firecrawl out of credits Tavily is asked.
+        let page = p.scrape("https://x.test", None).await.unwrap();
+        assert_eq!((page.source, page.value.markdown.as_str(), page.notes), (Some(Provider::Tavily), "from tavily", vec!["Firecrawl is out of credits".to_string()]));
+    }
+
+    #[test]
+    fn each_tool_has_its_own_default_order() {
+        let (p, _) = pool(vec![member("fc", "http://x.test", 0.01), Member::tavily("tv", 0.008, tavily::Client::with("http://y.test", "k"))]);
+        let ids = |t| p.candidates(t).iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(Tool::Search), ["tv", "fc"]);
+        assert_eq!(ids(Tool::Scrape), ["fc", "tv"]);
+        assert_eq!(ids(Tool::Crawl), ["fc", "tv"]);
     }
 
     #[test]

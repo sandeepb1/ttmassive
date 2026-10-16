@@ -6,5 +6,6 @@ pub mod error;
 pub mod mcp;
 pub mod pool;
 pub mod render;
+pub mod tavily;
 pub mod tools;
 pub mod types;

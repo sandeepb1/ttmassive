@@ -29,7 +29,8 @@ pub fn page(p: &Page, max: usize) -> String {
     if p.markdown.is_empty() {
         return "The page had no readable text.".into();
     }
-    format!("# {}\n{}\n\n{}", p.title, p.url, cut(&p.markdown, max))
+    let head = if p.title.is_empty() { p.url.clone() } else { format!("# {}\n{}", p.title, p.url) };
+    format!("{head}\n\n{}", cut(&p.markdown, max))
 }
 
 pub fn map(site: &SiteMap) -> String {
@@ -111,6 +112,7 @@ mod tests {
         let home = pg("Home", "https://x.test/", "Hello world");
         assert_eq!(page(&home, 100), "# Home\nhttps://x.test/\n\nHello world");
         assert_eq!(page(&pg("", "", ""), 100), "The page had no readable text.");
+        assert_eq!(page(&pg("", "https://x.test/", "Body"), 100), "https://x.test/\n\nBody", "a page with no title has no heading");
         let site = SiteMap { pages: vec![MapEntry { url: "https://x.test/a".into(), title: Some("A".into()) }, MapEntry { url: "https://x.test/b".into(), title: None }] };
         assert_eq!(map(&site), "https://x.test/a — A\nhttps://x.test/b");
         assert_eq!(map(&SiteMap { pages: vec![] }), "No pages found.");

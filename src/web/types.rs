@@ -40,6 +40,54 @@ pub struct Crawl {
     pub pages: Vec<Page>,
 }
 
+/// How recent a search's results must be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recency {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl Recency {
+    pub fn parse(s: &str) -> Option<Recency> {
+        match s {
+            "day" => Some(Recency::Day),
+            "week" => Some(Recency::Week),
+            "month" => Some(Recency::Month),
+            "year" => Some(Recency::Year),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Recency::Day => "day",
+            Recency::Week => "week",
+            Recency::Month => "month",
+            Recency::Year => "year",
+        }
+    }
+
+    /// Google-style time filter, as Firecrawl and Serper take it.
+    pub fn tbs(self) -> &'static str {
+        match self {
+            Recency::Day => "qdr:d",
+            Recency::Week => "qdr:w",
+            Recency::Month => "qdr:m",
+            Recency::Year => "qdr:y",
+        }
+    }
+}
+
+/// What a search may be narrowed by, beyond its words.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SearchOpts {
+    pub recency: Option<Recency>,
+    /// News stories rather than general pages.
+    pub news: bool,
+}
+
 /// A typed answer and the provider credits it used.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fetched<T> {
@@ -51,18 +99,20 @@ pub struct Fetched<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Provider {
     Firecrawl,
+    Tavily,
 }
 
 impl Provider {
     pub fn name(self) -> &'static str {
         match self {
             Provider::Firecrawl => "Firecrawl",
+            Provider::Tavily => "Tavily",
         }
     }
 
     pub fn can(self, _tool: Tool) -> bool {
         match self {
-            Provider::Firecrawl => true,
+            Provider::Firecrawl | Provider::Tavily => true,
         }
     }
 }
@@ -88,7 +138,10 @@ impl Tool {
 
     /// Which service to ask first, unless the order is set by hand.
     pub fn default_order(self) -> &'static [Provider] {
-        &[Provider::Firecrawl]
+        match self {
+            Tool::Search => &[Provider::Tavily, Provider::Firecrawl],
+            Tool::Scrape | Tool::Map | Tool::Crawl => &[Provider::Firecrawl, Provider::Tavily],
+        }
     }
 }
 
