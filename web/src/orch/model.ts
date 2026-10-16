@@ -317,6 +317,8 @@ export interface PauseInfo {
   primary: { label: string; action: 'approve' | 'resume' | 'answer'; node?: string; /** Also ignore the plan limits from now on. */ waive?: boolean } | null;
   /** Offer to change the plan limits: the pause is because of them. */
   limits?: boolean;
+  /** Offer to let the agent that stopped send work back this many more times. */
+  moreRounds?: number;
 }
 
 export function pauseInfo(run: Run): PauseInfo | null {
@@ -333,12 +335,24 @@ export function pauseInfo(run: Run): PauseInfo | null {
         primary: { label: `Approve ${name(p.node)}`, action: 'approve', node: p.node },
       };
     }
-    case 'retriesExhausted':
-      return {
-        title: 'The judge sent the work back too many times',
-        detail: `${name(p.node)} was still not satisfied after ${run.retriesUsed} ${run.retriesUsed === 1 ? 'retry' : 'retries'}. Read its feedback, then accept the work as it is, or stop here.`,
-        primary: { label: 'Accept the work as it is', action: 'resume' },
-      };
+    case 'retriesExhausted': {
+      const n = run.flow.nodes.find((x) => x.id === p.node);
+      const tries = `${run.retriesUsed} ${run.retriesUsed === 1 ? 'round' : 'rounds'}`;
+      // A Griller is not a judge: it has questions left, not a verdict, so the choice is about asking more or moving on.
+      return n && asks(n)
+        ? {
+            title: `${name(p.node)} still has questions`,
+            detail: `It has asked and been answered for ${tries} and wants to ask more. Carry on to the next agents with what it has, allow it more rounds, or stop here.`,
+            primary: { label: 'Carry on without more questions', action: 'resume' },
+            moreRounds: 2,
+          }
+        : {
+            title: 'The work was sent back too many times',
+            detail: `${name(p.node)} was still not satisfied after ${tries}. Read its feedback, then accept the work as it is, allow more rounds, or stop here.`,
+            primary: { label: 'Accept the work as it is', action: 'resume' },
+            moreRounds: 2,
+          };
+    }
     case 'questions':
       return {
         title: `${name(p.node)} has questions for you`,

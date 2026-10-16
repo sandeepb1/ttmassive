@@ -150,7 +150,14 @@ test('a pause says what it is waiting for and offers the right button', () => {
   const r = pauseInfo(runOf(f, { state: 'paused', pause: { kind: 'retriesExhausted', node: 'n4' } }))!;
   assert.equal(r.primary!.action, 'resume');
   assert.match(r.primary!.label, /Accept/);
-  assert.match(r.detail, /1 retry\b/);
+  assert.match(r.detail, /1 round\b/);
+  assert.equal(r.moreRounds, 2, 'it can be allowed to go on');
+  assert.match(r.title, /sent back too many times/);
+  const g = { ...f, nodes: f.nodes.map((n) => (n.id === 'n4' ? { ...n, custom: { label: 'Griller', capability: 'read' as const, output: 'questions' as const, instructions: 'x' } } : n)) };
+  const gi = pauseInfo(runOf(g, { state: 'paused', pause: { kind: 'retriesExhausted', node: 'n4' } }))!;
+  assert.match(gi.title, /still has questions/, 'a griller has questions left, not a verdict');
+  assert.match(gi.primary!.label, /without more questions/);
+  assert.equal(gi.moreRounds, 2);
 
   const b = pauseInfo(runOf(f, { state: 'paused', pause: { kind: 'budget', message: 'Claude is at 86%' } }))!;
   assert.equal(b.detail, 'Claude is at 86%');

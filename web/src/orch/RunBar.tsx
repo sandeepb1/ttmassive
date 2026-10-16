@@ -14,6 +14,8 @@ interface Props {
   onResume: (waive?: boolean) => void;
   /** Open the questions the run is waiting on. */
   onAnswer: () => void;
+  /** Let the agent that stopped send work back this many more times. */
+  onMoreRounds: (extra: number) => void;
   onLimits: () => void;
   onCancel: () => void;
   onCopy: (text: string) => void;
@@ -82,7 +84,7 @@ function GitNotice({ run, busy, onFixed }: { run: Run; busy: boolean; onFixed: (
   );
 }
 
-export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimits, onCancel, onCopy, view, onView, onRerun }: Props) {
+export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onMoreRounds, onLimits, onCancel, onCopy, view, onView, onRerun }: Props) {
   const info = pauseInfo(run);
   const tokens = runTokens(run);
   const hit = cacheHit(tokens);
@@ -173,6 +175,11 @@ export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimit
                 onClick={() => (info.primary!.action === 'approve' ? onApprove(info.primary!.node!) : info.primary!.action === 'answer' ? onAnswer() : onResume(info.primary!.waive))}
               >
                 <Icon name={info.primary.action === 'approve' ? 'check' : info.primary.action === 'answer' ? 'help' : 'play'} /> {info.primary.label}
+              </button>
+            )}
+            {info.moreRounds && (
+              <button type="button" className="mc-btn" disabled={busy} onClick={() => onMoreRounds(info.moreRounds!)} title="Raise the limit and let it go again">
+                <Icon name="retry" /> Allow {info.moreRounds} more rounds
               </button>
             )}
             {info.limits && (

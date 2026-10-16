@@ -507,6 +507,40 @@ fn apply_loop(run: &mut Run, from: &Node, target: &str, feedback: String, kind: 
     }
 }
 
+/// Most send-backs that may be added to a flow in one go, and the most an edge may be allowed in all.
+pub const MORE_ROUNDS_AT_ONCE: u8 = 5;
+pub const MAX_EDGE_ITERATIONS: u8 = 20;
+
+/// A run stopped because an agent had sent work back as often as it was allowed: allow `extra` more, on the flow and on the
+/// agent's send-back edges, and let it do what it was about to do (send the work back again, or stop for your answers).
+pub fn more_rounds(run: &mut Run, extra: u8) -> Result<(), String> {
+    let RunStatus::Paused { pause: Pause::RetriesExhausted { node } } = run.status.clone() else {
+        return Err("the run is not stopped for having sent work back too often".into());
+    };
+    if extra == 0 || extra > MORE_ROUNDS_AT_ONCE {
+        return Err(format!("allow between 1 and {MORE_ROUNDS_AT_ONCE} more rounds"));
+    }
+    let from = run.flow.node(&node).cloned().ok_or("the agent that stopped is gone")?;
+    let output = run.nodes.get(&node).and_then(|n| n.output.clone()).ok_or("it has no answer to act on")?;
+    run.flow.max_retries = run.flow.max_retries.saturating_add(extra);
+    for e in run.flow.edges.iter_mut().filter(|e| e.kind == super::graph::EdgeKind::Retry && e.from == node) {
+        e.max_iterations = (e.max_iterations + extra).min(MAX_EDGE_ITERATIONS);
+    }
+    run.note(Some(&node), LogKind::Decision, format!("You allowed {extra} more round{}", if extra == 1 { "" } else { "s" }), None);
+    let pause = if from.decides() {
+        judged(run, &from, &output)
+    } else if from.asks() {
+        questioned(run, &from, &output)
+    } else {
+        None
+    };
+    run.status = match pause {
+        Some(pause) => RunStatus::Paused { pause },
+        None => RunStatus::Running,
+    };
+    Ok(())
+}
+
 /// The user's answers to the questions the run is waiting on. The work then goes back as it was going to, with the
 /// answers, and the run is ready to be started again.
 pub fn answer_questions(run: &mut Run, answers: Vec<String>) -> Result<(), String> {
@@ -1430,6 +1464,46 @@ mod tests {
         assert_eq!(node, "grill");
         assert!(message.contains("as many times as it may be (1)"), "{message}");
         assert_eq!(run.lock().unwrap().nodes["grill"].status, NodeStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn a_run_stopped_for_sending_work_back_too_often_can_be_given_more_rounds() {
+        // An agent answering for itself: two more rounds let it send the work back again, and then it is satisfied.
+        let mut f = grilled(Answerer::Agent, 1, OnCap::Pause);
+        f.max_retries = 1;
+        let run = new_run(f);
+        let fake = Fake::with(vec![("grill", asks(&["a?"])), ("grill", asks(&["b?"])), ("grill", satisfied())]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Paused { pause: Pause::RetriesExhausted { node: "grill".into() } });
+        {
+            let mut r = run.lock().unwrap();
+            assert!(more_rounds(&mut r, 0).unwrap_err().contains("between 1 and"));
+            assert!(more_rounds(&mut r, MORE_ROUNDS_AT_ONCE + 1).is_err());
+            more_rounds(&mut r, 2).unwrap();
+            assert_eq!(r.flow.max_retries, 3, "the flow's backstop grew");
+            assert_eq!(r.flow.edges.iter().find(|e| e.id == "back").unwrap().max_iterations, 3, "and so did the edge");
+            assert_eq!(r.status, RunStatus::Running, "the work went back again at once");
+            assert_eq!(r.iterations["back"], 2);
+        }
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        assert!(more_rounds(&mut run.lock().unwrap(), 1).unwrap_err().contains("not stopped"), "only a run stopped for that reason");
+
+        // Questions for the user: allowing more rounds stops for the answers, as a first round would.
+        let run = new_run(grilled(Answerer::User, 1, OnCap::Pause));
+        let fake = Fake::with(vec![("grill", asks(&["a?"]))]);
+        go(&run, &fake).await;
+        {
+            let mut r = run.lock().unwrap();
+            answer_questions(&mut r, vec!["yes".into()]).unwrap();
+        }
+        let fake = Fake::with(vec![("grill", asks(&["b?", "c?"]))]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Paused { pause: Pause::RetriesExhausted { node: "grill".into() } });
+        more_rounds(&mut run.lock().unwrap(), 1).unwrap();
+        assert_eq!(status(&run), RunStatus::Paused { pause: Pause::Questions { node: "grill".into() } });
+        let r = run.lock().unwrap();
+        assert_eq!(r.pending.as_ref().unwrap().questions, ["b?", "c?"]);
     }
 
     #[tokio::test]

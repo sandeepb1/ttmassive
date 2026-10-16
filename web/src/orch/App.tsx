@@ -733,7 +733,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         </aside>
 
         <main className="mc-stage" data-list={showList || showTimeline}>
-          {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} view={runView} onView={setRunView} onRerun={() => rerun(run.id)} />}
+          {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onMoreRounds={(n) => void act(() => orch.moreRounds(run.id, n), applyRun)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} view={runView} onView={setRunView} onRerun={() => rerun(run.id)} />}
           {showTimeline ? (
             <Timeline run={run!} selected={selected} />
           ) : showList ? (

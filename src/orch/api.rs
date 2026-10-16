@@ -59,6 +59,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/runs/{id}/grill", post(grill))
         .route("/api/orch/runs/{id}/start", post(start))
         .route("/api/orch/runs/{id}/approve", post(approve))
+        .route("/api/orch/runs/{id}/more-rounds", post(more_rounds))
         .route("/api/orch/runs/{id}/answers", post(answer))
         .route("/api/orch/runs/{id}/resume", post(resume))
         .route("/api/orch/runs/{id}/cancel", post(cancel))
@@ -185,6 +186,15 @@ struct CreateBody {
 
 fn yes() -> bool {
     true
+}
+
+#[derive(Deserialize)]
+struct MoreRounds {
+    extra: u8,
+}
+
+async fn more_rounds(State(st): St, Path(id): Path<String>, Json(b): Json<MoreRounds>) -> Result<Response, Fail> {
+    Ok(json_nocache(st.orch.more_rounds(&st, &id, b.extra)?))
 }
 
 async fn create_run(State(st): St, Json(b): Json<CreateBody>) -> Result<Response, Fail> {

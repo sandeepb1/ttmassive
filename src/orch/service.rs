@@ -483,6 +483,21 @@ impl Service {
         self.get(id)
     }
 
+    /// A run that stopped for having sent work back as often as allowed: allow more, and carry on.
+    pub fn more_rounds(&self, st: &Arc<AppState>, id: &str, extra: u8) -> Result<Run, Fail> {
+        let live = self.live(id)?;
+        let running = {
+            let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
+            super::exec::more_rounds(&mut run, extra).map_err(Fail::Conflict)?;
+            self.persist(&run);
+            run.status == RunStatus::Running
+        };
+        if running {
+            self.spawn_drive(st.clone(), live);
+        }
+        self.get(id)
+    }
+
     pub fn cancel(&self, id: &str) -> Result<Run, Fail> {
         let live = self.live(id)?;
         live.cancelled.store(true, Ordering::SeqCst);
