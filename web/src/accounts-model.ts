@@ -217,3 +217,57 @@ export function balanceLine(r: Pick<Remote, 'usage' | 'limit' | 'remaining'>): s
 export function flowModels(accounts: Account[]): { account: Account; model: PinnedModel }[] {
   return accounts.filter((a) => a.useInOrchestrator && a.hasKey).flatMap((account) => account.models.map((model) => ({ account, model })));
 }
+
+// ---- sessions that run on OpenRouter ------------------------------------------------------
+
+export type Driver = 'claude' | 'codex';
+
+export const DRIVER_LABEL: Record<Driver, string> = { claude: 'Claude Code', codex: 'Codex' };
+
+/** What the server runs a model with unless told otherwise: Anthropic's models in Claude Code, the rest in Codex. */
+export function driverFor(model: string): Driver {
+  const vendor = (model.split('/')[0] ?? '').replace(/^~/, '');
+  return vendor === 'anthropic' ? 'claude' : 'codex';
+}
+
+/** A running session's lease, as `/api/openrouter/leases` lists it. */
+export interface SessionLease {
+  account: string;
+  model: string;
+  tag: string;
+  capUsd: number | null;
+  spent: { requests: number; costUsd: number };
+}
+
+/** Accounts a session can be started on. */
+export const orAccounts = (accounts: Account[]): Account[] => accounts.filter((a) => a.kind === 'openrouter' && a.hasKey);
+
+/** Dollars as a person reads them on a row: $0.18, or <$0.01 for a trace. */
+export function usd(n: number): string {
+  if (n <= 0) return '$0.00';
+  return n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`;
+}
+
+/** The model without its vendor, for a crowded row: claude-haiku-5.5. */
+export const shortModel = (id: string): string => id.slice(id.indexOf('/') + 1);
+
+/** "$0.18 of $2.00", or just what has been spent when there is no cap. */
+export function spendLine(spent: number, cap: number | null): string {
+  return cap === null ? usd(spent) : `${usd(spent)} of ${usd(cap)}`;
+}
+
+/** The models of `account` a running session on `driver` can switch to, current one first. The others need a different CLI. */
+export function switchable(account: Account, current: string, driver: Driver): { model: PinnedModel; ok: boolean; current: boolean }[] {
+  const seen = new Set<string>();
+  const rows: { model: PinnedModel; ok: boolean; current: boolean }[] = [];
+  const add = (model: PinnedModel) => {
+    if (seen.has(model.id)) return;
+    seen.add(model.id);
+    const isCurrent = model.id === current;
+    rows.push({ model, ok: isCurrent || driverFor(model.id) === driver, current: isCurrent });
+  };
+  // The session's own model leads even if it was never pinned (it was typed, or the pin was removed since).
+  add(account.models.find((m) => m.id === current) ?? { id: current, priceIn: null, priceOut: null, tools: true });
+  for (const m of account.models) add(m);
+  return rows;
+}

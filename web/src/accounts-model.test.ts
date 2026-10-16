@@ -2,6 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_PREFS,
+  driverFor,
+  orAccounts,
+  shortModel,
+  spendLine,
+  switchable,
+  usd,
   ageLabel,
   balanceLine,
   contextLabel,
@@ -146,4 +152,49 @@ test('an edit draft is a copy', () => {
   assert.equal(a.prefs.sort, 'price', 'prefs are copied too');
   assert.equal(draft.prefs.denyDataCollection, true);
   assert.equal('key' in draft, false, 'the key is never prefilled');
+});
+
+test('anthropic models run in Claude Code and the rest in Codex, like the server decides', () => {
+  assert.equal(driverFor('anthropic/claude-haiku-5.5'), 'claude');
+  assert.equal(driverFor('~anthropic/claude-haiku-latest'), 'claude');
+  assert.equal(driverFor('openai/gpt-6-luna'), 'codex');
+  assert.equal(driverFor('openrouter/auto'), 'codex');
+  assert.equal(driverFor('plain'), 'codex');
+});
+
+test('spend is shown in dollars', () => {
+  assert.equal(usd(0), '$0.00');
+  assert.equal(usd(0.004), '<$0.01');
+  assert.equal(usd(0.176), '$0.18');
+  assert.equal(usd(12), '$12.00');
+  assert.equal(spendLine(0.5, null), '$0.50');
+  assert.equal(spendLine(0.5, 2), '$0.50 of $2.00');
+  assert.equal(shortModel('anthropic/claude-haiku-5.5'), 'claude-haiku-5.5');
+  assert.equal(shortModel('plain'), 'plain');
+});
+
+test('only OpenRouter accounts with a key can start a session', () => {
+  const a = (id: string, kind: 'openrouter' | 'openai-compatible', hasKey: boolean): Account => ({
+    id, name: id, kind, baseUrl: '', hasKey, last4: '', useInOrchestrator: true, models: [], prefs: { ...DEFAULT_PREFS },
+  });
+  assert.deepEqual(orAccounts([a('a', 'openrouter', true), a('b', 'openrouter', false), a('c', 'openai-compatible', true)]).map((x) => x.id), ['a']);
+});
+
+test('a running session can switch to models its CLI can run, and sees the others disabled', () => {
+  const pin = (id: string) => ({ id, priceIn: 1, priceOut: 2, tools: true });
+  const acct: Account = {
+    id: 'a', name: 'A', kind: 'openrouter', baseUrl: '', hasKey: true, last4: '', useInOrchestrator: true, prefs: { ...DEFAULT_PREFS },
+    models: [pin('anthropic/claude-sonnet-5.5'), pin('openai/gpt-6-luna'), pin('anthropic/claude-haiku-5.5')],
+  };
+  const rows = switchable(acct, 'anthropic/claude-haiku-5.5', 'claude');
+  assert.deepEqual(rows.map((r) => [r.model.id, r.ok, r.current]), [
+    ['anthropic/claude-haiku-5.5', true, true],
+    ['anthropic/claude-sonnet-5.5', true, false],
+    ['openai/gpt-6-luna', false, false],
+  ]);
+  const unpinned = switchable(acct, 'anthropic/typed-by-hand', 'claude');
+  assert.deepEqual(unpinned[0]?.model.id, 'anthropic/typed-by-hand', 'the session\'s own model leads even when not pinned');
+  assert.equal(unpinned[0]?.ok, true);
+  // A session forced onto Claude Code with a non-Anthropic model can still stay on it.
+  assert.equal(switchable(acct, 'openai/gpt-6-luna', 'claude')[0]?.ok, true);
 });

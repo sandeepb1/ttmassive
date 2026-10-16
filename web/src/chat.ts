@@ -25,6 +25,7 @@ import { applySuggestion, attachmentToken, findTrigger, insertToken, isResumeCom
 import { prepareImage } from './image';
 import { ModeSheet } from './mode-sheet';
 import { ModelPicker } from './model-picker';
+import { OrModelSheet, sessionLease } from './or-model-sheet';
 import { doingNow, lastUserTs, type Work } from './activity-chip';
 import { MoreSheet } from './more-sheet';
 import { ResumeSheet } from './resume-sheet';
@@ -626,9 +627,14 @@ export class ChatView {
     this.noteTimer = window.setTimeout(() => (this.note.textContent = ''), 6000);
   }
 
-  private openPicker() {
+  private async openPicker() {
     const agent = this.agent;
     if (agent !== 'claude' && agent !== 'codex') return this.say("Switching the model isn't available here.");
+    // A session on OpenRouter switches models through its lease, not through the agent's own menu.
+    if (await sessionLease(this.session, this.hooks.onUnauthorized)) {
+      new OrModelSheet(this.sheetHost, this.session, agent, this.hooks.onUnauthorized, (_model, message) => this.say(message)).open();
+      return;
+    }
     this.picker ??= new ModelPicker(this.sheetHost, this.session, agent, {
       onUnauthorized: this.hooks.onUnauthorized,
       onChanged: (change, message) => {

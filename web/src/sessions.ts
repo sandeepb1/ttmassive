@@ -1,5 +1,6 @@
 // The left sidebar: your sessions grouped by project, a way to start new ones, rename, kill, switch.
 
+import { shortModel, spendLine } from './accounts-model';
 import { fetchPresets, launchSession, mainAgents, type PresetInfo } from './dirs';
 import { openOrch } from './orch/entry';
 import { el } from './dom';
@@ -48,6 +49,8 @@ export interface SessionView {
   running_subagents?: number;
   /** The proxy the session's agent goes through, when it does. */
   routed_via?: 'teamclaude' | null;
+  /** The OpenRouter model, CLI and spend, when the session runs on OpenRouter. */
+  openrouter?: { account: string; model: string; driver: 'claude' | 'codex'; cap_usd: number | null; spent_usd: number; requests: number } | null;
 }
 
 const POLL_MS = 3000;
@@ -411,6 +414,7 @@ export class SessionSidebar {
     else if (s.status === 'exited') bits.push(`exited${s.exit_code !== null ? ` (${s.exit_code})` : ''}`);
     else bits.push(state === 'working' ? 'working' : `idle ${ago(s.idle_secs)}`);
     if (s.routed_via === 'teamclaude') bits.push('via Team Claude');
+    if (s.openrouter) bits.push(`${shortModel(s.openrouter.model)} via OpenRouter`, spendLine(s.openrouter.spent_usd, s.openrouter.cap_usd));
     if (s.attached > 0) bits.push(`${s.attached} attached`);
     if (s.restarts > 0) bits.push(`${s.restarts}× restarted`);
     if (s.restart_in_secs !== null) bits.push(`restarting in ${s.restart_in_secs}s`);

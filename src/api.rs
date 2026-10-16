@@ -338,10 +338,12 @@ struct LeaseModel {
 /// Switch the model of a running OpenRouter session, from its next request on.
 async fn set_lease_model(State(st): State<Arc<AppState>>, Path(tag): Path<String>, Json(b): Json<LeaseModel>) -> Response {
     let model = b.model.trim();
-    if model.is_empty() || model.len() > 200 || model.chars().any(|c| c.is_control() || c.is_whitespace()) {
+    if !crate::openrouter::launch::valid_model(model) {
         return (StatusCode::BAD_REQUEST, "model id is not valid").into_response();
     }
-    if st.leases.set_model(&tag, model) { StatusCode::NO_CONTENT.into_response() } else { StatusCode::NOT_FOUND.into_response() }
+    // A session also remembers the model, so a restore keeps it; a bare lease is just switched.
+    let done = if st.sessions.contains_key(&tag) { sessions::set_or_model(&st, &tag, model).await.is_ok() } else { st.leases.set_model(&tag, model) };
+    if done { StatusCode::NO_CONTENT.into_response() } else { StatusCode::NOT_FOUND.into_response() }
 }
 
 async fn logout(jar: CookieJar) -> impl IntoResponse {
@@ -409,6 +411,17 @@ struct CreateBody {
     yolo: bool,
     /// Start in this folder (from `/api/dirs`).
     dir: Option<String>,
+    /// Run Claude Code or Codex on an OpenRouter model instead of a preset.
+    openrouter: Option<OrBody>,
+}
+
+#[derive(Deserialize)]
+struct OrBody {
+    account: String,
+    model: String,
+    /// `claude` or `codex`; left out, it follows from the model.
+    driver: Option<crate::openrouter::launch::Driver>,
+    cap_usd: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -437,6 +450,21 @@ async fn recent_dirs(State(st): State<Arc<AppState>>) -> Response {
 }
 
 async fn create_session(State(st): State<Arc<AppState>>, Json(b): Json<CreateBody>) -> Response {
+    if let Some(or) = &b.openrouter {
+        let req = sessions::OrNew {
+            account: &or.account,
+            model: &or.model,
+            driver: or.driver,
+            cap_usd: or.cap_usd,
+            name: b.name.as_deref(),
+            dir: b.dir.clone().map(std::path::PathBuf::from),
+            yolo: b.yolo,
+        };
+        return match sessions::create_openrouter(&st, req).await {
+            Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({ "id": id }))).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        };
+    }
     let req = sessions::NewSession {
         preset: b.preset.as_deref(),
         name: b.name.as_deref(),
@@ -909,7 +937,8 @@ async fn session_teamclaude(State(st): State<Arc<AppState>>, Path(id): Path<Stri
         Err(r) => return r,
     };
     let mut reply = TeamClaudeReply { detected: false, agent: ctx.agent, overview: None, error: None };
-    if let Some(agent) = ctx.agent
+    if !sessions::runs_on_openrouter(&st, &id)
+        && let Some(agent) = ctx.agent
         && let Some(origin) = teamclaude::detect(&st, agent, &ctx.cwd).await
     {
         reply.detected = true;
@@ -932,7 +961,7 @@ async fn teamclaude_requests(State(st): State<Arc<AppState>>, Path(id): Path<Str
         Ok(c) => c,
         Err(r) => return r,
     };
-    let Some(origin) = async { teamclaude::detect(&st, ctx.agent?, &ctx.cwd).await }.await else {
+    let Some(origin) = async { if sessions::runs_on_openrouter(&st, &id) { None } else { teamclaude::detect(&st, ctx.agent?, &ctx.cwd).await } }.await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     no_store(teamclaude::feed(&origin, ctx.conversation, q.all.unwrap_or(0) == 0, teamclaude::FEED_LIMIT).await)
@@ -949,6 +978,9 @@ async fn teamclaude_switch(State(st): State<Arc<AppState>>, Path(id): Path<Strin
         Err(r) => return r,
     };
     let Some(agent) = ctx.agent else { return StatusCode::NOT_FOUND.into_response() };
+    if sessions::runs_on_openrouter(&st, &id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let Some(origin) = teamclaude::detect(&st, agent, &ctx.cwd).await else { return StatusCode::NOT_FOUND.into_response() };
     match teamclaude::switch(&st, &origin, agent, &b.account).await {
         Ok(reply) => no_store(reply),

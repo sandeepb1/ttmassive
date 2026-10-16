@@ -35,11 +35,20 @@ export const canSkip = (p: PresetInfo) => p.agent === 'claude' || p.agent === 'c
 export type Launch = { ok: true; id: string } | { ok: false; error: string; signedOut?: boolean };
 
 /** Start a session. `preset` is undefined for a plain shell. */
-export async function launchSession(req: { preset?: string; yolo?: boolean; dir?: string }): Promise<Launch> {
+/** Run Claude Code or Codex on an OpenRouter model instead of a preset. */
+export interface OpenRouterLaunch {
+  account: string;
+  model: string;
+  /** Left out, the server picks the CLI from the model. */
+  driver?: 'claude' | 'codex';
+  cap_usd?: number;
+}
+
+export async function launchSession(req: { preset?: string; yolo?: boolean; dir?: string; openrouter?: OpenRouterLaunch }): Promise<Launch> {
   const r = await fetch('/api/sessions', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ preset: req.preset, yolo: req.yolo ?? false, dir: req.dir }),
+    body: JSON.stringify({ preset: req.preset, yolo: req.yolo ?? false, dir: req.dir, openrouter: req.openrouter }),
   }).catch(() => null);
   if (!r) return { ok: false, error: 'Server unreachable' };
   if (r.status === 401) return { ok: false, error: 'Signed out', signedOut: true };

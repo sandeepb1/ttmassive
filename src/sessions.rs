@@ -19,6 +19,7 @@ use crate::{
     limits,
     notify::{self, Alert, Kind},
     ops,
+    openrouter::launch::{self as orl, Driver, OrSpec},
     screen::Activity,
     scrollback, tmux,
 };
@@ -42,6 +43,10 @@ pub struct Spec {
     /// Started with the agent's "skip all permission checks" options (see `apply_yolo`).
     #[serde(default)]
     pub yolo: bool,
+    /// Runs on an OpenRouter model through ttm's proxy. The model flags are added when it starts,
+    /// from the session's lease, so a model switched mid-session stays switched after a restore.
+    #[serde(default)]
+    pub openrouter: Option<OrSpec>,
 }
 
 /// Options that make Claude Code or Codex skip every permission check. They are only ever applied
@@ -272,6 +277,8 @@ pub struct SessionView {
     pub running_subagents: u32,
     /// The proxy the session's agent goes through (`"teamclaude"`), if it does. Filled in by `enrich`.
     pub routed_via: Option<&'static str>,
+    /// The OpenRouter model, CLI and spend, when the session runs on OpenRouter.
+    pub openrouter: Option<serde_json::Value>,
 }
 
 pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
@@ -311,6 +318,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             preview: None,
             running_subagents: 0,
             routed_via: None,
+            openrouter: m.and_then(|m| m.spec.openrouter.as_ref()).map(|or| orl::summary(or, st.leases.by_tag(&s.id).map(|(_, l)| l).as_ref())),
             id: s.id.clone(),
         });
     }
@@ -350,6 +358,7 @@ pub async fn snapshot(st: &AppState) -> Result<Vec<SessionView>> {
             preview: None,
             running_subagents: 0,
             routed_via: None,
+            openrouter: m.spec.openrouter.as_ref().map(|or| orl::summary(or, st.leases.by_tag(&id).map(|(_, l)| l).as_ref())),
             id,
         });
     }
@@ -384,6 +393,7 @@ pub async fn enrich(st: &Arc<AppState>, views: &mut [SessionView]) {
             };
             let (preview, running) = crate::chat::overview(&st, &id).await;
             let routed = match (agent, cwd) {
+                _ if runs_on_openrouter(&st, &id) => None,
                 (Some(a), Some(c)) => crate::teamclaude::detect(&st, a, Path::new(&c)).await.map(|_| "teamclaude"),
                 _ => None,
             };
@@ -398,6 +408,12 @@ pub async fn enrich(st: &Arc<AppState>, views: &mut [SessionView]) {
             views[i].routed_via = routed;
         }
     }
+}
+
+/// Whether the session's agent talks to OpenRouter through ttm's proxy. Such a session is not routed
+/// by anything configured around it, such as a Team Claude `ANTHROPIC_BASE_URL` in your settings.
+pub fn runs_on_openrouter(st: &AppState, id: &str) -> bool {
+    st.sessions.get(id).is_some_and(|m| m.spec.openrouter.is_some())
 }
 
 /// What the details sidebar needs to know about one session's pane.
@@ -443,6 +459,7 @@ fn spec_for(preset: &Preset, yolo: bool) -> Spec {
         env: preset.env.clone(),
         agent: Some(preset.agent()),
         yolo: false,
+        openrouter: None,
     };
     if yolo || preset.yolo {
         apply_yolo(&mut spec);
@@ -471,8 +488,17 @@ async fn launch(
     // No folder given: your home, not the service's working directory (`/` under launchd).
     let home = crate::agentlog::home();
     let dir = spec.dir.as_deref().filter(|d| d.is_dir()).or(home.as_deref());
+    let routed = match &spec.openrouter {
+        Some(or) => Some(or_flags(st, id, uid, or)?),
+        None => None,
+    };
     match &spec.command {
         Some(cmd) => {
+            let cmd = &match &routed {
+                Some(f) => format!("{cmd}{}", f.args),
+                None => cmd.clone(),
+            };
+            env.extend(routed.iter().flat_map(|f| f.env.clone()));
             // tmux ignores `-e PATH=…` for the pane process, so set PATH via `env`. The
             // shims then add notification hooks whenever `claude` / `codex` runs, and
             // consume TTM_RESUME_ID so only the first agent started resumes.
@@ -499,6 +525,25 @@ async fn launch(
         // shims can't be relied on here. Use a preset for hook-based alerts.
         None => tmux::create(id, dir, &env, &[], false).await,
     }
+}
+
+/// The flags and environment that point an agent at OpenRouter. The lease is the session's own:
+/// found again after a restore (spend and the model it was switched to are kept), made if gone.
+fn or_flags(st: &AppState, id: &str, uid: &str, or: &OrSpec) -> Result<orl::Flags> {
+    let (token, model) = match st.leases.by_tag(id) {
+        Some((token, lease)) => (token, lease.model),
+        None => (st.leases.mint(&or.account, &or.model, id, or.cap_usd), or.model.clone()),
+    };
+    anyhow::ensure!(orl::valid_model(&model), "{model:?} is not a usable model id");
+    let origin = orl::origin(st.cfg.bind.port());
+    Ok(match or.driver {
+        Driver::Claude => {
+            let exe = std::env::current_exe().context("locating the ttm executable")?;
+            let path = orl::write_claude_settings(&st.data_dir, uid, &notify::claude_settings(&exe), &origin, &token)?;
+            orl::claude_flags(&path, &model)
+        }
+        Driver::Codex => orl::codex_flags(&origin, &token, &model),
+    })
 }
 
 /// `sh -c <script> <cmd>`: run `cmd`, then replace the wrapper with your shell. The trap keeps a
@@ -622,7 +667,19 @@ pub async fn create_resuming(st: &AppState, req: NewSession<'_>, resume: Option<
         anyhow::ensure!(d.is_dir(), "{} is not a folder", d.display());
         spec.dir = Some(d);
     }
-    launch(st, &id, &uid, &spec, preset, resume).await?;
+    register(st, id, uid, spec, preset, req.group, resume).await
+}
+
+/// Start `spec` as session `id` and remember it.
+async fn register(st: &AppState, id: String, uid: String, spec: Spec, preset: Option<&Preset>, group: Option<&str>, resume: Option<&str>) -> Result<String> {
+    if let Err(e) = launch(st, &id, &uid, &spec, preset, resume).await {
+        // The lease was made for a session that never started.
+        if spec.openrouter.is_some() {
+            st.leases.revoke_tag(&id);
+            orl::remove_claude_settings(&st.data_dir, &uid);
+        }
+        return Err(e);
+    }
     let project = spec.dir.clone();
     st.sessions.insert(
         id.clone(),
@@ -631,7 +688,7 @@ pub async fn create_resuming(st: &AppState, req: NewSession<'_>, resume: Option<
             uid,
             project,
             spec,
-            group: req.group.map(str::to_owned),
+            group: group.map(str::to_owned),
             created: now_secs(),
             // So a later restore carries on the same conversation.
             agent_session_id: resume.map(str::to_owned),
@@ -640,6 +697,68 @@ pub async fn create_resuming(st: &AppState, req: NewSession<'_>, resume: Option<
     );
     save(st).await;
     Ok(id)
+}
+
+/// A session that runs Claude Code or Codex on an OpenRouter model.
+pub struct OrNew<'a> {
+    pub account: &'a str,
+    pub model: &'a str,
+    /// The CLI to run it with; `None` picks one from the model (see `orl::driver_for`).
+    pub driver: Option<Driver>,
+    pub cap_usd: Option<f64>,
+    pub name: Option<&'a str>,
+    pub dir: Option<PathBuf>,
+    pub yolo: bool,
+}
+
+pub async fn create_openrouter(st: &AppState, req: OrNew<'_>) -> Result<String> {
+    anyhow::ensure!(orl::valid_model(req.model), "that is not a usable model id");
+    if let Some(c) = req.cap_usd {
+        anyhow::ensure!(c.is_finite() && c > 0.0 && c < 1.0e6, "the dollar cap must be more than zero");
+    }
+    let accounts = crate::secrets::load(&st.data_dir).await;
+    let account = accounts.get(req.account).context("no such account")?;
+    anyhow::ensure!(account.kind == crate::secrets::Kind::Openrouter, "that account is not an OpenRouter account");
+    anyhow::ensure!(!account.key.is_empty(), "the account has no key");
+
+    let driver = req.driver.unwrap_or_else(|| orl::driver_for(req.model));
+    let base = match (req.name, req.dir.as_deref()) {
+        (Some(n), _) => n.to_owned(),
+        (None, Some(d)) => name_for_dir("or", d).unwrap_or_else(|| "or".into()),
+        (None, None) => "or".into(),
+    };
+    anyhow::ensure!(tmux::valid_session_id(&base), "invalid session name");
+    let taken: Vec<String> = tmux::list().await?.into_iter().map(|s| s.id).chain(st.sessions.iter().map(|e| e.key().clone())).collect();
+    let id = unique_name(&base, &taken);
+
+    let command = driver.command().to_owned();
+    let mut spec = Spec {
+        agent: Some(Agent::infer(&command)),
+        command: Some(command),
+        openrouter: Some(OrSpec { account: account.id.clone(), model: req.model.to_owned(), driver, cap_usd: req.cap_usd }),
+        ..Default::default()
+    };
+    if req.yolo {
+        apply_yolo(&mut spec);
+    }
+    if let Some(d) = req.dir {
+        anyhow::ensure!(d.is_dir(), "{} is not a folder", d.display());
+        spec.dir = Some(d);
+    }
+    register(st, id, new_uid(), spec, None, None, None).await
+}
+
+/// Switch the model of an OpenRouter session, from its next request on. Remembered, so a restore keeps it.
+pub async fn set_or_model(st: &AppState, id: &str, model: &str) -> Result<()> {
+    anyhow::ensure!(orl::valid_model(model), "that is not a usable model id");
+    {
+        let mut m = st.sessions.get_mut(id).with_context(|| format!("no such session: {id}"))?;
+        let or = m.spec.openrouter.as_mut().context("that session does not run on OpenRouter")?;
+        or.model = model.to_owned();
+    }
+    anyhow::ensure!(st.leases.set_model(id, model), "the session has no lease");
+    save(st).await;
+    Ok(())
 }
 
 /// Bring a stopped (or exited) session back. Claude/Codex sessions resume their
@@ -675,7 +794,11 @@ pub async fn kill(st: &AppState, id: &str) -> Result<()> {
     }
     if let Some((_, m)) = st.sessions.remove(id) {
         scrollback::remove(st, &m.uid).await;
+        if m.spec.openrouter.is_some() {
+            orl::remove_claude_settings(&st.data_dir, &m.uid);
+        }
     }
+    st.leases.revoke_tag(id);
     save(st).await;
     Ok(())
 }
@@ -691,6 +814,7 @@ pub async fn rename(st: &AppState, id: &str, new: &str) -> Result<()> {
     if let Some((_, meta)) = st.sessions.remove(id) {
         st.sessions.insert(new.to_owned(), meta);
     }
+    st.leases.rename_tag(id, new);
     save(st).await;
     Ok(())
 }

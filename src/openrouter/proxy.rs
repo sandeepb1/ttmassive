@@ -267,6 +267,16 @@ impl Leases {
         true
     }
 
+    /// Follow a session that was renamed.
+    pub fn rename_tag(&self, old: &str, new: &str) -> bool {
+        let Some(token) = self.by_tag(old).map(|(t, _)| t) else { return false };
+        if let Some(mut l) = self.map.get_mut(&token) {
+            l.tag = new.into();
+        }
+        self.save(true);
+        true
+    }
+
     pub fn revoke_tag(&self, tag: &str) -> bool {
         let before = self.map.len();
         self.map.retain(|_, l| l.tag != tag);

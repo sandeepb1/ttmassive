@@ -2,6 +2,8 @@
 // what to start in it (Claude, Codex, a shell or another preset) and go. It is the one way in for
 // the sidebar's `+`, a project's own `+` and the command bar's "New session…".
 
+import { DRIVER_LABEL, driverFor, orAccounts, shortModel, priceLine, type Account, type Driver } from './accounts-model';
+import { getJson } from './api-json';
 import { el } from './dom';
 import {
   browseDirs, cachedNewSessionData, canSkip, launchGroup, launchSession, loadNewSessionData, mainAgents,
@@ -11,11 +13,14 @@ import { icon } from './icons';
 import { Sheet } from './sheet';
 import { button } from './ui/button';
 import { chip } from './ui/chip';
-import { input as textInput } from './ui/input';
+import { input as textInput, select } from './ui/input';
 import { sheetLabel, sheetMsg } from './ui/sheet-parts';
 
 const AGENT_KEY = 'ttm.new.agent';
+const OR_KEY = 'ttm.new.openrouter';
 const SHELL = '';
+/** The agent choice that runs Claude Code or Codex on an OpenRouter model. It cannot clash with a preset name. */
+const OR_CHOICE = '@openrouter';
 
 interface Folder {
   path: string;
@@ -45,6 +50,22 @@ function remember(choice: string) {
   }
 }
 
+function rememberedOr(): { account?: string; model?: string } {
+  try {
+    return JSON.parse(localStorage.getItem(OR_KEY) ?? '{}') as { account?: string; model?: string };
+  } catch {
+    return {};
+  }
+}
+
+function rememberOr(account: string, model: string) {
+  try {
+    localStorage.setItem(OR_KEY, JSON.stringify({ account, model }));
+  } catch {
+    /* just not remembered */
+  }
+}
+
 export class NewSessionSheet extends Sheet {
   private presets: PresetInfo[] = [];
   private groups: GroupInfo[] = [];
@@ -71,6 +92,14 @@ export class NewSessionSheet extends Sheet {
   private err = el('div', 'ns-err');
   private go = button({ cls: 'w-full font-bold' }, 'Start');
   private showMore = false;
+  /** OpenRouter accounts and the choices made for an OpenRouter session. */
+  private accounts: Account[] = [];
+  private orAccount = '';
+  private orModel = '';
+  /** '' lets the server pick the CLI from the model. */
+  private orDriver: '' | Driver = '';
+  private orCap = '';
+  private orBox = el('div', 'flex flex-col gap-2');
 
   constructor(host: HTMLElement, private signedOut: () => void, private hooks: NewSessionHooks) {
     super(host, '', 'New session', signedOut);
@@ -86,6 +115,7 @@ export class NewSessionSheet extends Sheet {
       this.show();
       this.focusFolder();
       void loadNewSessionData().then((fresh) => this.refresh(fresh));
+      void this.loadAccounts();
       return;
     }
     this.body.replaceChildren(sheetMsg('Loading…'));
@@ -96,6 +126,34 @@ export class NewSessionSheet extends Sheet {
     this.body.style.minHeight = '';
     this.apply(data, dir, agent);
     this.focusFolder();
+    void this.loadAccounts();
+  }
+
+  /** OpenRouter accounts decide whether the OpenRouter choice exists; they arrive after the sheet is up. */
+  private async loadAccounts() {
+    const r = await getJson<Account[]>('/api/accounts', this.signedOut);
+    if (this.gone) return;
+    this.accounts = r.ok ? orAccounts(r.data) : [];
+    if (this.choice === OR_CHOICE && this.accounts.length === 0) this.choice = this.fallbackChoice();
+    this.syncOrPick();
+    this.syncAgents();
+    this.syncSkip();
+    this.syncOr();
+  }
+
+  /** What to start when the remembered choice cannot be honoured. */
+  private fallbackChoice(): string {
+    const { claude, codex } = mainAgents(this.presets);
+    return (claude ?? codex)?.name ?? SHELL;
+  }
+
+  /** Keep the chosen account and model valid for the accounts there are now. */
+  private syncOrPick() {
+    const saved = rememberedOr();
+    const account = this.accounts.find((a) => a.id === (this.orAccount || saved.account)) ?? this.accounts[0];
+    this.orAccount = account?.id ?? '';
+    const models = account?.models ?? [];
+    this.orModel = models.find((m) => m.id === (this.orModel || saved.model))?.id ?? models[0]?.id ?? '';
   }
 
   private apply(data: NewSessionData, dir?: string, agent?: 'claude' | 'codex') {
@@ -104,7 +162,7 @@ export class NewSessionSheet extends Sheet {
     const names = new Set(this.presets.map((p) => p.name));
     const saved = remembered();
     const { claude, codex } = mainAgents(this.presets);
-    this.choice = saved !== null && (saved === SHELL || names.has(saved)) ? saved : (claude ?? codex)?.name ?? SHELL;
+    this.choice = saved !== null && (saved === SHELL || saved === OR_CHOICE || names.has(saved)) ? saved : (claude ?? codex)?.name ?? SHELL;
     // A home-screen shortcut ("New Codex session") names the agent; otherwise the last choice stands.
     const wanted = agent ? { claude, codex }[agent] : undefined;
     if (wanted) this.choice = wanted.name;
@@ -190,7 +248,7 @@ export class NewSessionSheet extends Sheet {
 
     const folderLabel = sheetLabel('Folder');
     const startLabel = sheetLabel('Start');
-    this.body.replaceChildren(folderLabel, folderRow, this.crumbs, this.suggestions, startLabel, this.agents, this.moreRow, this.skipRow);
+    this.body.replaceChildren(folderLabel, folderRow, this.crumbs, this.suggestions, startLabel, this.agents, this.moreRow, this.orBox, this.skipRow);
     if (this.groups.length > 0) this.body.append(this.groupBox);
     this.body.append(this.err, this.go);
     // Enter anywhere but a button or the folder field starts the session.
@@ -204,6 +262,7 @@ export class NewSessionSheet extends Sheet {
   private syncAll() {
     this.syncAgents();
     this.syncSkip();
+    this.syncOr();
     this.syncGroups();
     this.syncGo();
   }
@@ -227,6 +286,7 @@ export class NewSessionSheet extends Sheet {
     const items: HTMLElement[] = [];
     if (claude) items.push(seg('Claude', claude.name));
     if (codex) items.push(seg('Codex', codex.name));
+    if (this.accounts.length > 0) items.push(seg('OpenRouter', OR_CHOICE));
     items.push(seg('Shell', SHELL));
     const chosenMore = more.some((p) => p.name === this.choice);
     if (more.length > 0) {
@@ -260,10 +320,19 @@ export class NewSessionSheet extends Sheet {
     if (!this.preset(name)?.yolo) this.skip = false;
     this.syncAgents();
     this.syncSkip();
+    this.syncOr();
   }
 
   /** The skip-permissions box only exists for Claude and Codex, and is locked on for a preset that always skips. */
   private syncSkip() {
+    if (this.choice === OR_CHOICE) {
+      this.skipRow.hidden = false;
+      this.skipBox.checked = this.skip;
+      this.skipBox.disabled = false;
+      this.skipRow.classList.toggle('risky', this.skip);
+      this.skipText.textContent = this.orDriverNow() === 'codex' ? 'Skip permission checks (--yolo)' : 'Skip permission checks (--dangerously-skip-permissions)';
+      return;
+    }
     const p = this.preset(this.choice);
     this.skipRow.hidden = !p || !canSkip(p);
     if (!p) return;
@@ -281,6 +350,59 @@ export class NewSessionSheet extends Sheet {
     );
   }
 
+  /** The CLI an OpenRouter session will run in: the one asked for, else the one the model calls for. */
+  private orDriverNow(): Driver {
+    return this.orDriver || driverFor(this.orModel);
+  }
+
+  /** The account, model, CLI and cap for an OpenRouter session. */
+  private syncOr() {
+    this.orBox.hidden = this.choice !== OR_CHOICE;
+    if (this.orBox.hidden) return;
+    const account = this.accounts.find((a) => a.id === this.orAccount);
+    const parts: HTMLElement[] = [];
+    if (this.accounts.length > 1) {
+      const acct = select(this.accounts.map((a) => ({ value: a.id, label: a.name })), { value: this.orAccount, label: 'OpenRouter account' });
+      acct.addEventListener('change', () => {
+        this.orAccount = acct.value;
+        this.orModel = '';
+        this.syncOrPick();
+        this.syncOr();
+      });
+      parts.push(acct);
+    }
+    const models = account?.models ?? [];
+    if (models.length === 0) {
+      parts.push(el('div', 'text-sm text-muted-foreground', 'No models pinned on this account. Pin some in Settings, under Account.'));
+    } else {
+      const model = select(models.map((m) => ({ value: m.id, label: `${shortModel(m.id)} · ${priceLine(m)}` })), { value: this.orModel, label: 'Model' });
+      model.addEventListener('change', () => {
+        this.orModel = model.value;
+        rememberOr(this.orAccount, this.orModel);
+        this.syncSkip();
+        this.syncOr();
+      });
+      parts.push(model);
+      const driver = select(
+        [{ value: '', label: `Run in ${DRIVER_LABEL[driverFor(this.orModel)]} (automatic)` }, ...(['claude', 'codex'] as const).map((d) => ({ value: d, label: `Run in ${DRIVER_LABEL[d]}` }))],
+        { value: this.orDriver, label: 'Which agent runs it' },
+      );
+      driver.addEventListener('change', () => {
+        this.orDriver = driver.value as '' | Driver;
+        this.syncSkip();
+      });
+      const cap = textInput({ placeholder: 'Dollar cap (optional)', label: 'Dollar cap', cls: 'flex-1' });
+      cap.inputMode = 'decimal';
+      cap.value = this.orCap;
+      cap.addEventListener('input', () => (this.orCap = cap.value));
+      const row = el('div', 'flex gap-2');
+      row.append(driver, cap);
+      parts.push(row);
+    }
+    this.orBox.replaceChildren(...parts);
+    this.syncGo();
+  }
+
   private syncGroups() {
     if (this.groups.length === 0) return;
     this.groupBox.replaceChildren(sheetLabel('Or start a group'));
@@ -295,7 +417,7 @@ export class NewSessionSheet extends Sheet {
   }
 
   private syncGo() {
-    this.go.disabled = this.busy || !this.folder;
+    this.go.disabled = this.busy || !this.folder || (this.choice === OR_CHOICE && !this.orModel);
     this.go.textContent = this.busy ? 'Starting…' : 'Start';
   }
 
@@ -434,11 +556,22 @@ export class NewSessionSheet extends Sheet {
     // A folder typed but not yet settled on: settle first, so Enter never starts somewhere unseen.
     if (!this.folder) return void (await this.confirmTyped());
     const p = this.preset(this.choice);
-    const yolo = !!p && canSkip(p) && (this.skip || p.yolo === true);
+    const viaOr = this.choice === OR_CHOICE;
+    let cap: number | undefined;
+    if (viaOr && this.orCap.trim() !== '') {
+      cap = Number(this.orCap.trim().replace(/^\$/, ''));
+      if (!Number.isFinite(cap) || cap <= 0) return void (this.err.textContent = 'The dollar cap must be more than zero');
+    }
+    const yolo = viaOr ? this.skip : !!p && canSkip(p) && (this.skip || p.yolo === true);
     this.busy = true;
     this.err.textContent = '';
     this.syncGo();
-    const r = await launchSession({ preset: p?.name, yolo, dir: this.folder.path });
+    const r = await launchSession({
+      preset: viaOr ? undefined : p?.name,
+      yolo,
+      dir: this.folder.path,
+      openrouter: viaOr ? { account: this.orAccount, model: this.orModel, driver: this.orDriver || undefined, cap_usd: cap } : undefined,
+    });
     this.busy = false;
     if (this.gone) return;
     if (!r.ok) {

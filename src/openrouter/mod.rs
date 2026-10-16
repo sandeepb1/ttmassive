@@ -2,4 +2,5 @@
 //! lets agent CLIs use an account without holding its key.
 
 pub mod catalog;
+pub mod launch;
 pub mod proxy;

@@ -1,0 +1,215 @@
+//! Starting an agent CLI on an OpenRouter model: which CLI runs it, and what that CLI is given.
+//!
+//! Claude Code is pointed at the proxy through a per-session `--settings` file, not through the
+//! environment: an `env` block in the user's own `~/.claude/settings.json` (a Team Claude
+//! `ANTHROPIC_BASE_URL`, say) beats the process environment, and would quietly send the session
+//! somewhere else. A `--settings` file on the command line outranks it. Codex takes `-c` overrides,
+//! which already outrank its config file, and reads the lease token from its environment.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use super::proxy;
+use crate::secrets;
+
+const DIR: &str = "or-settings";
+
+/// The CLI that runs an OpenRouter model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Driver {
+    Claude,
+    Codex,
+}
+
+impl Driver {
+    /// What the session's command starts from, before any model flags.
+    pub fn command(self) -> &'static str {
+        match self {
+            Driver::Claude => "claude",
+            Driver::Codex => "codex",
+        }
+    }
+}
+
+/// Claude Code speaks Anthropic's API, so it runs Anthropic's models; everything else goes to Codex,
+/// which speaks the OpenAI Responses API that OpenRouter serves for every vendor. A session can
+/// still be started on the other CLI by asking for it.
+pub fn driver_for(model: &str) -> Driver {
+    let vendor = model.split('/').next().unwrap_or("").trim_start_matches('~');
+    if vendor == "anthropic" { Driver::Claude } else { Driver::Codex }
+}
+
+/// How an OpenRouter-backed session is started again after a restore. The model here is the one it
+/// was last switched to; the lease holds the live one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrSpec {
+    pub account: String,
+    pub model: String,
+    pub driver: Driver,
+    #[serde(default)]
+    pub cap_usd: Option<f64>,
+}
+
+/// A model id that is safe to put on a command line.
+pub fn valid_model(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 200 && id.chars().all(|c| c.is_ascii_alphanumeric() || "/._:-~+".contains(c))
+}
+
+/// Where agents on this machine reach the proxy: always loopback, whatever address ttm is served on.
+pub fn origin(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
+}
+
+/// Claude Code settings for one session: ttm's own hooks and status line, plus the proxy as the
+/// API endpoint with the lease as its credential. The empty `ANTHROPIC_API_KEY` stops a key set
+/// elsewhere from being preferred to the token.
+pub fn claude_settings(hooks: &str, origin: &str, token: &str) -> Result<String> {
+    let mut settings: Value = serde_json::from_str(hooks).context("ttm's hook settings")?;
+    let env: serde_json::Map<String, Value> = proxy::claude_env(origin, token).into_iter().map(|(k, v)| (k.to_owned(), Value::String(v))).collect();
+    settings["env"] = Value::Object(env);
+    Ok(settings.to_string())
+}
+
+fn settings_path(data_dir: &Path, uid: &str) -> PathBuf {
+    data_dir.join(DIR).join(format!("{uid}.json"))
+}
+
+/// Write the settings file for session `uid` (readable by you only: it holds the lease token).
+pub fn write_claude_settings(data_dir: &Path, uid: &str, hooks: &str, origin: &str, token: &str) -> Result<PathBuf> {
+    anyhow::ensure!(uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && !uid.is_empty(), "bad session uid");
+    let path = settings_path(data_dir, uid);
+    std::fs::create_dir_all(path.parent().context("settings dir")?)?;
+    secrets::write_private(&path, claude_settings(hooks, origin, token)?.as_bytes())?;
+    Ok(path)
+}
+
+/// Forget a session's settings file.
+pub fn remove_claude_settings(data_dir: &Path, uid: &str) {
+    let _ = std::fs::remove_file(settings_path(data_dir, uid));
+}
+
+/// Quote for `sh`.
+fn q(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The flags to add after the session's base command, and the environment to start it with.
+pub struct Flags {
+    pub args: String,
+    pub env: Vec<(String, String)>,
+}
+
+/// Flags for Codex: the model, and the overrides that make the proxy its provider.
+pub fn codex_flags(origin: &str, token: &str, model: &str) -> Flags {
+    let mut args = format!(" -m {}", q(model));
+    for a in proxy::codex_args(origin) {
+        args.push(' ');
+        // A bare flag such as `-c` needs no quotes; its value does.
+        if a.starts_with('-') && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            args.push_str(&a);
+        } else {
+            args.push_str(&q(&a));
+        }
+    }
+    Flags { args, env: vec![(proxy::TOKEN_ENV.to_owned(), token.to_owned())] }
+}
+
+/// Flags for Claude Code: the settings file and the model.
+pub fn claude_flags(settings: &Path, model: &str) -> Flags {
+    Flags { args: format!(" --settings {} --model {}", q(&settings.display().to_string()), q(model)), env: Vec::new() }
+}
+
+/// What a session's page shows about its OpenRouter lease.
+pub fn summary(spec: &OrSpec, lease: Option<&proxy::Lease>) -> Value {
+    json!({
+        "account": spec.account,
+        "model": lease.map_or(spec.model.as_str(), |l| l.model.as_str()),
+        "driver": spec.driver,
+        "cap_usd": lease.map_or(spec.cap_usd, |l| l.cap_usd),
+        "spent_usd": lease.map_or(0.0, |l| l.spent.cost_usd),
+        "requests": lease.map_or(0, |l| l.spent.requests),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOOKS: &str = r#"{"statusLine":{"type":"command","command":"ttm statusline"},"hooks":{"Stop":[]}}"#;
+
+    #[test]
+    fn anthropic_models_go_to_claude_and_the_rest_to_codex() {
+        assert_eq!(driver_for("anthropic/claude-haiku-5.5"), Driver::Claude);
+        assert_eq!(driver_for("~anthropic/claude-haiku-latest"), Driver::Claude);
+        assert_eq!(driver_for("openai/gpt-6-luna"), Driver::Codex);
+        assert_eq!(driver_for("google/gemini-3-pro"), Driver::Codex);
+        assert_eq!(driver_for("openrouter/auto"), Driver::Codex);
+        assert_eq!(driver_for("no-vendor"), Driver::Codex);
+    }
+
+    #[test]
+    fn only_command_line_safe_ids_pass() {
+        for ok in ["anthropic/claude-haiku-5.5", "meta-llama/llama-3.3-70b-instruct:free", "~anthropic/claude-sonnet-latest", "a/b+c_d"] {
+            assert!(valid_model(ok), "{ok}");
+        }
+        for bad in ["", "a b", "a;rm -rf", "a$(x)", "a'b", "a\"b", "a\nb", &"x".repeat(201)] {
+            assert!(!valid_model(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn claude_settings_keep_the_hooks_and_add_the_proxy() {
+        let s: Value = serde_json::from_str(&claude_settings(HOOKS, "http://127.0.0.1:7681", "ttm-or-t").unwrap()).unwrap();
+        assert_eq!(s["statusLine"]["command"], "ttm statusline", "hooks survive");
+        assert!(s["hooks"].is_object());
+        assert_eq!(s["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:7681/or/anthropic");
+        assert_eq!(s["env"]["ANTHROPIC_AUTH_TOKEN"], "ttm-or-t");
+        assert_eq!(s["env"]["ANTHROPIC_API_KEY"], "");
+        assert!(claude_settings("not json", "o", "t").is_err());
+    }
+
+    #[test]
+    fn the_settings_file_is_private_and_goes_away() {
+        let dir = std::env::temp_dir().join(format!("ttm-orset-{}", std::process::id()));
+        let path = write_claude_settings(&dir, "u1", HOOKS, "http://127.0.0.1:1", "ttm-or-secret").unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("ttm-or-secret"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        remove_claude_settings(&dir, "u1");
+        assert!(!path.exists());
+        assert!(write_claude_settings(&dir, "../evil", HOOKS, "o", "t").is_err(), "uids cannot climb out of the folder");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn flags_quote_everything_and_keep_the_token_off_the_command_line() {
+        let c = codex_flags("http://127.0.0.1:7681", "ttm-or-secret", "openai/gpt-6-luna");
+        assert!(c.args.starts_with(" -m 'openai/gpt-6-luna' -c 'model_providers.ttm_or={"));
+        assert!(c.args.contains("model_provider=\"ttm_or\""));
+        assert!(!c.args.contains("ttm-or-secret"));
+        assert_eq!(c.env, vec![("TTM_OR_TOKEN".to_owned(), "ttm-or-secret".to_owned())]);
+        let k = claude_flags(Path::new("/data/or settings/u.json"), "anthropic/claude-haiku-5.5");
+        assert_eq!(k.args, " --settings '/data/or settings/u.json' --model 'anthropic/claude-haiku-5.5'");
+        assert!(k.env.is_empty(), "Claude's token travels in the settings file");
+        assert_eq!(q("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn summary_prefers_the_live_lease() {
+        let spec = OrSpec { account: "a".into(), model: "x/old".into(), driver: Driver::Codex, cap_usd: Some(1.0) };
+        let s = summary(&spec, None);
+        assert_eq!((s["model"].as_str(), s["spent_usd"].as_f64(), s["driver"].as_str()), (Some("x/old"), Some(0.0), Some("codex")));
+        let leases = proxy::Leases::new();
+        let token = leases.mint("a", "x/new", "t", Some(2.0));
+        leases.record(&token, &proxy::Usage { cost: Some(0.5), ..Default::default() });
+        let s = summary(&spec, leases.get(&token).as_ref());
+        assert_eq!((s["model"].as_str(), s["cap_usd"].as_f64(), s["spent_usd"].as_f64(), s["requests"].as_u64()), (Some("x/new"), Some(2.0), Some(0.5), Some(1)));
+    }
+}
