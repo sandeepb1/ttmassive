@@ -2,7 +2,9 @@
 //! the MCP endpoint hands the same tools to agent CLIs without giving them the key.
 
 pub mod client;
+pub mod error;
 pub mod mcp;
+pub mod pool;
 pub mod render;
 pub mod tools;
 pub mod types;

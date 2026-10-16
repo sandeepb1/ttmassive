@@ -1,6 +1,6 @@
 //! The text an agent reads: compact, and cut to a size that does not flood a model's context.
 
-use super::types::{Crawl, Page, SearchHit, SiteMap};
+use super::types::{Crawl, Page, Provider, SearchHit, SiteMap};
 
 /// Cut `s` to `max` characters, saying so when it was.
 pub fn cut(s: &str, max: usize) -> String {
@@ -61,6 +61,15 @@ pub fn crawl(c: &Crawl, per_page: usize, total: usize) -> String {
     out
 }
 
+/// A closing line saying who answered, and who was passed over on the way.
+pub fn provenance(source: Option<Provider>, notes: &[String]) -> String {
+    match (source, notes.is_empty()) {
+        (Some(p), true) => format!("(via {})", p.name()),
+        (Some(p), false) => format!("(via {}; {})", p.name(), notes.join("; ")),
+        (None, _) => format!("(no web account had an answer: {})", notes.join("; ")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +81,13 @@ mod tests {
 
     fn pg(title: &str, url: &str, md: &str) -> Page {
         Page { url: url.into(), title: title.into(), markdown: md.into() }
+    }
+
+    #[test]
+    fn a_closing_line_names_who_answered_and_who_was_passed_over() {
+        assert_eq!(provenance(Some(Provider::Firecrawl), &[]), "(via Firecrawl)");
+        assert_eq!(provenance(Some(Provider::Firecrawl), &["Serper found nothing".into()]), "(via Firecrawl; Serper found nothing)");
+        assert_eq!(provenance(None, &["Firecrawl found nothing".into()]), "(no web account had an answer: Firecrawl found nothing)");
     }
 
     #[test]

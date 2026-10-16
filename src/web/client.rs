@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+use super::error::{self, Kind, ProviderError};
 use super::render;
 use super::types::{Crawl, Fetched, MapEntry, Page, SearchHit, SiteMap};
 use crate::secrets::Account;
@@ -67,15 +68,16 @@ impl Client {
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let res = req.send().await.with_context(|| format!("could not reach {}", self.base))?;
+        let res = req.send().await.map_err(|e| ProviderError::new(Kind::Network, format!("could not reach {}: {e}", self.base)))?;
         let status = res.status();
+        let wait = error::retry_after(res.headers());
         let text = res.text().await.unwrap_or_default();
         let v = lenient_json(&text);
         if !status.is_success() {
             let why = v.as_ref().and_then(|v| v.get("error").or_else(|| v.get("message")).and_then(Value::as_str).map(String::from)).unwrap_or_else(|| text.chars().take(200).collect());
-            bail!("Firecrawl answered {status}: {why}");
+            return Err(ProviderError { kind: error::classify(status), retry_after: wait, message: format!("Firecrawl answered {status}: {why}") }.into());
         }
-        v.with_context(|| "Firecrawl's answer was not JSON")
+        v.ok_or_else(|| ProviderError::new(Kind::Network, "Firecrawl's answer was not JSON").into())
     }
 
     pub async fn credits(&self) -> Result<Balance> {
