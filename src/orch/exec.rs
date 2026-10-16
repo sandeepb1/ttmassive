@@ -1367,6 +1367,9 @@ mod tests {
         // The griller is told what it asked before, so it does not ask it again.
         let second = fake.prompt("grill", 1);
         assert!(second.contains("# What you have asked before") && second.contains("Which database?"), "{second}");
+        // However old the agent's saved instructions are, every turn tells it how to ask.
+        assert!(second.contains("# How to ask") && second.contains("2 to 4 distinct options") && second.contains("at most 6 questions"), "{second}");
+        assert!(!fake.prompt("plan", 0).contains("# How to ask"), "only an agent that asks is told");
         assert!(!fake.prompt("grill", 0).contains("asked before"), "nothing before the first time");
         let r = run.lock().unwrap();
         assert_eq!(r.iterations["back"], 1);

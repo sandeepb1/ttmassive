@@ -97,6 +97,9 @@ pub fn salvage(schema: &Value, text: &str) -> Option<Value> {
     crate::providers::chat::extract_json(text).filter(|v| conforms(schema, v))
 }
 
+/// Most questions one round of asking may hold: more than this is a wall of text, and the rest can wait for the next round.
+pub const MAX_ASKED_AT_ONCE: usize = 6;
+
 /// A question's words without the number a model sometimes writes in front of it ("1. ", "2)"): the page numbers them itself.
 fn unnumbered(q: &str) -> String {
     let q = q.trim();
@@ -131,6 +134,7 @@ pub fn asked_questions(output: &Value) -> Vec<Question> {
                     let multiple = options.len() >= 2 && rest.and_then(|o| o.get("multiple")).and_then(Value::as_bool).unwrap_or(false);
                     (!text.is_empty()).then_some(Question { text, recommended, options, multiple })
                 })
+                .take(MAX_ASKED_AT_ONCE)
                 .collect()
         })
         .unwrap_or_default()
@@ -211,6 +215,16 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
             p.push_str(&format!("\n# What you have asked before\n\nDo not ask these again. Ask only what is still open now that the work has changed.\n\n{}\n", qa_text(&pairs)));
         }
     }
+    if node.asks() {
+        // Said every turn, not left to the agent's saved instructions: those are copied into a flow when the agent is made, so
+        // a flow built before questions had choices would never be told, and the format allows an empty list of options.
+        p.push_str(&format!(
+            "\n# How to ask\n\nAsk at most {MAX_ASKED_AT_ONCE} questions, the ones whose answers matter most, each in one or two sentences and without a \
+             number in front. Give every question 2 to 4 distinct options for the person to choose from, and set `recommended` to the \
+             one you would pick (it must be one of the options). Set `multiple` to true only when several options can apply. An empty \
+             list of options is not acceptable.\n"
+        ));
+    }
     p.push_str(
         "\nDo your role's part and answer in the required JSON shape. Refer to files by paths relative to your \
          working folder, never by absolute path.",
@@ -255,6 +269,8 @@ mod tests {
         assert_eq!((q[2].text.as_str(), q[2].options.len()), ("A plain question?", 0));
         assert_eq!(open_questions(&out), ["Which database?", "Who may log in?", "A plain question?"]);
         assert!(asked_questions(&json!({"resolved": true, "questions": ["still here"]})).is_empty(), "satisfied wins");
+        let many = json!({"resolved": false, "questions": (0..15).map(|i| format!("Q{i}?")).collect::<Vec<_>>()});
+        assert_eq!(asked_questions(&many).len(), MAX_ASKED_AT_ONCE, "a wall of questions is cut to the first, most important ones");
         assert_eq!(unnumbered("2024 plans?"), "2024 plans?", "a year is not a number in front");
         assert_eq!(unnumbered("12. Twelve"), "Twelve");
         let schema = schema_for(Output::Questions, &[]);
