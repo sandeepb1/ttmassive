@@ -1,0 +1,196 @@
+// Provider accounts and the model lists behind their pickers: the shapes the server sends, and the
+// sorting, filtering and formatting the pickers need. No DOM here, so it can be tested on its own.
+
+export type AccountKind = 'openrouter' | 'openai-compatible';
+
+export interface PinnedModel {
+  id: string;
+  /** Dollars per million tokens; null when unknown. */
+  priceIn: number | null;
+  priceOut: number | null;
+  tools: boolean;
+}
+
+export interface Account {
+  id: string;
+  name: string;
+  kind: AccountKind;
+  baseUrl: string;
+  hasKey: boolean;
+  last4: string;
+  useInOrchestrator: boolean;
+  models: PinnedModel[];
+}
+
+/** What the server accepts when an account is added or changed. A missing `key` keeps the stored one. */
+export interface AccountInput {
+  name: string;
+  kind: AccountKind;
+  baseUrl: string;
+  key?: string;
+  useInOrchestrator: boolean;
+  models: PinnedModel[];
+}
+
+export interface CatalogModel {
+  id: string;
+  name: string;
+  created: number;
+  description: string;
+  context: number;
+  priceIn: number | null;
+  priceOut: number | null;
+  priceCacheRead: number | null;
+  tools: boolean;
+  reasoning: boolean;
+  structured: boolean;
+  imageIn: boolean;
+}
+
+export interface Catalog {
+  fetched: number;
+  models: CatalogModel[];
+}
+
+export interface Remote {
+  usage: number | null;
+  limit: number | null;
+  remaining: number | null;
+  freeTier: boolean | null;
+  models: string[];
+}
+
+export const KIND_LABEL: Record<AccountKind, string> = { openrouter: 'OpenRouter', 'openai-compatible': 'OpenAI-compatible' };
+
+export function emptyInput(kind: AccountKind): AccountInput {
+  return { name: '', kind, baseUrl: '', useInOrchestrator: true, models: [] };
+}
+
+export function inputOf(a: Account): AccountInput {
+  return { name: a.name, kind: a.kind, baseUrl: a.baseUrl, useInOrchestrator: a.useInOrchestrator, models: a.models.map((m) => ({ ...m })) };
+}
+
+/** Dollars per million tokens as a person reads them: $0.30, $15, free. */
+export function price(p: number | null): string {
+  if (p === null) return '?';
+  if (p === 0) return 'free';
+  if (p >= 100) return `$${Math.round(p)}`;
+  return Number.isInteger(p) ? `$${p}` : `$${p.toFixed(2)}`;
+}
+
+/** "in / out" per million tokens, or a plain note when the price is not known. */
+export function priceLine(m: { priceIn: number | null; priceOut: number | null }): string {
+  if (m.priceIn === null && m.priceOut === null) return 'no price';
+  return `${price(m.priceIn)} in · ${price(m.priceOut)} out`;
+}
+
+export function contextLabel(tokens: number): string {
+  if (tokens <= 0) return '';
+  if (tokens >= 1_000_000) return `${+(tokens / 1_000_000).toFixed(1)}M ctx`;
+  return `${Math.round(tokens / 1000)}k ctx`;
+}
+
+/** How long ago a model was added, in the coarsest unit that reads well. */
+export function ageLabel(created: number, now: number): string {
+  if (created <= 0) return '';
+  const days = Math.floor((now - created) / 86400);
+  if (days < 1) return 'today';
+  if (days < 14) return `${days}d ago`;
+  if (days < 60) return `${Math.floor(days / 7)}w ago`;
+  if (days < 730) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
+}
+
+export type SortKey = 'newest' | 'cheapest' | 'context' | 'name';
+
+export const SORTS: { value: SortKey; label: string }[] = [
+  { value: 'newest', label: 'Newest' },
+  { value: 'cheapest', label: 'Cheapest' },
+  { value: 'context', label: 'Largest context' },
+  { value: 'name', label: 'Name' },
+];
+
+/** The blended price used to rank by cost: input plus output, with unknown prices last. */
+function cost(m: CatalogModel): number {
+  return m.priceIn === null || m.priceOut === null ? Number.POSITIVE_INFINITY : m.priceIn + m.priceOut;
+}
+
+export function sortModels(models: CatalogModel[], by: SortKey): CatalogModel[] {
+  const out = [...models];
+  const byName = (a: CatalogModel, b: CatalogModel) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+  switch (by) {
+    case 'newest':
+      return out.sort((a, b) => b.created - a.created || byName(a, b));
+    case 'cheapest':
+      return out.sort((a, b) => cost(a) - cost(b) || byName(a, b));
+    case 'context':
+      return out.sort((a, b) => b.context - a.context || byName(a, b));
+    case 'name':
+      return out.sort(byName);
+  }
+}
+
+export interface CatalogFilter {
+  query: string;
+  /** The id's vendor prefix ("anthropic"), or '' for all. */
+  provider: string;
+  /** Hide models that cannot call tools, which agents need. */
+  toolsOnly: boolean;
+}
+
+export const providerOf = (id: string): string => (id.includes('/') ? id.slice(0, id.indexOf('/')) : '');
+
+export function filterModels(models: CatalogModel[], f: CatalogFilter): CatalogModel[] {
+  const words = f.query.toLowerCase().split(/\s+/).filter(Boolean);
+  return models.filter((m) => {
+    if (f.toolsOnly && !m.tools) return false;
+    if (f.provider && providerOf(m.id) !== f.provider) return false;
+    const hay = `${m.id} ${m.name}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
+}
+
+/** Vendors in the list, most models first. */
+export function providersOf(models: CatalogModel[]): string[] {
+  const n = new Map<string, number>();
+  for (const m of models) {
+    const p = providerOf(m.id);
+    if (p) n.set(p, (n.get(p) ?? 0) + 1);
+  }
+  return [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([p]) => p);
+}
+
+export function pinFromCatalog(m: CatalogModel): PinnedModel {
+  return { id: m.id, priceIn: m.priceIn, priceOut: m.priceOut, tools: m.tools };
+}
+
+/** A model that an OpenAI-compatible endpoint listed: no price, and tools assumed. */
+export function pinFromId(id: string): PinnedModel {
+  return { id, priceIn: null, priceOut: null, tools: true };
+}
+
+/** Add the model if it is not pinned, remove it if it is. Returns a new list. */
+export function togglePin(pinned: PinnedModel[], model: PinnedModel): PinnedModel[] {
+  return pinned.some((p) => p.id === model.id) ? pinned.filter((p) => p.id !== model.id) : [...pinned, model];
+}
+
+/** A price typed into a field: blank is unknown, anything else must be a non-negative number. */
+export function parsePrice(text: string): number | null | 'bad' {
+  const t = text.trim().replace(/^\$/, '');
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 && n < 1e6 ? n : 'bad';
+}
+
+/** Remaining credit as a line for the account list, or null when OpenRouter did not say. */
+export function balanceLine(r: Pick<Remote, 'usage' | 'limit' | 'remaining'>): string | null {
+  const usd = (n: number) => `$${n.toFixed(2)}`;
+  if (r.remaining !== null) return `${usd(r.remaining)} left`;
+  if (r.usage !== null) return r.limit !== null ? `${usd(r.usage)} of ${usd(r.limit)} used` : `${usd(r.usage)} used`;
+  return null;
+}
+
+/** The pinned models of accounts that may be used in flows, for the orchestrator's pickers. */
+export function flowModels(accounts: Account[]): { account: Account; model: PinnedModel }[] {
+  return accounts.filter((a) => a.useInOrchestrator && a.hasKey).flatMap((account) => account.models.map((model) => ({ account, model })));
+}

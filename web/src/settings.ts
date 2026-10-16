@@ -35,6 +35,7 @@ import {
 import { TERM_FONTS, cleanFamily, hasLigatures, prepareFont } from './term-fonts';
 import { disablePush, enablePush, pushState, sendTest, type PushState } from './push';
 import { getUiScale, SCALE_MAX, SCALE_MIN, SCALE_STEP, setUiScale } from './scale';
+import { accountsBlock } from './accounts-sheets';
 import { Sheet, row } from './sheet';
 import { button } from './ui/button';
 import { chip, chipClass, setChipOn } from './ui/chip';
@@ -153,7 +154,7 @@ export class SettingsSheet extends Sheet {
       { id: 'sessions', label: 'Sessions', blocks: [this.panesBlock()] },
       { id: 'notifications', label: 'Notifications', blocks: [this.notif, this.soundsBlock()] },
       { id: 'updates', label: 'Updates', blocks: [updatesBlock(this.host, () => this.close())] },
-      { id: 'account', label: 'Account', blocks: [this.tunnel, sheetBlock(sheetLabel('Account'), out)] },
+      { id: 'account', label: 'Account', blocks: [accountsBlock(this.host, this.hooks.onUnauthorized), this.tunnel, sheetBlock(sheetLabel('Account'), out)] },
     ];
     this.renderSections(sections);
     void this.renderNotif();
