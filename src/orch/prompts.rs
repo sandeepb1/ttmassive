@@ -134,9 +134,10 @@ orchestrator. Add an agent only for a different kind of work (reading, running c
 check, or a part that can run in parallel with another. Agents that read can run at the same time; never have two agents \
 change the same files, one agent that changes files per piece of work. Anything that changes files is followed by a judge \
 that can run the checks, and the judge's edge back to that agent is marked retry. If a plan or design could be wrong, the \
-judge may also have a retry edge to that earlier agent (the architect, say, if you made one). A flow that changes nothing has no retry edge. For a goal that is vague or a plan that could easily be wrong, a griller \
-can come after the planner: it asks what the plan leaves open, and its edge back to the planner is marked retry (a griller has \
-exactly one way back, and asks the user). Do not add one for a small or clear task. Use the cheapest model that can do the job: opus for the orchestrator, architect and \
+judge may also have a retry edge to that earlier agent (the architect, say, if you made one). A flow that changes nothing has no retry edge. For a goal that is vague or a plan that could easily be wrong, a questioner \
+can come after the planner: a custom role named Griller whose custom_output is questions. It asks what the plan leaves open, and \
+its edge back to the planner is marked retry (it has exactly one way back, and asks the user). Do not add one for a small or \
+clear task. Use the cheapest model that can do the job: opus for the orchestrator, architect and \
 judge; sonnet (or a small codex model) for researchers, debuggers and reporters; haiku or a small codex model for simple \
 lookups. Use a different model for the judge than for the agent whose work it checks. Mark checkpoint true on every agent \
 that changes files, so the user approves before files change. Each system_prompt is 2 to 5 sentences: the agent's job, \
@@ -1546,7 +1547,7 @@ mod tests {
         let item = &sch["properties"]["nodes"]["items"];
         let ids: Vec<&str> = item["properties"]["role"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         assert_eq!(ids.len(), crate::orch::roles::catalog().iter().filter(|d| !d.hidden).count() + 1);
-        assert!(ids.contains(&"custom") && ids.contains(&"griller") && !ids.contains(&"architect") && !ids.contains(&"reporter"));
+        assert!(ids.contains(&"custom") && ids.contains(&"researcher") && !ids.contains(&"griller") && !ids.contains(&"architect") && !ids.contains(&"reporter"));
         let required = item["required"].as_array().unwrap();
         for k in ["custom_label", "custom_capability", "custom_output"] {
             assert!(required.contains(&json!(k)), "{k}");
@@ -1570,6 +1571,12 @@ mod tests {
         v["nodes"][1]["custom_capability"] = json!("read");
         let (f, _) = flow_from_suggestion_with(&v, "f", &models(), &[]).unwrap();
         assert_eq!(f.nodes[1].output(), crate::orch::roles::Output::Verdict);
+        // A questioner, now that there is no built-in Griller: a custom role whose result is questions.
+        v["nodes"][1]["custom_label"] = json!("Griller");
+        v["nodes"][1]["custom_output"] = json!("questions");
+        let (f, _) = flow_from_suggestion_with(&v, "f", &models(), &[]).unwrap();
+        assert!(f.nodes[1].asks(), "it asks, so it may send work back until the questions are answered");
+        assert_eq!(f.nodes[1].custom.as_ref().unwrap().label, "Griller");
         // An agent that is not custom has its custom fields ignored.
         let mut v = suggestion();
         v["nodes"][1]["custom_label"] = json!("Stray");

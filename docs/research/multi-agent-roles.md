@@ -2,9 +2,23 @@
 
 Researched 2026-10-15. Numbers and quotes below were read in the cited source unless listed under "Could not verify". Where a point is my own inference rather than a finding, it is marked "(inference)". Source numbers like [2] refer to "Evidence by source" at the end.
 
+## 0. Decision, 16 Oct 2026: the roles offered out of the box are four
+
+**Orchestrator, Researcher, Builder, Judge.** Plan, find out, change, check. Everything else is a custom role, which Suggest and Ask AI define when a flow needs one (name, what it may do, what it hands back, instructions). Search, Analyst, Architect, Debugger, Reporter and Griller stay in the code so saved flows keep running, but are no longer offered, and the starter flows write them as custom roles.
+
+Why four, and why these:
+
+- **It is the shape the vendor's own guidance converges on.** Claude Code's best-practices page recommends "Explore first, then plan, then code" and says to "separate research and planning from implementation to avoid solving the wrong problem"; it says to have a subagent review the diff in a fresh context so "the agent doing the work isn't the one grading it"; and it tells you to delegate investigation to subagents so reading many files stays out of the main context. That is plan, research, build, check.
+- **More agents cost more, and the same source warns about over-building.** Anthropic's multi-agent research post reports "about 4× more tokens than chat" for agents and "about 15×" for multi-agent systems, says agents "struggle to judge appropriate effort", lists "spawning 50 subagents for simple queries" as an early failure, and says "most coding tasks involve fewer truly parallelizable tasks than research". Their fix was effort-scaling rules in the lead's prompt, which is what the orchestrator's prompt and the per-flow cost dial are for here.
+- **Role ablations support a coder plus a checker, and planning for from-scratch work.** From secondary summaries (the papers themselves were not re-read for this note): MetaGPT's ablation took executability from 1.0 to 4.0 as roles were added, at 51% more cost (already in section 3); AgentCoder found a separate tester beat one agent doing both; a cross-framework comparison found the best agents had at least a coder and a tester. Treat the numbers as indicative.
+- **The Griller was never in the research.** It was added to support a "re-grill" loop. Claude Code's own advice for the same need is to have the planner interview you ("have Claude interview you ... using the AskUserQuestion tool"), which ttm already does before a run starts. A separate questioning agent in the default set is a hand-off that the evidence does not ask for; when a goal is vague enough to want one mid-flow, a custom role with a questions result does the job (the loop machinery is unchanged).
+- **Search is a Researcher on a cheap model.** The same job at a lower tier is a model choice (or the first rung of a ladder), not a role.
+
+Sources: [Anthropic, How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system); [Claude Code best practices](https://code.claude.com/docs/en/best-practices). Both were read directly on 16 Oct 2026.
+
 ## 1. Summary
 
-Nine roles cover the real flows. Four are core, five are situational. All six existing ids stay. Three are new (architect, debugger, reporter).
+This was the first pass: nine roles, four core. Section 0 above is the current decision (four offered; the rest are custom roles).
 
 The evidence points one way. Splitting by function pays when the pieces are read-only and independent, or when one agent checks another's work with a signal from outside the model (tests, a diff in fresh context). It loses when several agents write at once or when each hand-off drops context [2][11][12][13]. So the list has many read roles, exactly one writer, and one checker that can run things.
 

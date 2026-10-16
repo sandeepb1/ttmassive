@@ -77,7 +77,7 @@ pub struct RoleDef {
 /// The roles kept out of the palette and out of what a designer is offered: each is a job a custom role can describe, and
 /// flows already saved with one still run as they did.
 pub const fn is_hidden(role: Role) -> bool {
-    matches!(role, Role::Search | Role::Analyst | Role::Architect | Role::Debugger | Role::Reporter)
+    matches!(role, Role::Search | Role::Analyst | Role::Architect | Role::Debugger | Role::Reporter | Role::Griller)
 }
 
 /// The roles that look things up and so are given the web tools unless told otherwise.
@@ -352,14 +352,15 @@ mod tests {
     }
 
     #[test]
-    fn the_roles_on_offer_are_the_five_every_flow_is_made_of() {
+    fn the_roles_on_offer_are_the_four_every_flow_is_made_of() {
+        // Plan, find out, change, check: what Anthropic's Claude Code guidance and the repo's own research both land on.
         let mut core: Vec<_> = catalog().iter().filter(|d| d.core).map(|d| d.label).collect();
         core.sort();
-        assert_eq!(core, vec!["Builder", "Griller", "Judge", "Orchestrator", "Researcher"]);
+        assert_eq!(core, vec!["Builder", "Judge", "Orchestrator", "Researcher"]);
         // The rest are kept so saved flows still run, but are not offered: a custom role can describe the same job.
         let mut kept: Vec<_> = catalog().iter().filter(|d| d.hidden).map(|d| d.label).collect();
         kept.sort();
-        assert_eq!(kept, vec!["Analyst", "Architect", "Debugger", "Reporter", "Search"]);
+        assert_eq!(kept, vec!["Analyst", "Architect", "Debugger", "Griller", "Reporter", "Search"]);
         assert!(catalog().iter().all(|d| d.core != d.hidden), "every role is either on offer or kept out of sight");
     }
 
