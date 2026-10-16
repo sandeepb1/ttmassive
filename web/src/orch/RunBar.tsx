@@ -17,6 +17,9 @@ interface Props {
   onLimits: () => void;
   onCancel: () => void;
   onCopy: (text: string) => void;
+  /** Which view of the run is open, and a way to change it. */
+  view: 'timeline' | 'chart';
+  onView: (v: 'timeline' | 'chart') => void;
 }
 
 /**
@@ -77,7 +80,7 @@ function GitNotice({ run, busy, onFixed }: { run: Run; busy: boolean; onFixed: (
   );
 }
 
-export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimits, onCancel, onCopy }: Props) {
+export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimits, onCancel, onCopy, view, onView }: Props) {
   const info = pauseInfo(run);
   const tokens = runTokens(run);
   const hit = cacheHit(tokens);
@@ -133,6 +136,13 @@ export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimit
           )}
         </span>
         {!link && <span className="mc-pill" data-tone="warn">offline</span>}
+        <span className="mc-seg" role="radiogroup" aria-label="View of this run">
+          {(['timeline', 'chart'] as const).map((v) => (
+            <button key={v} type="button" role="radio" aria-checked={view === v} onClick={() => onView(v)}>
+              {v === 'timeline' ? 'Timeline' : 'Chart'}
+            </button>
+          ))}
+        </span>
         {live && (
           <button type="button" className="mc-btn mc-btn-sm mc-btn-danger" disabled={busy} onClick={onCancel}>
             <Icon name="stop" /> Stop

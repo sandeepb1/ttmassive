@@ -59,6 +59,10 @@ pub struct EngineRunner {
 const DIRECT_NOTE: &str = "# What you have\n\nYou have no tools: you cannot read files, search, browse or run anything. Work only from the brief above and what \
 the earlier agents handed to you. If the work needs something you cannot see, say so in your answer instead of guessing.";
 
+/// Sent when an agent finished without answering in the required format.
+const REPAIR_PROMPT: &str = "Your last message did not use the required output format, so it could not be handed on. Do not search, read or run \
+anything more. Using only what you have already found, give your final answer now in the required structured format.";
+
 /// Said instead of that to a direct agent that has the web tools.
 const DIRECT_WEB_NOTE: &str = "# What you have\n\nYou can search the web and fetch pages with the tools you are given, a few times at most. You cannot read files or run \
 anything. Otherwise work from the brief above and what the earlier agents handed to you. If the work needs something you cannot see, say so.";
@@ -488,6 +492,27 @@ impl EngineRunner {
             Engine::Claude => self.run_claude(node, cwd, &prompt, log, trace).await,
             Engine::Codex => self.run_codex(node, cwd, &prompt, log, trace).await,
         };
+        // A model that is not held to the output format (the ones on other providers often are not) may do the work and then
+        // answer in its own words. It still has the work in its conversation, so ask once for the answer in the right shape
+        // before failing a turn that can take minutes and cost real money.
+        if let Ok(first) = &result {
+            if first.structured.is_none() && !first.is_error {
+                log("→ its answer was not in the required shape: asking once more for just the answer".into());
+                trace.push(Kind::Prompt, "prompt", REPAIR_PROMPT);
+                let cwd = self.cwd(node).await?;
+                let again = match node.engine {
+                    Engine::Claude => self.run_claude(node, cwd, REPAIR_PROMPT, log, trace).await,
+                    Engine::Codex => self.run_codex(node, cwd, REPAIR_PROMPT, log, trace).await,
+                };
+                if let (Ok(first), Ok(mut second)) = (&result, again) {
+                    second.tokens.add(&first.tokens);
+                    second.cost_usd += first.cost_usd;
+                    second.credits += first.credits;
+                    second.session = second.session.or_else(|| first.session.clone());
+                    result = Ok(second);
+                }
+            }
+        }
         // On OpenRouter the charge is exact, and it is what the proxy saw: the agent's own estimate is not used.
         if node.account.is_some() {
             let charged = (self.spent(node) - before).max(0.0);

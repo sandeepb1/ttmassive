@@ -648,11 +648,6 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               </button>
             </>
           )}
-          {run && (
-            <button type="button" className="mc-btn mc-btn-quiet" aria-pressed={showTimeline} aria-label={showTimeline ? 'Show the chart' : 'Show the timeline'} title={showTimeline ? 'Show the chart' : 'Show the timeline'} onClick={() => setRunView(showTimeline ? 'chart' : 'timeline')}>
-              <Icon name={showTimeline ? 'workflow' : 'route'} /> <span className="mc-hide-narrow">{showTimeline ? 'Chart' : 'Timeline'}</span>
-            </button>
-          )}
           {!phone && !showTimeline && (
             <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={showList ? 'Show the chart' : 'Show a list'} onClick={() => setView(showList ? 'canvas' : 'list')}>
               <Icon name={showList ? 'columns' : 'todo'} />
@@ -702,7 +697,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         </aside>
 
         <main className="mc-stage" data-list={showList || showTimeline}>
-          {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} />}
+          {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} view={runView} onView={setRunView} />}
           {showTimeline ? (
             <Timeline run={run!} selected={selected} />
           ) : showList ? (
