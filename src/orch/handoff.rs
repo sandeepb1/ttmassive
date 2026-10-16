@@ -66,6 +66,37 @@ pub fn verdict(output: &Value) -> Verdict {
     }
 }
 
+/// Does `v` have the shape `schema` asks for: an object holding every required property, each of the right kind?
+/// Only what the handoff schemas use is checked (strings, booleans, arrays of strings or of objects, enums).
+pub fn conforms(schema: &Value, v: &Value) -> bool {
+    let Some(obj) = v.as_object() else { return false };
+    let props = schema.get("properties").and_then(Value::as_object);
+    let required = schema.get("required").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+    for key in required {
+        let (Some(val), Some(def)) = (obj.get(key), props.and_then(|p| p.get(key))) else { return false };
+        let ok = match def.get("type").and_then(Value::as_str) {
+            Some("string") => val.as_str().is_some_and(|s| def.get("enum").and_then(Value::as_array).is_none_or(|e| e.iter().any(|x| x.as_str() == Some(s)))),
+            Some("boolean") => val.is_boolean(),
+            Some("array") => val.as_array().is_some_and(|a| match def.pointer("/items/type").and_then(Value::as_str) {
+                Some("string") => a.iter().all(Value::is_string),
+                Some("object") => a.iter().all(|x| conforms(&def["items"], x)),
+                _ => true,
+            }),
+            _ => true,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+/// The answer in `text` if it holds one in the shape `schema` asks for, whether bare or in a code fence. Models that are not
+/// held to the output format often write the right thing inside prose.
+pub fn salvage(schema: &Value, text: &str) -> Option<Value> {
+    crate::providers::chat::extract_json(text).filter(|v| conforms(schema, v))
+}
+
 /// A question's words without the number a model sometimes writes in front of it ("1. ", "2)"): the page numbers them itself.
 fn unnumbered(q: &str) -> String {
     let q = q.trim();
@@ -189,6 +220,25 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_answer_in_the_right_shape_is_found_in_prose_or_a_fence_and_one_in_its_own_shape_is_not() {
+        let schema = schema_for(Output::Report, &[]);
+        let good = r#"{"summary":"s","findings":["a","b"],"sources":["https://x.test"]}"#;
+        assert!(conforms(&schema, &serde_json::from_str(good).unwrap()));
+        assert!(salvage(&schema, good).is_some());
+        assert!(salvage(&schema, &format!("Here it is:\n```json\n{good}\n```\nDone.")).is_some(), "inside a fence and prose");
+        assert!(salvage(&schema, r#"{"role":"research","topic":"x","findings":[{"claim":"c"}]}"#).is_none(), "its own shape");
+        assert!(salvage(&schema, r#"{"summary":"s","findings":[1],"sources":[]}"#).is_none(), "findings must be strings");
+        assert!(salvage(&schema, r#"{"summary":"s","findings":[]}"#).is_none(), "a required field is missing");
+        assert!(salvage(&schema, "no json at all").is_none());
+        let verdict = schema_for(Output::Verdict, &[]);
+        assert!(salvage(&verdict, r#"{"verdict":"approve","feedback":""}"#).is_some());
+        assert!(salvage(&verdict, r#"{"verdict":"maybe","feedback":""}"#).is_none(), "an enum value must be one of the allowed");
+        let q = schema_for(Output::Questions, &[]);
+        assert!(salvage(&q, r#"{"resolved":false,"questions":[{"text":"t","options":["a","b"],"recommended":"a","multiple":false}]}"#).is_some());
+        assert!(salvage(&q, r#"{"resolved":false,"questions":["bare string"]}"#).is_none(), "the schema asks for objects");
+    }
+
     #[test]
     fn a_griller_may_give_choices_and_a_suggestion_and_plain_or_numbered_questions_still_work() {
         let out = json!({"resolved": false, "questions": [

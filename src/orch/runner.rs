@@ -59,9 +59,17 @@ pub struct EngineRunner {
 const DIRECT_NOTE: &str = "# What you have\n\nYou have no tools: you cannot read files, search, browse or run anything. Work only from the brief above and what \
 the earlier agents handed to you. If the work needs something you cannot see, say so in your answer instead of guessing.";
 
-/// Sent when an agent finished without answering in the required format.
-const REPAIR_PROMPT: &str = "Your last message did not use the required output format, so it could not be handed on. Do not search, read or run \
-anything more. Using only what you have already found, give your final answer now in the required structured format.";
+/// What to say to an agent that finished without answering in the required format: the format itself, since a model that is
+/// not held to it has never seen it.
+fn repair_prompt(schema: &serde_json::Value) -> String {
+    format!(
+        "Your last message was not in the required output format, so it could not be handed on. Do not search, read or run \
+anything more, and do not repeat your report at length. Using only what you have already found, reply now with ONLY one JSON \
+object that matches this JSON Schema, with no code fence and no other text. Keep every string short (one or two sentences); \
+put the detail in the lists.\n\n{}",
+        serde_json::to_string_pretty(schema).unwrap_or_default()
+    )
+}
 
 /// Said instead of that to a direct agent that has the web tools.
 const DIRECT_WEB_NOTE: &str = "# What you have\n\nYou can search the web and fetch pages with the tools you are given, a few times at most. You cannot read files or run \
@@ -493,22 +501,33 @@ impl EngineRunner {
             Engine::Codex => self.run_codex(node, cwd, &prompt, log, trace).await,
         };
         // A model that is not held to the output format (the ones on other providers often are not) may do the work and then
-        // answer in its own words. It still has the work in its conversation, so ask once for the answer in the right shape
-        // before failing a turn that can take minutes and cost real money.
+        // answer in its own words, or in a code fence, or in a layout of its own. The right answer may already be in what it
+        // wrote; if not, it still has the work in its conversation, so show it the layout and ask once before failing a turn
+        // that can take minutes and cost real money.
+        let schema = handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id));
+        if let Ok(first) = &mut result {
+            if first.structured.is_none() && !first.is_error {
+                first.structured = handoff::salvage(&schema, &first.text);
+            }
+        }
         if let Ok(first) = &result {
             if first.structured.is_none() && !first.is_error {
                 log("→ its answer was not in the required shape: asking once more for just the answer".into());
-                trace.push(Kind::Prompt, "prompt", REPAIR_PROMPT);
+                let ask = repair_prompt(&schema);
+                trace.push(Kind::Prompt, "prompt", &ask);
                 let cwd = self.cwd(node).await?;
                 let again = match node.engine {
-                    Engine::Claude => self.run_claude(node, cwd, REPAIR_PROMPT, log, trace).await,
-                    Engine::Codex => self.run_codex(node, cwd, REPAIR_PROMPT, log, trace).await,
+                    Engine::Claude => self.run_claude(node, cwd, &ask, log, trace).await,
+                    Engine::Codex => self.run_codex(node, cwd, &ask, log, trace).await,
                 };
                 if let (Ok(first), Ok(mut second)) = (&result, again) {
                     second.tokens.add(&first.tokens);
                     second.cost_usd += first.cost_usd;
                     second.credits += first.credits;
                     second.session = second.session.or_else(|| first.session.clone());
+                    if second.structured.is_none() && !second.is_error {
+                        second.structured = handoff::salvage(&schema, &second.text);
+                    }
                     result = Ok(second);
                 }
             }
@@ -619,6 +638,14 @@ mod tests {
         assert_eq!(calls[0]["messages"][0]["content"], "You plan.");
         assert!(calls[0]["messages"][1]["content"].as_str().unwrap().contains("You have no tools"), "told what it does not have");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn the_follow_up_shows_the_agent_the_exact_layout_and_asks_for_nothing_else() {
+        let schema = handoff::schema_for(crate::orch::roles::Output::Report, &[]);
+        let p = repair_prompt(&schema);
+        assert!(p.contains("\"summary\"") && p.contains("\"findings\"") && p.contains("\"sources\""), "{p}");
+        assert!(p.contains("ONLY one JSON object") && p.contains("no code fence") && p.contains("Do not search"));
     }
 
     #[test]
