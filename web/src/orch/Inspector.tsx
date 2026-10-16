@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import { Icon, iconFor, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, cacheHit, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
 import type { Budget, Capability, Engine, Flow, FlowNode, Models, NodeRun, Output, Run } from './types';
 
 interface Props {
@@ -198,7 +198,8 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
       </Field>
       <div className="mc-grid2">
         <Field label="Engine">
-          <select className="mc-field" disabled={!editable} value={node.engine} onChange={(e) => setEngine(e.target.value as Engine)}>
+          <select className="mc-field" disabled={!editable || !!node.direct} value={node.direct ? 'direct' : node.engine} onChange={(e) => setEngine(e.target.value as Engine)}>
+            {node.direct && <option value="direct">Direct call</option>}
             <option value="claude">Claude Code</option>
             <option value="codex">Codex</option>
           </select>
@@ -212,19 +213,39 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
                 </option>
               ))}
             </optgroup>
-            {choices.length > 0 && (
+            {choices.some((c) => !c.direct) && (
               <optgroup label="OpenRouter">
-                {choices.map((c) => (
-                  <option key={c.key} value={c.key}>
-                    {c.label}
-                  </option>
-                ))}
+                {choices
+                  .filter((c) => !c.direct)
+                  .map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.label}
+                    </option>
+                  ))}
+              </optgroup>
+            )}
+            {choices.some((c) => c.direct) && (
+              <optgroup label="Direct call, no tools">
+                {choices
+                  .filter((c) => c.direct)
+                  .map((c) => (
+                    <option key={c.key} value={c.key} disabled={!canCallDirectly(node) && c.key !== modelKey(node)}>
+                      {c.label}
+                      {canCallDirectly(node) ? '' : ' (this role needs tools)'}
+                    </option>
+                  ))}
               </optgroup>
             )}
           </select>
         </Field>
       </div>
-      {node.account && (
+      {node.account && node.direct && (
+        <p className="mc-hint">
+          Called directly: no tools and no files, so it works only from the brief and what earlier agents hand on. {chosen ? `${priceNote(chosen)}. ` : ''}
+          Its cost is counted toward this run’s dollar cap when the account has prices.
+        </p>
+      )}
+      {node.account && !node.direct && (
         <p className="mc-hint">
           Billed by OpenRouter, not your plan. {chosen ? `${priceNote(chosen)}. ` : ''}
           {node.engine === 'claude' ? 'Claude Code' : 'Codex'} runs it through ttm, and its cost is counted toward this run’s dollar cap.
@@ -285,7 +306,7 @@ function RunDetail({ nr, node, feedback }: { nr: NodeRun; node: FlowNode; feedba
         {node.account ? (
           <>
             <dt>Cost</dt>
-            <dd>{usdLabel(nr.costUsd ?? 0)} on OpenRouter</dd>
+            <dd>{usdLabel(nr.costUsd ?? 0)} {node.direct ? 'by price' : 'on OpenRouter'}</dd>
           </>
         ) : (nr.costUsd ?? 0) > 0 ? (
           <>

@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 
 use super::{Outcome, Proxy};
 use crate::openrouter::proxy::Leases;
+use crate::providers::chat::{self, Message};
 use super::claude::{self, Access, Event};
 use super::codex;
 use super::exec::NodeRunner;
@@ -41,7 +42,15 @@ pub struct EngineRunner {
     limits: Arc<std::sync::Mutex<super::graph::Budget>>,
     /// The user chose to carry on past the limits, so new leases get no dollar cap.
     waived: AtomicBool,
+    /// Where the accounts are kept, for agents that call their model directly.
+    data_dir: PathBuf,
+    /// What each direct agent has said and been told so far, so a send-back carries on the same conversation.
+    direct: Mutex<HashMap<String, Vec<Message>>>,
 }
+
+/// Said to an agent that calls its model directly: what it does not have.
+const DIRECT_NOTE: &str = "# What you have\n\nYou have no tools: you cannot read files, search, browse or run anything. Work only from the brief above and what \
+the earlier agents handed to you. If the work needs something you cannot see, say so in your answer instead of guessing.";
 
 /// One line of a transcript: the first line of `s`, cut short.
 fn preview(s: &str) -> String {
@@ -109,6 +118,7 @@ impl EngineRunner {
         origin: String,
         limits: Arc<std::sync::Mutex<super::graph::Budget>>,
         waived: bool,
+        data_dir: PathBuf,
     ) -> Self {
         Self {
             flow,
@@ -124,6 +134,8 @@ impl EngineRunner {
             origin,
             limits,
             waived: AtomicBool::new(waived),
+            data_dir,
+            direct: Mutex::default(),
         }
     }
 
@@ -206,6 +218,21 @@ impl EngineRunner {
         Ok(self.project.clone())
     }
 
+    /// One turn of an agent that calls its model itself: the conversation so far, plus this prompt.
+    async fn run_direct(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
+        let accounts = crate::secrets::load(&self.data_dir).await;
+        let account = node.account.as_deref().and_then(|id| accounts.usable(id)).ok_or_else(|| anyhow::anyhow!("{} has no account it can use", node.name))?;
+        let endpoint = chat::endpoint_for(account, &node.model);
+        let schema = handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id));
+        let mut history = self.direct.lock().await.get(&node.id).cloned().unwrap_or_else(|| vec![Message::system(node.system_prompt.clone())]);
+        history.push(Message::user(prompt));
+        log(format!("→ asked {} directly", node.model));
+        let reply = chat::complete(&endpoint, &history, Some(&schema)).await?;
+        history.push(Message::assistant(reply.text.clone()));
+        self.direct.lock().await.insert(node.id.clone(), history);
+        Ok(Outcome { structured: reply.structured, text: reply.text, tokens: reply.tokens, cost_usd: reply.cost_usd.unwrap_or(0.0), is_error: false, session: None })
+    }
+
     async fn run_claude(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
         let taken = self.claude.lock().await.remove(&node.id);
         let mut agent = match taken {
@@ -282,6 +309,9 @@ pub fn lease_tag(run_id: &str, node_id: &str) -> String {
 
 impl NodeRunner for EngineRunner {
     async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
+        if node.direct {
+            return self.run_direct(node, &format!("{prompt}\n\n{DIRECT_NOTE}"), log).await;
+        }
         let cwd = self.cwd(node).await?;
         let prompt = with_folder_note(prompt, &cwd, limits(node));
         let folder = cwd.clone();
@@ -328,6 +358,78 @@ mod tests {
         assert!(sh.contains("run commands") && sh.contains("sandboxed") && !sh.contains("cannot run commands"));
     }
 
+    /// A runner whose accounts file holds one OpenAI-compatible account pointing at `base`.
+    fn runner_with_account(base: &str, nodes: Vec<Node>) -> (EngineRunner, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("ttm-direct-{}-{}", std::process::id(), base.len() + nodes.len()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let account = crate::secrets::Account {
+            id: "acct".into(),
+            name: "Plain".into(),
+            kind: crate::secrets::Kind::OpenaiCompatible,
+            base_url: base.into(),
+            key: "k".into(),
+            use_in_orchestrator: true,
+            models: vec![crate::secrets::PinnedModel { id: "vendor/think".into(), price_in: Some(1.0), price_out: Some(2.0), tools: false }],
+            prefs: Default::default(),
+        };
+        let accounts = crate::secrets::Accounts { accounts: vec![account], ..Default::default() };
+        std::fs::write(dir.join("accounts.json"), serde_json::to_vec(&accounts).unwrap()).unwrap();
+        let flow = Flow { id: "f".into(), name: "f".into(), nodes, edges: vec![], max_retries: 1, budget: Default::default(), downshift: false };
+        let limits = Arc::new(std::sync::Mutex::new(crate::orch::graph::Budget::default()));
+        let r = EngineRunner::new(flow, dir.clone(), dir.join("wt"), "r1".into(), Arc::default(), Arc::new(Leases::new()), "http://127.0.0.1:1".into(), limits, false, dir.clone());
+        (r, dir)
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_calls_its_model_directly_keeps_its_conversation_and_is_charged_by_price() {
+        use axum::{Router, extract::State, routing::post};
+        let seen: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let app = Router::new()
+            .route(
+                "/v1/chat/completions",
+                post(|State(seen): State<Arc<std::sync::Mutex<Vec<serde_json::Value>>>>, axum::Json(b): axum::Json<serde_json::Value>| async move {
+                    seen.lock().unwrap().push(b);
+                    axum::Json(serde_json::json!({"choices": [{"message": {"content": "{\"summary\":\"s\",\"steps\":[\"a\"]}"}}], "usage": {"prompt_tokens": 1000, "completion_tokens": 500}}))
+                }),
+            )
+            .with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut n = node(Role::Orchestrator, Engine::Claude);
+        n.account = Some("acct".into());
+        n.direct = true;
+        n.model = "vendor/think".into();
+        n.system_prompt = "You plan.".into();
+        let (runner, dir) = runner_with_account(&base, vec![n.clone()]);
+        let mut lines: Vec<String> = Vec::new();
+        let first = runner.run(&n, "Plan the thing.", &mut |l| lines.push(l)).await.unwrap();
+        assert_eq!(first.structured.as_ref().and_then(|v| v["summary"].as_str()), Some("s"));
+        assert!((first.cost_usd - 0.002).abs() < 1e-12, "1000 in at $1 and 500 out at $2 per million");
+        assert!(lines.iter().any(|l| l.contains("directly")));
+        // A send-back: the same conversation, with its first exchange in it.
+        runner.run(&n, "Try again, with feedback.", &mut |_| {}).await.unwrap();
+        let calls = seen.lock().unwrap();
+        let roles = |i: usize| calls[i]["messages"].as_array().unwrap().iter().map(|m| m["role"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(roles(0), ["system", "user"]);
+        assert_eq!(roles(1), ["system", "user", "assistant", "user"], "the second turn carries the first");
+        assert_eq!(calls[0]["messages"][0]["content"], "You plan.");
+        assert!(calls[0]["messages"][1]["content"].as_str().unwrap().contains("You have no tools"), "told what it does not have");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_direct_agent_whose_account_cannot_be_used_fails_with_a_reason() {
+        let mut n = node(Role::Orchestrator, Engine::Claude);
+        n.account = Some("gone".into());
+        n.direct = true;
+        let (runner, dir) = runner_with_account("http://127.0.0.1:1/v1", vec![n.clone()]);
+        let err = runner.run(&n, "x", &mut |_| {}).await.unwrap_err().to_string();
+        assert!(err.contains("no account it can use"), "{err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     fn node(role: Role, engine: Engine) -> Node {
         Node {
             id: "n".into(),
@@ -341,6 +443,7 @@ mod tests {
             token_cap: None,
             keep_model: false,
             account: None,
+            direct: false,
             x: 0.0,
             y: 0.0,
         }

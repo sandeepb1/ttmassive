@@ -2,6 +2,7 @@
 //! the data dir, readable by the owner only. The page can set and clear a key but never read it
 //! back: it gets `last4` instead.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -119,10 +120,24 @@ pub struct AccountInput {
     pub prefs: Prefs,
 }
 
+/// A model on one of the accounts, chosen for a job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelRef {
+    pub account: String,
+    pub model: String,
+}
+
+/// The calls ttm makes for itself, each of which may be given a model of its own. Left out, it uses Claude.
+pub const HELPERS: [&str; 5] = ["suggest", "edit", "grill", "nodePrompt", "customRole"];
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Accounts {
     pub accounts: Vec<Account>,
+    /// Which model makes each helper call. See `HELPERS`.
+    pub helpers: BTreeMap<String, ModelRef>,
+    /// Which CLI runs the OpenRouter models of a vendor (`anthropic` → claude), overriding the built-in rule.
+    pub drivers: BTreeMap<String, crate::openrouter::launch::Driver>,
 }
 
 impl Account {
@@ -205,7 +220,41 @@ impl Accounts {
     pub fn remove(&mut self, id: &str) -> bool {
         let before = self.accounts.len();
         self.accounts.retain(|a| a.id != id);
+        // A helper that used the account has nothing to call any more.
+        self.helpers.retain(|_, r| r.account != id);
         self.accounts.len() != before
+    }
+
+    /// The account a model may be called on from ttm's own jobs and from flows: it has a key, and is allowed in flows.
+    pub fn usable(&self, account: &str) -> Option<&Account> {
+        self.get(account).filter(|a| !a.key.is_empty() && a.use_in_orchestrator)
+    }
+
+    /// Replace the helper models and the CLI table. Each helper must name a usable account.
+    pub fn set_settings(&mut self, helpers: BTreeMap<String, ModelRef>, drivers: BTreeMap<String, crate::openrouter::launch::Driver>) -> Result<(), &'static str> {
+        for (name, r) in &helpers {
+            if !HELPERS.contains(&name.as_str()) {
+                return Err("unknown helper");
+            }
+            if self.usable(&r.account).is_none() {
+                return Err("a helper's account has no key, or is not allowed in flows");
+            }
+            if !crate::openrouter::launch::valid_model(&r.model) {
+                return Err("a helper's model id is not valid");
+            }
+        }
+        if drivers.len() > 64 || drivers.keys().any(|k| k.is_empty() || k.len() > 40 || !k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c))) {
+            return Err("a vendor name is not valid");
+        }
+        self.helpers = helpers;
+        self.drivers = drivers;
+        Ok(())
+    }
+
+    /// Where to send a helper's call, when the user chose a model for it and its account can still be used.
+    pub fn helper_endpoint(&self, helper: &str) -> Option<crate::providers::chat::Endpoint> {
+        let r = self.helpers.get(helper)?;
+        Some(crate::providers::chat::endpoint_for(self.usable(&r.account)?, &r.model))
     }
 }
 
@@ -409,6 +458,57 @@ mod tests {
         let old = r#"{"accounts":[{"id":"a1","name":"N","kind":"openrouter","baseUrl":"u","key":"k","useInOrchestrator":true,"models":[]}]}"#;
         let loaded: Accounts = serde_json::from_str(old).unwrap();
         assert_eq!(loaded.accounts[0].prefs, Prefs::default());
+    }
+
+    fn with_account(kind: Kind, flows: bool) -> (Accounts, String) {
+        let mut a = Accounts::default();
+        let mut i = input("A", kind);
+        i.use_in_orchestrator = flows;
+        i.models = vec![PinnedModel { id: "vendor/m".into(), price_in: Some(2.0), price_out: Some(8.0), tools: true }];
+        let id = a.upsert(None, i).unwrap();
+        (a, id)
+    }
+
+    #[test]
+    fn helper_models_must_be_on_an_account_that_can_be_used() {
+        let (mut a, id) = with_account(Kind::OpenaiCompatible, true);
+        let r = |account: &str, model: &str| ModelRef { account: account.into(), model: model.into() };
+        let one = |name: &str, r: ModelRef| BTreeMap::from([(name.to_string(), r)]);
+        assert_eq!(a.set_settings(one("suggest", r(&id, "vendor/m")), BTreeMap::new()), Ok(()));
+        assert!(a.set_settings(one("frobnicate", r(&id, "vendor/m")), BTreeMap::new()).is_err(), "only known helpers");
+        assert!(a.set_settings(one("suggest", r("nope", "vendor/m")), BTreeMap::new()).is_err());
+        assert!(a.set_settings(one("suggest", r(&id, "a b")), BTreeMap::new()).is_err());
+        let bad_vendor = BTreeMap::from([("Bad Vendor".to_string(), crate::openrouter::launch::Driver::Claude)]);
+        assert!(a.set_settings(BTreeMap::new(), bad_vendor).is_err());
+        assert!(a.helpers.contains_key("suggest"), "a refused change leaves the settings as they were");
+
+        let (mut off, off_id) = with_account(Kind::Openrouter, false);
+        assert!(off.set_settings(one("grill", r(&off_id, "vendor/m")), BTreeMap::new()).is_err(), "not allowed in flows means not for helpers either");
+    }
+
+    #[test]
+    fn a_helper_endpoint_carries_the_accounts_price_and_goes_away_with_the_account() {
+        let (mut a, id) = with_account(Kind::OpenaiCompatible, true);
+        a.accounts[0].key = "sk-1".into();
+        a.accounts[0].base_url = "https://example.test/v1".into();
+        let refs = BTreeMap::from([("edit".to_string(), ModelRef { account: id.clone(), model: "vendor/m".into() })]);
+        a.set_settings(refs, BTreeMap::from([("google".to_string(), crate::openrouter::launch::Driver::Claude)])).unwrap();
+        let e = a.helper_endpoint("edit").expect("an endpoint");
+        assert_eq!((e.base_url.as_str(), e.model.as_str(), e.price_in, e.price_out, e.openrouter), ("https://example.test/v1", "vendor/m", Some(2.0), Some(8.0), false));
+        assert!(a.helper_endpoint("grill").is_none(), "no model chosen for it");
+        a.accounts[0].use_in_orchestrator = false;
+        assert!(a.helper_endpoint("edit").is_none(), "turning the account off in flows turns its helpers off");
+        a.accounts[0].use_in_orchestrator = true;
+        assert!(a.remove(&id));
+        assert!(a.helpers.is_empty(), "removing the account removes what pointed at it");
+        assert_eq!(a.drivers.len(), 1, "the vendor table is not tied to an account");
+    }
+
+    #[test]
+    fn settings_written_before_these_existed_still_load() {
+        let old = r#"{"accounts":[]}"#;
+        let a: Accounts = serde_json::from_str(old).unwrap();
+        assert!(a.helpers.is_empty() && a.drivers.is_empty());
     }
 
     #[test]

@@ -80,6 +80,10 @@ pub struct Node {
     /// runs it is still `engine`; it reaches OpenRouter through ttm's proxy instead of your own login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Call the model itself, with no CLI and so no tools: it sees only the brief and what earlier agents handed it.
+    /// The only way an OpenAI-compatible endpoint can run an agent; for an agent that only has to think, it is also the cheap way.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub direct: bool,
     /// Written by Sonnet and editable. Identical on every turn so the prompt cache holds.
     pub system_prompt: String,
     /// Stop and wait for approval before this node starts.
@@ -105,6 +109,10 @@ pub struct Edge {
     pub to: String,
     #[serde(default = "forward")]
     pub kind: EdgeKind,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn forward() -> EdgeKind {
@@ -263,6 +271,14 @@ impl Flow {
                 }
                 _ => {}
             }
+            if n.direct {
+                if n.account.is_none() {
+                    return Err(format!("node '{}' calls its model directly, so it needs an account", n.name));
+                }
+                if n.capability() != super::roles::Capability::Read {
+                    return Err(format!("node '{}' changes files or runs commands, which needs an agent: it cannot call its model directly", n.name));
+                }
+            }
         }
 
         let mut edge_ids = HashSet::new();
@@ -396,6 +412,21 @@ impl Flow {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_an_agent_that_needs_no_tools_may_call_its_model_directly() {
+        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator)], edges: vec![], max_retries: 1, budget: Budget::default(), downshift: false };
+        f.nodes[0].direct = true;
+        assert!(f.validate().unwrap_err().contains("needs an account"));
+        f.nodes[0].account = Some("acct".into());
+        assert_eq!(f.validate(), Ok(()), "a reader of the brief is fine");
+        for role in [Role::Builder, Role::Judge, Role::Debugger] {
+            f.nodes[0].role = role;
+            assert!(f.validate().unwrap_err().contains("cannot call its model directly"), "{role:?} needs real tools");
+        }
+        f.nodes[0].role = Role::Researcher;
+        assert_eq!(f.validate(), Ok(()));
+    }
+
     fn node(id: &str, role: Role) -> Node {
         Node {
             id: id.into(),
@@ -409,6 +440,7 @@ mod tests {
             token_cap: None,
             keep_model: false,
             account: None,
+            direct: false,
             x: 0.0,
             y: 0.0,
         }

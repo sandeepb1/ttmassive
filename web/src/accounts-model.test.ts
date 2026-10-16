@@ -2,6 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_PREFS,
+  cleanVendor,
+  helperChoices,
+  helperValue,
+  parseHelperValue,
+  withDriver,
+  withHelper,
+  type AccountSettings,
   driverFor,
   orAccounts,
   shortModel,
@@ -197,4 +204,38 @@ test('a running session can switch to models its CLI can run, and sees the other
   assert.equal(unpinned[0]?.ok, true);
   // A session forced onto Claude Code with a non-Anthropic model can still stay on it.
   assert.equal(switchable(acct, 'openai/gpt-6-luna', 'claude')[0]?.ok, true);
+});
+
+const acct = (id: string, name: string, o: Partial<Account> = {}): Account => ({
+  id, name, kind: 'openrouter', baseUrl: '', hasKey: true, last4: '', useInOrchestrator: true, prefs: { ...DEFAULT_PREFS },
+  models: [{ id: `${id}/m1`, priceIn: null, priceOut: null, tools: true }], ...o,
+});
+
+test('a helper may use a pinned model of any account that has a key and is allowed in flows', () => {
+  const list = [acct('a', 'Main'), acct('b', 'Off', { useInOrchestrator: false }), acct('c', 'NoKey', { hasKey: false })];
+  assert.deepEqual(helperChoices(list), [{ value: 'a|a/m1', label: 'a/m1' }], 'one usable account: its name adds nothing');
+  const two = [...list, acct('d', 'Work')];
+  assert.deepEqual(helperChoices(two).map((c) => c.label), ['Main · a/m1', 'Work · d/m1']);
+});
+
+test('helper values round-trip and refuse nonsense', () => {
+  assert.equal(helperValue({ account: 'a', model: 'x/y:free' }), 'a|x/y:free');
+  assert.deepEqual(parseHelperValue('a|x/y:free'), { account: 'a', model: 'x/y:free' });
+  assert.equal(parseHelperValue(''), null);
+  assert.equal(parseHelperValue('|m'), null);
+  assert.equal(parseHelperValue('a|'), null);
+  assert.equal(helperValue(undefined), '');
+});
+
+test('settings change one thing at a time and never in place', () => {
+  const s: AccountSettings = { helpers: {}, drivers: {}, helperNames: ['suggest'] };
+  const a = withHelper(s, 'suggest', 'a|m');
+  assert.deepEqual(a.helpers, { suggest: { account: 'a', model: 'm' } });
+  assert.deepEqual(s.helpers, {}, 'the original is untouched');
+  assert.deepEqual(withHelper(a, 'suggest', '').helpers, {}, 'empty puts it back on Claude');
+  const d = withDriver(s, ' ~Google/gemini ', 'claude');
+  assert.deepEqual(d.drivers, { google: 'claude' });
+  assert.deepEqual(withDriver(d, 'google', null).drivers, {});
+  assert.equal(withDriver(s, '///', 'codex'), s, 'a vendor that cleans to nothing is ignored');
+  assert.equal(cleanVendor('Open AI!'), 'openai');
 });

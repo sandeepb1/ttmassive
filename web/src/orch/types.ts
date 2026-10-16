@@ -42,6 +42,8 @@ export interface FlowNode {
   model: string;
   /** The OpenRouter account this agent runs on, when `model` is one of its models. */
   account?: string | null;
+  /** Called directly, with no CLI and so no tools. */
+  direct?: boolean;
   systemPrompt: string;
   checkpoint: boolean;
   tokenCap?: number | null;
@@ -194,6 +196,8 @@ export interface FlowModel {
   priceIn: number | null;
   priceOut: number | null;
   tools: boolean;
+  /** Called directly, with no CLI and no tools: every model of a plain OpenAI-compatible endpoint is. */
+  direct: boolean;
 }
 
 export interface Models {

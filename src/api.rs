@@ -84,6 +84,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/layouts", get(get_layouts).put(put_layouts))
         .route("/api/accounts", get(list_accounts).post(create_account))
         .route("/api/accounts/{id}", axum::routing::put(update_account).delete(delete_account))
+        .route("/api/accounts/settings", get(get_account_settings).put(put_account_settings))
         .route("/api/accounts/{id}/remote", get(account_remote))
         .route("/api/openrouter/leases", get(list_leases))
         .route("/api/openrouter/leases/{tag}/model", post(set_lease_model))
@@ -311,6 +312,34 @@ async fn openrouter_models(State(st): State<Arc<AppState>>, Query(q): Query<Refr
     match crate::openrouter::catalog::get(&st.data_dir, q.refresh.unwrap_or(0) != 0).await {
         Ok(c) => ([(header::CACHE_CONTROL, "no-store")], Json(c.as_ref().clone())).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize, serde::Serialize)]
+struct AccountSettings {
+    #[serde(default)]
+    helpers: std::collections::BTreeMap<String, secrets::ModelRef>,
+    #[serde(default)]
+    drivers: std::collections::BTreeMap<String, crate::openrouter::launch::Driver>,
+}
+
+/// Which model makes each of ttm's own calls, and which CLI runs each vendor's OpenRouter models.
+async fn get_account_settings(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    let a = secrets::load(&st.data_dir).await;
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({ "helpers": a.helpers, "drivers": a.drivers, "helperNames": secrets::HELPERS })),
+    )
+}
+
+async fn put_account_settings(State(st): State<Arc<AppState>>, Json(b): Json<AccountSettings>) -> Response {
+    match secrets::update(&st.data_dir, |a| a.set_settings(b.helpers, b.drivers)).await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
+        Err(e) => {
+            tracing::warn!("saving account settings: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 

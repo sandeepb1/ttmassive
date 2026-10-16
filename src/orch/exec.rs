@@ -115,9 +115,10 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: 
             n.log(note.clone());
             run.note(Some(&id), LogKind::Decision, note, None);
         }
-        let engine = match node.engine {
-            Engine::Claude => "Claude",
-            Engine::Codex => "Codex",
+        let engine = match (node.direct, node.engine) {
+            (true, _) => "direct call to",
+            (_, Engine::Claude) => "Claude",
+            (_, Engine::Codex) => "Codex",
         };
         run.note(Some(&id), LogKind::Decision, why, None);
         run.note(Some(&id), LogKind::Request, format!("→ {} · attempt {attempt} · {engine} {}", node.name, node.model), Some(prompt.clone()));
@@ -370,6 +371,7 @@ mod tests {
             token_cap: None,
             keep_model: false,
             account: None,
+            direct: false,
             x: 0.0,
             y: 0.0,
         }

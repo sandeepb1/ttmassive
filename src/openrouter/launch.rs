@@ -39,8 +39,13 @@ impl Driver {
 /// which speaks the OpenAI Responses API that OpenRouter serves for every vendor. A session can
 /// still be started on the other CLI by asking for it.
 pub fn driver_for(model: &str) -> Driver {
+    driver_for_with(model, &Default::default())
+}
+
+/// Like `driver_for`, with the user's own table of vendors first.
+pub fn driver_for_with(model: &str, table: &std::collections::BTreeMap<String, Driver>) -> Driver {
     let vendor = model.split('/').next().unwrap_or("").trim_start_matches('~');
-    if vendor == "anthropic" { Driver::Claude } else { Driver::Codex }
+    table.get(vendor).copied().unwrap_or(if vendor == "anthropic" { Driver::Claude } else { Driver::Codex })
 }
 
 /// How an OpenRouter-backed session is started again after a restore. The model here is the one it
@@ -135,37 +140,44 @@ pub struct FlowModel {
     pub price_in: Option<f64>,
     pub price_out: Option<f64>,
     pub tools: bool,
+    /// Called directly, with no CLI and no tools. Every model of an OpenAI-compatible account is, since no CLI can run it.
+    pub direct: bool,
 }
 
-/// The models flows may use: every pinned model of every OpenRouter account that has a key and is allowed in flows.
+/// The models flows may use: every pinned model of every account that has a key and is allowed in flows. Those on
+/// OpenRouter run in a CLI unless asked otherwise; those on any other endpoint can only be called directly.
 pub fn flow_models(accounts: &Accounts) -> Vec<FlowModel> {
     accounts
         .accounts
         .iter()
-        .filter(|a| a.kind == Kind::Openrouter && a.use_in_orchestrator && !a.key.is_empty())
+        .filter(|a| a.use_in_orchestrator && !a.key.is_empty())
         .flat_map(|a| {
             a.models.iter().map(|m| FlowModel {
                 account: a.id.clone(),
                 account_name: a.name.clone(),
                 id: m.id.clone(),
-                driver: driver_for(&m.id),
+                driver: driver_for_with(&m.id, &accounts.drivers),
                 price_in: m.price_in,
                 price_out: m.price_out,
                 tools: m.tools,
+                direct: a.kind == Kind::OpenaiCompatible,
             })
         })
         .collect()
 }
 
-/// Why a node cannot run on its OpenRouter account, or `Ok` when it can (or is not on one). `nodes` is
-/// (node name, account id, model).
-pub fn check_accounts<'a>(accounts: &Accounts, nodes: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Result<(), String> {
-    for (name, account, model) in nodes {
+/// One agent that runs on an account: its name, the account, the model, and whether it calls the model directly.
+pub type OnAccount<'a> = (&'a str, &'a str, &'a str, bool);
+
+/// Why a node cannot run on its account, or `Ok` when it can (or is not on one).
+pub fn check_accounts<'a>(accounts: &Accounts, nodes: impl IntoIterator<Item = OnAccount<'a>>) -> Result<(), String> {
+    for (name, account, model, direct) in nodes {
         let Some(a) = accounts.get(account) else {
-            return Err(format!("{name} runs on an OpenRouter account that no longer exists"));
+            return Err(format!("{name} runs on an account that no longer exists"));
         };
-        let why = if a.kind != Kind::Openrouter {
-            Some("is not an OpenRouter account")
+        let why = if a.kind == Kind::OpenaiCompatible && !direct {
+            // No CLI can run a model on a plain OpenAI-compatible endpoint, so such an agent must call it itself.
+            Some("can only be called directly, with no tools")
         } else if a.key.is_empty() {
             Some("has no key")
         } else if !a.use_in_orchestrator {
@@ -176,7 +188,7 @@ pub fn check_accounts<'a>(accounts: &Accounts, nodes: impl IntoIterator<Item = (
             None
         };
         if let Some(why) = why {
-            return Err(format!("{name} runs on the OpenRouter account “{}”, which {why}", a.name));
+            return Err(format!("{name} runs on the account “{}”, which {why}", a.name));
         }
     }
     Ok(())
@@ -208,6 +220,14 @@ mod tests {
         assert_eq!(driver_for("google/gemini-3-pro"), Driver::Codex);
         assert_eq!(driver_for("openrouter/auto"), Driver::Codex);
         assert_eq!(driver_for("no-vendor"), Driver::Codex);
+    }
+
+    #[test]
+    fn the_users_table_of_vendors_comes_first() {
+        let table = [("google".to_string(), Driver::Claude), ("anthropic".to_string(), Driver::Codex)].into_iter().collect();
+        assert_eq!(driver_for_with("google/gemini-3", &table), Driver::Claude);
+        assert_eq!(driver_for_with("~anthropic/claude-haiku-latest", &table), Driver::Codex, "the ~ alias follows its vendor");
+        assert_eq!(driver_for_with("openai/gpt-6-luna", &table), Driver::Codex, "a vendor not in the table keeps the built-in rule");
     }
 
     #[test]
@@ -276,6 +296,8 @@ mod tests {
     #[test]
     fn flows_are_offered_only_the_models_they_may_use() {
         let accounts = Accounts {
+            helpers: Default::default(),
+            drivers: Default::default(),
             accounts: vec![
                 account("ok", Kind::Openrouter, "k", true, &["anthropic/claude-haiku-5.5", "openai/gpt-6-luna"]),
                 account("off", Kind::Openrouter, "k", false, &["x/hidden"]),
@@ -284,8 +306,9 @@ mod tests {
             ],
         };
         let m = flow_models(&accounts);
-        assert_eq!(m.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna"]);
+        assert_eq!(m.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna", "x/direct"]);
         assert_eq!((m[0].driver, m[1].driver, m[0].account_name.as_str()), (Driver::Claude, Driver::Codex, "ok-name"));
+        assert_eq!(m.iter().map(|m| m.direct).collect::<Vec<_>>(), [false, false, true], "a plain endpoint's models can only be called directly");
         let json = serde_json::to_value(&m[0]).unwrap();
         assert_eq!((json["accountName"].as_str(), json["driver"].as_str(), json["priceIn"].as_f64()), (Some("ok-name"), Some("claude"), Some(1.0)));
     }
@@ -293,6 +316,8 @@ mod tests {
     #[test]
     fn a_node_whose_account_cannot_serve_it_is_refused_with_a_reason() {
         let accounts = Accounts {
+            helpers: Default::default(),
+            drivers: Default::default(),
             accounts: vec![
                 account("ok", Kind::Openrouter, "k", true, &[]),
                 account("off", Kind::Openrouter, "k", false, &[]),
@@ -300,13 +325,15 @@ mod tests {
                 account("oai", Kind::OpenaiCompatible, "k", true, &[]),
             ],
         };
-        assert_eq!(check_accounts(&accounts, [("Plan", "ok", "a/b")]), Ok(()));
+        assert_eq!(check_accounts(&accounts, [("Plan", "ok", "a/b", false)]), Ok(()));
+        assert_eq!(check_accounts(&accounts, [("Plan", "ok", "a/b", true)]), Ok(()), "an OpenRouter model may also be called directly");
         assert_eq!(check_accounts(&accounts, std::iter::empty()), Ok(()));
-        let why = |a: &'static str, m: &'static str| check_accounts(&accounts, [("Build", a, m)]).unwrap_err();
+        let why = |a: &'static str, m: &'static str| check_accounts(&accounts, [("Build", a, m, false)]).unwrap_err();
         assert!(why("gone", "a/b").contains("no longer exists"));
         assert!(why("off", "a/b").contains("not allowed in flows"));
         assert!(why("nokey", "a/b").contains("no key"));
-        assert!(why("oai", "a/b").contains("not an OpenRouter account"));
+        assert!(why("oai", "a/b").contains("only be called directly"), "no CLI runs a plain endpoint's models");
+        assert_eq!(check_accounts(&accounts, [("Think", "oai", "a/b", true)]), Ok(()));
         assert!(why("ok", "a b").contains("cannot be used"));
         assert!(why("off", "a/b").contains("off-name"), "names the account");
     }

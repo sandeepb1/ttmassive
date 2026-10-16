@@ -21,6 +21,7 @@ const MAX_QUESTIONS: usize = 6;
 pub const MAX_ROUNDS: u8 = 3;
 
 use crate::openrouter::launch::{Driver, FlowModel};
+use crate::providers::chat::{self, Endpoint, Message};
 
 fn role_id(r: Role) -> String {
     format!("{r:?}").to_lowercase()
@@ -237,6 +238,7 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
             token_cap: None,
             keep_model: false,
             account: pick.map(|m| m.account.clone()),
+            direct: false,
             x: 0.0,
             y: 0.0,
         });
@@ -385,9 +387,17 @@ async fn one_shot(model: &str, system: &str, prompt: &str, schema: Value, cwd: &
     Ok((answer, outcome))
 }
 
+/// One call for a helper: on the model the user chose for it when there is one, otherwise on Claude with `default`.
+async fn helper_call(via: Option<&Endpoint>, default: &str, system: &str, prompt: &str, schema: Value, cwd: &Path) -> Result<(Value, Outcome)> {
+    let Some(e) = via else { return one_shot(default, system, prompt, schema, cwd).await };
+    let r = chat::complete(e, &[Message::system(system), Message::user(prompt)], Some(&schema)).await?;
+    let answer = r.structured.clone().with_context(|| format!("{} did not answer in the required shape", e.model))?;
+    Ok((answer, Outcome { structured: r.structured, text: r.text, tokens: r.tokens, cost_usd: r.cost_usd.unwrap_or(0.0), is_error: false, session: None }))
+}
+
 /// Sonnet designs a flow for a goal.
-pub async fn suggest_flow(goal: &str, flow_id: &str, codex_models: &[String], or_models: &[FlowModel], cwd: &Path) -> Result<(Flow, Vec<String>, Outcome)> {
-    let (v, outcome) = one_shot("sonnet", &suggest_system(!or_models.is_empty()), &suggest_prompt(goal, codex_models, or_models), suggest_schema(), cwd).await?;
+pub async fn suggest_flow(goal: &str, flow_id: &str, codex_models: &[String], or_models: &[FlowModel], via: Option<&Endpoint>, cwd: &Path) -> Result<(Flow, Vec<String>, Outcome)> {
+    let (v, outcome) = helper_call(via, "sonnet", &suggest_system(!or_models.is_empty()), &suggest_prompt(goal, codex_models, or_models), suggest_schema(), cwd).await?;
     let (flow, notes) = flow_from_suggestion_with(&v, flow_id, codex_models, or_models)?;
     Ok((flow, notes, outcome))
 }
@@ -515,6 +525,7 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
                     token_cap: None,
                     keep_model: false,
                     account: None,
+                    direct: false,
                     x: 0.0,
                     y: 0.0,
                 };
@@ -533,9 +544,11 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
                 notes.push(or_note(&if s("name").is_empty() { node.name.clone() } else { s("name") }, m, &s("model_reason")));
             }
             node.account = Some(m.account.clone());
+            node.direct = false;
         } else if existing.is_none_or(|e| e.model != model) {
             // An OpenRouter account goes with its model: a different model is one of the built-in ones, which that account cannot serve.
             node.account = None;
+            node.direct = false;
         }
         node.model = model;
         if !s("name").is_empty() {
@@ -613,11 +626,14 @@ pub async fn edit_flow(
     engine: Engine,
     codex_models: &[String],
     or_models: &[FlowModel],
+    via: Option<&Endpoint>,
     hub: &super::codex::Hub,
     cwd: &Path,
 ) -> Result<(Flow, String, Outcome)> {
     let (system, prompt, schema) = (edit_system(!or_models.is_empty()), edit_prompt(base, request, codex_models, or_models), edit_schema());
     let (v, outcome) = match engine {
+        // A model the user chose for this helper does it, whichever of the two the page asked for.
+        _ if via.is_some() => helper_call(via, "sonnet", &system, &prompt, schema, cwd).await?,
         Engine::Claude => one_shot("sonnet", &system, &prompt, schema, cwd).await?,
         Engine::Codex => {
             // The smallest Codex model on offer does this well enough, and is the cheap one.
@@ -657,12 +673,12 @@ pub fn describe_role(label: &str, capability: Capability, output: Output) -> Str
 }
 
 /// Sonnet writes the system prompt for one agent.
-pub async fn node_prompt(label: &str, capability: Capability, output: Output, name: &str, goal: &str, cwd: &Path) -> Result<(String, Outcome)> {
+pub async fn node_prompt(label: &str, capability: Capability, output: Output, name: &str, goal: &str, via: Option<&Endpoint>, cwd: &Path) -> Result<(String, Outcome)> {
     let schema = json!({"type": "object", "additionalProperties": false, "required": ["system_prompt"],
                         "properties": {"system_prompt": text()}});
     let role = describe_role(label, capability, output);
     let ask = format!("# Agent\n\n{name}: {role}\n\n# Overall goal, for context only\n\n{}\n", goal.trim());
-    let (v, outcome) = one_shot("sonnet", NODE_PROMPT_SYSTEM, &ask, schema, cwd).await?;
+    let (v, outcome) = helper_call(via, "sonnet", NODE_PROMPT_SYSTEM, &ask, schema, cwd).await?;
     let p = v.get("system_prompt").and_then(Value::as_str).unwrap_or("").trim().to_string();
     if p.is_empty() {
         bail!("empty prompt");
@@ -733,9 +749,9 @@ pub fn role_from_generation(v: &Value) -> Result<NewRole> {
 }
 
 /// Sonnet designs a role from a description.
-pub async fn custom_role(description: &str, cwd: &Path) -> Result<(NewRole, Outcome)> {
+pub async fn custom_role(description: &str, via: Option<&Endpoint>, cwd: &Path) -> Result<(NewRole, Outcome)> {
     let ask = format!("# The role, in the user's words\n\n{}\n", description.trim());
-    let (v, outcome) = one_shot("sonnet", CUSTOM_ROLE_SYSTEM, &ask, custom_role_schema(), cwd).await?;
+    let (v, outcome) = helper_call(via, "sonnet", CUSTOM_ROLE_SYSTEM, &ask, custom_role_schema(), cwd).await?;
     Ok((role_from_generation(&v)?, outcome))
 }
 
@@ -746,11 +762,12 @@ pub async fn grill(
     flow: &Flow,
     history: &[Qa],
     round: u8,
+    via: Option<&Endpoint>,
     cwd: &Path,
 ) -> Result<(GrillStep, Outcome)> {
     let last = round >= MAX_ROUNDS;
     let ask = grill_prompt(goal, project, flow, history, round, last);
-    let (v, outcome) = one_shot("opus", GRILL_SYSTEM, &ask, grill_schema(), cwd).await?;
+    let (v, outcome) = helper_call(via, "opus", GRILL_SYSTEM, &ask, grill_schema(), cwd).await?;
     Ok((parse_grill(&v, last)?, outcome))
 }
 
@@ -781,6 +798,7 @@ mod tests {
             token_cap: None,
             keep_model: false,
             account: None,
+            direct: false,
             x: 900.0,
             y: 0.0,
         });
@@ -806,7 +824,7 @@ mod tests {
         let cwd = std::env::temp_dir().join(format!("ttm-orch-edit-{}", std::process::id()));
         let b = base();
         for engine in [Engine::Claude, Engine::Codex] {
-            let (f, summary, _) = edit_flow(&b, "Add a reporter at the end that writes up what was done.", engine, &models, &[], &hub, &cwd).await.unwrap();
+            let (f, summary, _) = edit_flow(&b, "Add a reporter at the end that writes up what was done.", engine, &models, &[], None, &hub, &cwd).await.unwrap();
             eprintln!("{engine:?}: {} agents -> {}; summary: {summary}", b.nodes.len(), f.nodes.len());
             assert!(f.nodes.iter().any(|n| n.role == Role::Reporter), "{engine:?} added no reporter");
             for old in &b.nodes {
@@ -976,8 +994,40 @@ mod tests {
         assert!(!suggest_schema()["properties"]["nodes"]["items"]["properties"]["role"]["enum"].as_array().unwrap().contains(&json!("custom")));
     }
 
+    /// A stand-in chat endpoint that always answers with `content` and reports a cost of half a cent.
+    async fn endpoint_saying(content: &'static str) -> Endpoint {
+        use axum::{Router, routing::post};
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || async move { axum::Json(json!({"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 40, "completion_tokens": 9, "cost": 0.005}})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Endpoint { base_url: base, key: "k".into(), model: "vendor/chosen".into(), price_in: None, price_out: None, openrouter: false, prefs: Default::default() }
+    }
+
+    #[tokio::test]
+    async fn a_helper_with_a_chosen_model_is_answered_and_billed_by_that_model() {
+        let e = endpoint_saying("{\"system_prompt\": \"Do the job.\"}").await;
+        let cwd = std::env::temp_dir();
+        let (answer, outcome) = helper_call(Some(&e), "sonnet", "sys", "ask", json!({"type": "object"}), &cwd).await.unwrap();
+        assert_eq!(answer["system_prompt"], "Do the job.");
+        assert_eq!((outcome.tokens.input, outcome.tokens.output), (40, 9));
+        assert!((outcome.cost_usd - 0.005).abs() < 1e-12 && !outcome.is_error);
+
+        // The same call through a public helper: the node-prompt writer.
+        let (p, _) = node_prompt("Builder", Capability::Write, Output::Change, "Coder", "Add login", Some(&e), &cwd).await.unwrap();
+        assert_eq!(p, "Do the job.");
+
+        // An answer that is not in the shape asked for is an error that names the model, not a silent empty result.
+        let bad = endpoint_saying("I could not do that.").await;
+        let err = helper_call(Some(&bad), "sonnet", "sys", "ask", json!({"type": "object"}), &cwd).await.unwrap_err().to_string();
+        assert!(err.contains("vendor/chosen") && err.contains("required shape"), "{err}");
+    }
+
     fn pinned() -> Vec<FlowModel> {
-        let m = |id: &str, driver: Driver, pin: f64, pout: f64| FlowModel { account: "acct".into(), account_name: "Main".into(), id: id.into(), driver, price_in: Some(pin), price_out: Some(pout), tools: true };
+        let m = |id: &str, driver: Driver, pin: f64, pout: f64| FlowModel { account: "acct".into(), account_name: "Main".into(), id: id.into(), driver, price_in: Some(pin), price_out: Some(pout), tools: true, direct: false };
         vec![m("anthropic/claude-haiku-5.5", Driver::Claude, 1.0, 5.0), m("openai/gpt-6-luna", Driver::Codex, 0.2, 1.2)]
     }
 

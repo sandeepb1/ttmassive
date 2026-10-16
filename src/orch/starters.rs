@@ -20,6 +20,7 @@ fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: us
         token_cap: None,
         keep_model: false,
         account: None,
+        direct: false,
         x: layer as f64 * 280.0,
         y: row as f64 * 180.0,
     }

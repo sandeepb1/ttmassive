@@ -22,6 +22,7 @@ mod ops;
 mod orch;
 mod openrouter;
 mod placeholder;
+mod providers;
 mod pty;
 mod question;
 mod secrets;

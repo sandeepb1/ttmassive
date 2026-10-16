@@ -313,6 +313,7 @@ mod tests {
             token_cap: None,
             keep_model: false,
             account: None,
+            direct: false,
             x: 0.0,
             y: 0.0,
         };
@@ -332,7 +333,7 @@ mod tests {
     fn a_runs_cost_is_what_openrouter_charged_for_its_agents_on_it() {
         let mut r = Run::new("r".into(), Flow { id: "f".into(), name: "f".into(), nodes: vec![], edges: vec![], max_retries: 1, budget: Default::default(), downshift: false }, "g".into(), 0);
         assert_eq!(r.cost_usd(), 0.0);
-        let mk = |id: &str, account: Option<&str>| Node { id: id.into(), name: id.into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "m".into(), account: account.map(String::from), system_prompt: String::new(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0 };
+        let mk = |id: &str, account: Option<&str>| Node { id: id.into(), name: id.into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "m".into(), account: account.map(String::from), direct: false, system_prompt: String::new(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0 };
         r.flow.nodes = vec![mk("plan", None), mk("or1", Some("a")), mk("or2", Some("a"))];
         for (id, cost) in [("plan", 5.0), ("or1", 0.25), ("or2", 0.5)] {
             r.nodes.insert(id.into(), NodeRun { cost_usd: cost, ..NodeRun::new() });

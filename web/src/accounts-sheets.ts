@@ -4,11 +4,18 @@
 
 import { callJson, getJson } from './api-json';
 import {
+  DRIVER_LABEL,
+  HELPER_LABEL,
   KIND_LABEL,
   SORTS,
   SORT_CHOICES,
   ageLabel,
   balanceLine,
+  cleanVendor,
+  helperChoices,
+  helperValue,
+  withDriver,
+  withHelper,
   contextLabel,
   emptyInput,
   filterModels,
@@ -23,6 +30,8 @@ import {
   type Account,
   type AccountInput,
   type AccountKind,
+  type AccountSettings,
+  type Driver,
   type Catalog,
   type CatalogModel,
   type PinnedModel,
@@ -56,6 +65,8 @@ interface PickSource {
 export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HTMLElement {
   const root = sheetBlock();
   const balances = new Map<string, string>();
+  let settings: AccountSettings = { helpers: {}, drivers: {}, helperNames: Object.keys(HELPER_LABEL) };
+  let accountList: Account[] = [];
 
   const load = async () => {
     const r = await getJson<Account[]>(ACCOUNTS, onUnauthorized);
@@ -63,6 +74,9 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
       root.replaceChildren(sheetLabel('Provider accounts'), sheetMsg(r.error, true));
       return;
     }
+    const st = await getJson<AccountSettings>(`${ACCOUNTS}/settings`, onUnauthorized);
+    if (st.ok) settings = st.data;
+    accountList = r.data;
     render(r.data);
     for (const a of r.data) {
       if (a.kind !== 'openrouter' || !a.hasKey) continue;
@@ -95,7 +109,81 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'openrouter') }, 'Add OpenRouter'),
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'openai-compatible') }, 'Add OpenAI-compatible'),
     );
-    root.replaceChildren(sheetLabel('Provider accounts'), list, add);
+    root.replaceChildren(sheetLabel('Provider accounts'), list, add, ...(accounts.length ? [helpersBlock(), driversBlock()] : []));
+  };
+
+  /** Save the settings, then redraw from what the server kept (it refuses a model whose account can no longer be used). */
+  const save = async (next: AccountSettings, note: HTMLElement) => {
+    const r = await callJson<unknown>(
+      `${ACCOUNTS}/settings`,
+      { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ helpers: next.helpers, drivers: next.drivers }) },
+      onUnauthorized,
+    );
+    // The server answers 204 with no body, which callJson reports as unreadable; the status says what happened.
+    if (!r.ok && r.status !== 204) {
+      note.textContent = r.error;
+      return;
+    }
+    settings = next;
+    note.textContent = 'Saved';
+    window.setTimeout(() => (note.textContent = ''), 1500);
+  };
+
+  /** Which model makes each of ttm's own calls. */
+  const helpersBlock = (): HTMLElement => {
+    const note = el('div', 'min-h-4 text-xs text-muted-foreground');
+    const choices = helperChoices(accountList);
+    const rows = settings.helperNames.map((name) => {
+      const sel = select([{ value: '', label: 'Claude (default)' }, ...choices], { value: helperValue(settings.helpers[name]), label: HELPER_LABEL[name] ?? name, cls: 'w-auto max-w-[60%]' });
+      sel.addEventListener('change', () => void save(withHelper(settings, name, sel.value), note));
+      const r = el('div', 'flex items-center justify-between gap-3');
+      r.append(el('span', 'text-md', HELPER_LABEL[name] ?? name), sel);
+      return r;
+    });
+    return sheetBlock(
+      sheetLabel('Models for ttm’s own jobs'),
+      sheetHint('The calls ttm makes while you design and start flows. A cheap model is plenty for most. Only models on accounts allowed in flows are offered.'),
+      ...rows,
+      note,
+    );
+  };
+
+  /** Which CLI runs the OpenRouter models of each vendor. */
+  const driversBlock = (): HTMLElement => {
+    const note = el('div', 'min-h-4 text-xs text-muted-foreground');
+    const list = sheetBlock();
+    const draw = () => {
+      list.replaceChildren();
+      for (const [vendor, d] of Object.entries(settings.drivers)) {
+        const sel = select((['claude', 'codex'] as const).map((x) => ({ value: x, label: DRIVER_LABEL[x] })), { value: d, label: `Agent for ${vendor}`, cls: 'w-auto' });
+        sel.addEventListener('change', () => void save(withDriver(settings, vendor, sel.value as Driver), note));
+        const drop = button({ variant: 'ghost', size: 'sm', label: `Remove ${vendor}`, onClick: () => void save(withDriver(settings, vendor, null), note).then(draw) }, 'Remove');
+        const r = el('div', 'flex items-center justify-between gap-3');
+        const right = el('div', 'flex items-center gap-2');
+        right.append(sel, drop);
+        r.append(el('span', 'font-mono text-sm', vendor), right);
+        list.append(r);
+      }
+    };
+    draw();
+    const vendor = input({ placeholder: 'vendor, like google', mono: true, label: 'Vendor', cls: 'min-w-0 flex-1' });
+    const which = select((['claude', 'codex'] as const).map((x) => ({ value: x, label: DRIVER_LABEL[x] })), { value: 'codex', label: 'Agent', cls: 'w-auto' });
+    const add = button({ variant: 'secondary', onClick: () => {
+      if (!cleanVendor(vendor.value)) return;
+      void save(withDriver(settings, vendor.value, which.value as Driver), note).then(() => {
+        vendor.value = '';
+        draw();
+      });
+    } }, 'Add');
+    const addRow = el('div', 'flex gap-2');
+    addRow.append(vendor, which, add);
+    return sheetBlock(
+      sheetLabel('Which agent runs an OpenRouter model'),
+      sheetHint('Anthropic’s models run in Claude Code and everything else in Codex, unless a vendor is listed here.'),
+      list,
+      addRow,
+      note,
+    );
   };
 
   root.replaceChildren(sheetLabel('Provider accounts'), sheetHint('Loading…'));

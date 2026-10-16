@@ -64,6 +64,7 @@ pub struct Service {
     /// The plan limits. Read each time a run is checked, so a change reaches runs that are already going.
     limits: Arc<Mutex<super::graph::Budget>>,
     scratch: PathBuf,
+    data_dir: PathBuf,
     /// Credentials for agents on OpenRouter, and where they reach the proxy.
     leases: Arc<crate::openrouter::proxy::Leases>,
     origin: String,
@@ -96,6 +97,7 @@ impl Service {
         }
         Service {
             scratch: data_dir.join("orch").join("scratch"),
+            data_dir: data_dir.to_path_buf(),
             limits: Arc::new(Mutex::new(store.load_limits())),
             store,
             codex: Arc::default(),
@@ -144,6 +146,7 @@ impl Service {
                 self.origin.clone(),
                 self.limits.clone(),
                 run.waived,
+                self.data_dir.clone(),
             ),
             shared: Mutex::new(run),
             cancelled: AtomicBool::new(false),
@@ -174,9 +177,15 @@ impl Service {
         if codex.is_empty() { FALLBACK_CODEX.iter().map(|s| s.to_string()).collect() } else { codex }
     }
 
+    /// The model the user chose for one of ttm's own calls, if any. Read each time, so a change applies at once.
+    async fn via(&self, helper: &str) -> Option<crate::providers::chat::Endpoint> {
+        crate::secrets::load(&self.data_dir).await.helper_endpoint(helper)
+    }
+
     /// The OpenRouter models a designer may give agents: the user's pinned ones on accounts allowed in flows.
     async fn or_models(&self, st: &AppState) -> Vec<crate::openrouter::launch::FlowModel> {
-        crate::openrouter::launch::flow_models(&crate::secrets::load(&st.data_dir).await)
+        // Designers pick among models an agent CLI can run; a direct call has no tools, so they leave those to the user.
+        crate::openrouter::launch::flow_models(&crate::secrets::load(&st.data_dir).await).into_iter().filter(|m| !m.direct).collect()
     }
 
     /// A flow for a goal, and a line for each agent that was given an OpenRouter model, saying why.
@@ -186,7 +195,7 @@ impl Service {
         }
         let models = self.codex_models().await;
         let id = format!("f{}", new_id());
-        let (flow, notes, _) = prompts::suggest_flow(goal, &id, &models, &self.or_models(st).await, &self.scratch).await?;
+        let (flow, notes, _) = prompts::suggest_flow(goal, &id, &models, &self.or_models(st).await, self.via("suggest").await.as_ref(), &self.scratch).await?;
         Ok((flow, notes))
     }
 
@@ -202,12 +211,12 @@ impl Service {
         if engine == super::graph::Engine::Codex && models.is_empty() {
             return Err(Fail::Bad("Codex has no model available right now".into()));
         }
-        let (flow, summary, _) = prompts::edit_flow(&flow, request, engine, &models, &self.or_models(st).await, &self.codex, &self.scratch).await?;
+        let (flow, summary, _) = prompts::edit_flow(&flow, request, engine, &models, &self.or_models(st).await, self.via("edit").await.as_ref(), &self.codex, &self.scratch).await?;
         Ok((flow, summary))
     }
 
     pub async fn node_prompt(&self, label: &str, capability: super::roles::Capability, output: super::roles::Output, name: &str, goal: &str) -> Result<String, Fail> {
-        Ok(prompts::node_prompt(label, capability, output, name, goal, &self.scratch).await?.0)
+        Ok(prompts::node_prompt(label, capability, output, name, goal, self.via("nodePrompt").await.as_ref(), &self.scratch).await?.0)
     }
 
     /// Design a role from a description: its name, what it may do, what it hands back, and its instructions.
@@ -218,7 +227,7 @@ impl Service {
         if description.len() > 2000 {
             return Err(Fail::Bad("that description is too long".into()));
         }
-        Ok(prompts::custom_role(description, &self.scratch).await?.0)
+        Ok(prompts::custom_role(description, self.via("customRole").await.as_ref(), &self.scratch).await?.0)
     }
 
     pub async fn create_run(
@@ -234,7 +243,7 @@ impl Service {
         let accounts = crate::secrets::load(&st.data_dir).await;
         crate::openrouter::launch::check_accounts(
             &accounts,
-            flow.nodes.iter().filter_map(|n| n.account.as_deref().map(|a| (n.name.as_str(), a, n.model.as_str()))),
+            flow.nodes.iter().filter_map(|n| n.account.as_deref().map(|a| (n.name.as_str(), a, n.model.as_str(), n.direct))),
         )
         .map_err(Fail::Bad)?;
         if goal.trim().is_empty() {
@@ -292,7 +301,7 @@ impl Service {
             g.brief = None;
             (goal, project, flow, g.history.clone(), g.round + 1)
         };
-        let (step, outcome) = prompts::grill(&goal, &project, &flow, &history, round, &self.scratch).await?;
+        let (step, outcome) = prompts::grill(&goal, &project, &flow, &history, round, self.via("grill").await.as_ref(), &self.scratch).await?;
         let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
         run.overhead.add(&outcome.tokens);
         let g = run.grill.get_or_insert_with(Grill::default);

@@ -271,3 +271,63 @@ export function switchable(account: Account, current: string, driver: Driver): {
   for (const m of account.models) add(m);
   return rows;
 }
+
+// ---- models for ttm's own jobs, and which CLI runs which vendor ----------------------------
+
+/** The calls ttm makes for itself, in the order the settings list them. */
+export const HELPER_LABEL: Record<string, string> = {
+  suggest: 'Suggest a flow',
+  edit: 'Ask AI to change a flow',
+  grill: 'Questions and brief before a run',
+  nodePrompt: 'Write an agent’s instructions',
+  customRole: 'Design a custom role',
+};
+
+export interface ModelRef {
+  account: string;
+  model: string;
+}
+
+export interface AccountSettings {
+  helpers: Record<string, ModelRef>;
+  drivers: Record<string, Driver>;
+  helperNames: string[];
+}
+
+/** What a helper's picker offers: a pinned model of any account that has a key and is allowed in flows. */
+export function helperChoices(accounts: Account[]): { value: string; label: string }[] {
+  const several = accounts.filter((a) => a.hasKey && a.useInOrchestrator).length > 1;
+  return accounts
+    .filter((a) => a.hasKey && a.useInOrchestrator)
+    .flatMap((a) => a.models.map((m) => ({ value: helperValue({ account: a.id, model: m.id }), label: several ? `${a.name} · ${m.id}` : m.id })));
+}
+
+/** An option's value for a model on an account. Model ids hold no `|`, so it splits back cleanly. */
+export const helperValue = (r?: ModelRef): string => (r ? `${r.account}|${r.model}` : '');
+
+export function parseHelperValue(v: string): ModelRef | null {
+  const at = v.indexOf('|');
+  return at > 0 && at < v.length - 1 ? { account: v.slice(0, at), model: v.slice(at + 1) } : null;
+}
+
+/** The settings with one helper set to `value` ('' puts it back on Claude). */
+export function withHelper(s: AccountSettings, helper: string, value: string): AccountSettings {
+  const helpers = { ...s.helpers };
+  const ref = parseHelperValue(value);
+  if (ref) helpers[helper] = ref;
+  else delete helpers[helper];
+  return { ...s, helpers };
+}
+
+/** A vendor name as it appears at the front of a model id, lower-cased and trimmed to what the server accepts. */
+export const cleanVendor = (v: string): string => v.trim().toLowerCase().replace(/^~/, '').replace(/\/.*$/, '').replace(/[^a-z0-9._-]/g, '').slice(0, 40);
+
+/** The settings with the CLI for a vendor set, or removed when `driver` is null. */
+export function withDriver(s: AccountSettings, vendor: string, driver: Driver | null): AccountSettings {
+  const v = cleanVendor(vendor);
+  if (!v) return s;
+  const drivers = { ...s.drivers };
+  if (driver) drivers[v] = driver;
+  else delete drivers[v];
+  return { ...s, drivers };
+}

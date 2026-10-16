@@ -723,7 +723,7 @@ pub async fn create_openrouter(st: &AppState, req: OrNew<'_>) -> Result<String> 
     anyhow::ensure!(account.kind == crate::secrets::Kind::Openrouter, "that account is not an OpenRouter account");
     anyhow::ensure!(!account.key.is_empty(), "the account has no key");
 
-    let driver = req.driver.unwrap_or_else(|| orl::driver_for(req.model));
+    let driver = req.driver.unwrap_or_else(|| orl::driver_for_with(req.model, &accounts.drivers));
     let base = match (req.name, req.dir.as_deref()) {
         (Some(n), _) => n.to_owned(),
         (None, Some(d)) => name_for_dir("or", d).unwrap_or_else(|| "or".into()),

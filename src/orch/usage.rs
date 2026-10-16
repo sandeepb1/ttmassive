@@ -59,6 +59,13 @@ impl Tokens {
         }
     }
 
+    /// The `usage` of a chat completion. `prompt_tokens` includes the cached part, which is taken out to match the others.
+    pub fn from_chat(u: &Value) -> Tokens {
+        let n = |p: &str| u.pointer(p).and_then(Value::as_u64).unwrap_or(0);
+        let (cached, write) = (n("/prompt_tokens_details/cached_tokens"), n("/prompt_tokens_details/cache_write_tokens"));
+        Tokens { input: n("/prompt_tokens").saturating_sub(cached + write), output: n("/completion_tokens"), cache_read: cached, cache_write: write }
+    }
+
     /// Codex's `TokenUsageBreakdown`. Its `inputTokens` includes the cached and cache-write
     /// parts, so those are taken out to match the other engine. Output already includes reasoning.
     pub fn from_codex(u: &Value) -> Tokens {

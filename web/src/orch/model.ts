@@ -560,18 +560,18 @@ export function parseModelKey(key: string): { account: string | null; model: str
  */
 export function modelPatch(key: string, models: Models): Partial<FlowNode> {
   const { account, model } = parseModelKey(key);
-  if (!account) return { model, account: null };
+  if (!account) return { model, account: null, direct: false };
   const known = models.openrouter.find((m) => m.account === account && m.id === model);
-  return known ? { model, account, engine: known.driver } : { model, account };
+  return known ? { model, account, direct: known.direct, ...(known.direct ? {} : { engine: known.driver }) } : { model, account };
 }
 
 /** The pinned OpenRouter models, with the node's own first if it is no longer on offer (its account was changed or removed). */
-export function openRouterChoices(node: FlowNode, models: Models): { key: string; label: string; offered: boolean }[] {
+export function openRouterChoices(node: FlowNode, models: Models): { key: string; label: string; offered: boolean; direct: boolean }[] {
   // The account's name only helps when there is more than one to tell apart.
   const several = new Set(models.openrouter.map((m) => m.account)).size > 1;
-  const out = models.openrouter.map((m) => ({ key: `or:${m.account}:${m.id}`, label: several ? `${m.accountName} · ${m.id}` : m.id, offered: true }));
+  const out = models.openrouter.map((m) => ({ key: `or:${m.account}:${m.id}`, label: several ? `${m.accountName} · ${m.id}` : m.id, offered: true, direct: m.direct }));
   const mine = node.account ? modelKey(node) : null;
-  if (mine && !out.some((o) => o.key === mine)) out.unshift({ key: mine, label: `${node.model} (account unavailable)`, offered: false });
+  if (mine && !out.some((o) => o.key === mine)) out.unshift({ key: mine, label: `${node.model} (account unavailable)`, offered: false, direct: !!node.direct });
   return out;
 }
 
@@ -593,3 +593,6 @@ export function priceNote(m: Pick<FlowModel, 'priceIn' | 'priceOut'>): string {
   const p = (v: number | null) => (v === null ? '?' : v === 0 ? 'free' : `$${Number.isInteger(v) ? v : v.toFixed(2)}`);
   return m.priceIn === null && m.priceOut === null ? 'No price on file' : `${p(m.priceIn)} in · ${p(m.priceOut)} out, per million tokens`;
 }
+
+/** Whether an agent in this role could call its model directly: it must need no tools. */
+export const canCallDirectly = (n: Pick<FlowNode, 'role' | 'custom'>): boolean => capabilityOf(n) === 'read';
