@@ -8,20 +8,25 @@ pub fn default_prompt(role: Role) -> &'static str {
 }
 
 fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: usize, row: usize) -> Node {
+    // A role that is no longer offered is written out as the custom role it is, with the same instructions: the starters
+    // show what a flow with one looks like, and the app has fewer built-in roles to explain.
+    let custom = super::roles::def_for(role).filter(|d| d.hidden).map(|d| super::graph::CustomRole { label: d.label.into(), capability: d.capability, output: d.output });
+    let (prompt, web) = (default_prompt(role), super::roles::web_default(role));
+    let role = if custom.is_some() { Role::Custom } else { role };
     Node {
         id: id.into(),
         name: name.into(),
         role,
-        custom: None,
+        custom,
         engine,
         model: model.into(),
-        system_prompt: default_prompt(role).into(),
+        system_prompt: prompt.into(),
         checkpoint: false,
         token_cap: None,
         keep_model: false,
         account: None,
         direct: false,
-        web: super::roles::web_default(role),
+        web,
         effort: None,
         routing: crate::orch::graph::Routing::Pinned,
         ladder: Vec::new(),
@@ -57,7 +62,7 @@ fn flow(id: &str, name: &str, specs: &[Spec], edges: &[(&str, &str, EdgeKind)], 
     }
 }
 
-/// The five flow shapes from docs/research/multi-agent-roles.md. Most coding flows land at 3 to 6 agents, with one
+/// The flow shapes to start from (after docs/research/multi-agent-roles.md). Most coding flows land at 3 to 6 agents, with one
 /// writer, and a judge that can run the checks and send the work back.
 pub fn all() -> Vec<Flow> {
     use EdgeKind::{Forward as F, Retry as R};
@@ -119,21 +124,6 @@ pub fn all() -> Vec<Flow> {
         default,
     );
 
-    let refactor = flow(
-        "starter-refactor",
-        "Refactor",
-        &[
-            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 0, false),
-            ("find", "Search", Role::Search, codex, "gpt-6-luna", 1, 0, false),
-            ("design", "Architect", Role::Architect, claude, "opus", 2, 0, true),
-            ("build", "Builder", Role::Builder, codex, "gpt-6.1-sol", 3, 0, true),
-            ("check", "Judge", Role::Judge, claude, "opus", 4, 0, false),
-        ],
-        &[("plan", "find", F), ("find", "design", F), ("design", "build", F), ("build", "check", F), ("check", "build", R)],
-        2,
-        default,
-    );
-
     // Two reviewers look at the same work through different lenses, in parallel, with nothing to send it back to.
     let mut review = flow(
         "starter-code-review",
@@ -151,31 +141,7 @@ pub fn all() -> Vec<Flow> {
     review.nodes[1].system_prompt.push_str(" Review for correctness only: logic errors, broken behaviour, missing cases and failing checks.");
     review.nodes[2].system_prompt.push_str(" Review for security problems (injection, unsafe input, leaked secrets) and for gaps against the stated requirements only.");
 
-    let report = flow(
-        "starter-research-report",
-        "Research report",
-        &[
-            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 1, false),
-            ("find", "Search", Role::Search, codex, "gpt-6-luna", 1, 0, false),
-            ("read-a", "Researcher", Role::Researcher, claude, "sonnet", 1, 1, false),
-            ("read-b", "Researcher 2", Role::Researcher, claude, "sonnet", 1, 2, false),
-            ("weigh", "Analyst", Role::Analyst, claude, "sonnet", 2, 1, false),
-            ("report", "Reporter", Role::Reporter, claude, "sonnet", 3, 1, false),
-        ],
-        &[
-            ("plan", "find", F),
-            ("plan", "read-a", F),
-            ("plan", "read-b", F),
-            ("find", "weigh", F),
-            ("read-a", "weigh", F),
-            ("read-b", "weigh", F),
-            ("weigh", "report", F),
-        ],
-        1,
-        Budget { claude_pct: 10.0, codex_pct: 5.0, stop_window_pct: 85.0, run_usd: None, run_credits: None },
-    );
-
-    vec![feature, grilled, bug, refactor, review, report]
+    vec![feature, grilled, bug, review]
 }
 
 #[cfg(test)]
@@ -188,6 +154,23 @@ mod tests {
         for f in all() {
             assert_eq!(f.validate(), Ok(()), "{}", f.name);
         }
+    }
+
+    #[test]
+    fn starters_use_only_the_roles_on_offer_and_the_rest_as_custom_roles_with_the_same_instructions() {
+        assert_eq!(all().len(), 4);
+        for f in all() {
+            for n in &f.nodes {
+                assert!(!crate::orch::roles::is_hidden(n.role), "{}: {} uses a role that is not offered", f.name, n.name);
+                assert_eq!(n.role == Role::Custom, n.custom.is_some());
+            }
+        }
+        let feature = &all()[0];
+        let design = feature.node("design").unwrap();
+        let c = design.custom.as_ref().expect("the architect is a custom role now");
+        assert_eq!((c.label.as_str(), c.capability, c.output), ("Architect", Capability::Read, crate::orch::roles::Output::Plan));
+        assert_eq!(design.system_prompt, crate::orch::roles::prompt(Role::Architect), "the same instructions");
+        assert!(design.web && feature.node("find").unwrap().web, "the ones that look things up keep their web access");
     }
 
     #[test]

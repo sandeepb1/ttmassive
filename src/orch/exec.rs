@@ -222,6 +222,7 @@ fn settle(run: &mut Run, halt: Option<Pause>, waiting: Option<String>) {
         RunStatus::Paused { pause } => match pause {
             Pause::Approval { node } => format!("Waiting for your approval before {} starts", name_of(run, &node)),
             Pause::RetriesExhausted { node } => format!("{} has sent work back as many times as the flow allows, so the run stopped for you to decide", name_of(run, &node)),
+            Pause::Limit { node, message, .. } => format!("{} hit a usage limit ({message}); the run is waiting for it to lift", name_of(run, &node)),
             Pause::Budget { message } => format!("Stopped: {message}"),
             Pause::Failed { node, message } if node.is_empty() => format!("Stopped: {message}"),
             Pause::Failed { node, message } => format!("Stopped: {} failed ({message})", name_of(run, &node)),
@@ -274,9 +275,32 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
         run.note(Some(&node.id), LogKind::Error, format!("✕ {} failed", node.name), Some(message.clone()));
         Some(Pause::Failed { node: node.id.clone(), message })
     };
+    // An agent that has run out of plan usage has not failed: park the run until the limit lifts. It is tried again from the
+    // start of its turn, and the try that hit the limit does not count as an attempt.
+    let wait = |run: &mut Run, text: &str| -> Option<Option<Pause>> {
+        let message = super::limits::detect(text)?;
+        if run.limit_waits >= super::limits::MAX_WAITS {
+            return None;
+        }
+        let now = super::limits::now_secs();
+        let resume_at = super::limits::retry_at(text, now, super::limits::local_offset(now));
+        run.limit_waits += 1;
+        let n = run.nodes.get_mut(&node.id).expect("every node has a state");
+        n.status = NodeStatus::Interrupted;
+        n.attempts = n.attempts.saturating_sub(1);
+        n.error = None;
+        run.note(Some(&node.id), LogKind::Decision, format!("{} hit a usage limit: {message}. The run waits and carries on by itself", node.name), None);
+        Some(Some(Pause::Limit { node: node.id.clone(), message, resume_at }))
+    };
     let outcome = match result {
         Ok(o) => o,
-        Err(e) => return fail(run, e.to_string()),
+        Err(e) => {
+            let text = format!("{e:#}");
+            return match wait(run, &text) {
+                Some(pause) => pause,
+                None => fail(run, text),
+            };
+        }
     };
     let n = run.nodes.get_mut(&node.id).expect("every node has a state");
     n.tokens.add(&outcome.tokens);
@@ -287,6 +311,9 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
         n.session = Some(id.clone());
     }
     if outcome.is_error {
+        if let Some(pause) = wait(run, &outcome.text) {
+            return pause;
+        }
         return fail(run, format!("the agent reported an error: {}", outcome.text.chars().take(300).collect::<String>()));
     }
     let Some(output) = outcome.structured else {
@@ -1464,6 +1491,52 @@ mod tests {
         assert_eq!(node, "grill");
         assert!(message.contains("as many times as it may be (1)"), "{message}");
         assert_eq!(run.lock().unwrap().nodes["grill"].status, NodeStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_hits_a_usage_limit_parks_the_run_without_failing_and_carries_on_when_resumed() {
+        let run = new_run(flow());
+        let hit = || Err(anyhow::anyhow!("You've hit your session limit · resets 6pm (Europe/London)"));
+        let fake = Fake::with(vec![("orch", hit()), ("judge", approve())]);
+        let before = crate::orch::limits::now_secs();
+        go(&run, &fake).await;
+        let (resume_at, node) = match status(&run) {
+            RunStatus::Paused { pause: Pause::Limit { node, message, resume_at } } => {
+                assert!(message.contains("session limit"), "{message}");
+                (resume_at, node)
+            }
+            other => panic!("not waiting for a limit: {other:?}"),
+        };
+        assert!(resume_at >= before + crate::orch::limits::MIN_SECS && resume_at <= before + crate::orch::limits::MAX_SECS);
+        {
+            let r = run.lock().unwrap();
+            assert_eq!(r.nodes[&node].status, NodeStatus::Interrupted, "not failed: resume runs it again");
+            assert_eq!(r.nodes[&node].attempts, 0, "the try that hit the limit is not an attempt");
+            assert_eq!((r.nodes[&node].error.clone(), r.limit_waits), (None, 1));
+        }
+        // Resumed (the service does this when the limit lifts): it runs again and the flow goes on.
+        {
+            let mut r = run.lock().unwrap();
+            for n in r.nodes.values_mut().filter(|n| n.status == NodeStatus::Interrupted) {
+                n.status = NodeStatus::Pending;
+            }
+            r.status = RunStatus::Running;
+        }
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        assert_eq!(fake.ran().iter().filter(|i| *i == "orch").count(), 2, "it ran again, from the start of its turn");
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_limit_has_an_end_and_an_ordinary_error_is_never_waited_for() {
+        let run = new_run(flow());
+        run.lock().unwrap().limit_waits = crate::orch::limits::MAX_WAITS;
+        go(&run, &Fake::with(vec![("orch", Err(anyhow::anyhow!("You've hit your session limit · resets 6pm")))])).await;
+        assert!(matches!(status(&run), RunStatus::Paused { pause: Pause::Failed { .. } }), "after too many waits it stops and asks");
+        let run = new_run(flow());
+        go(&run, &Fake::with(vec![("orch", Err(anyhow::anyhow!("claude exited with status 1")))])).await;
+        assert!(matches!(status(&run), RunStatus::Paused { pause: Pause::Failed { .. } }));
+        assert_eq!(run.lock().unwrap().limit_waits, 0);
     }
 
     #[tokio::test]

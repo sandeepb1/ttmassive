@@ -30,8 +30,9 @@ fn role_id(r: Role) -> String {
 /// The roles on offer, one line each, for the model that designs a flow. Built from the catalog so a role added
 /// there is offered here without anyone remembering to.
 fn role_lines() -> String {
-    super::roles::catalog()
+    let mut lines = super::roles::catalog()
         .iter()
+        .filter(|d| !d.hidden)
         .map(|d| {
             let can = match d.capability {
                 Capability::Read => "reads only",
@@ -47,8 +48,9 @@ fn role_lines() -> String {
             };
             format!("- {} ({}): {}. {can}; {gives}.", role_id(d.id), d.label, d.blurb.to_lowercase())
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect::<Vec<_>>();
+    lines.push("- custom (a role you define): for work none of the above describes. You give it a name, what it may do and what it hands back.".into());
+    lines.join("\n")
 }
 
 /// Rules from docs/research/multi-agent-roles.md: few agents, one writer, a checker that can run things, and a
@@ -132,13 +134,19 @@ orchestrator. Add an agent only for a different kind of work (reading, running c
 check, or a part that can run in parallel with another. Agents that read can run at the same time; never have two agents \
 change the same files, one agent that changes files per piece of work. Anything that changes files is followed by a judge \
 that can run the checks, and the judge's edge back to that agent is marked retry. If a plan or design could be wrong, the \
-judge may also have a retry edge to that earlier agent (the architect, say). A flow that changes nothing has no retry edge. For a goal that is vague or a plan that could easily be wrong, a griller \
+judge may also have a retry edge to that earlier agent (the architect, say, if you made one). A flow that changes nothing has no retry edge. For a goal that is vague or a plan that could easily be wrong, a griller \
 can come after the planner: it asks what the plan leaves open, and its edge back to the planner is marked retry (a griller has \
 exactly one way back, and asks the user). Do not add one for a small or clear task. Use the cheapest model that can do the job: opus for the orchestrator, architect and \
 judge; sonnet (or a small codex model) for researchers, debuggers and reporters; haiku or a small codex model for simple \
 lookups. Use a different model for the judge than for the agent whose work it checks. Mark checkpoint true on every agent \
 that changes files, so the user approves before files change. Each system_prompt is 2 to 5 sentences: the agent's job, \
-what to hand back, what not to do. Never put the user's goal in a system_prompt; the goal is given to every agent separately.";
+what to hand back, what not to do. Never put the user's goal in a system_prompt; the goal is given to every agent separately.\n\
+The built-in roles cover most work. When the job needs something they do not describe (an architect that turns research into a \
+file-level plan, a security reviewer, a test writer, a final reporter, a migration checker), define a custom role: set role to \
+custom, custom_label to a short name, custom_capability to read (inspect if it must run checks; write only if it changes files, \
+and then only one agent does), custom_output to plan, report, change, verdict or questions (write goes with change; only verdict \
+or questions may send work back), and put its instructions in system_prompt. Do not define a custom role that a built-in one \
+already is. For every agent that is not custom set custom_label, custom_capability and custom_output to empty strings.";
 
 const GRILL_SYSTEM: &str = "You are the orchestrator of a team of AI agents, about to start work for the user. Before \
 you start, ask the user the questions whose answers would change what the team builds. Ask only what you cannot \
@@ -162,29 +170,44 @@ fn text() -> Value {
 }
 
 fn suggest_schema() -> Value {
-    let ids: Vec<String> = super::roles::catalog().iter().map(|d| role_id(d.id)).collect();
-    let role = json!({"type": "string", "enum": ids});
-    let engine = json!({"type": "string", "enum": ["claude", "codex"]});
+    let mut ids: Vec<String> = super::roles::catalog().iter().filter(|d| !d.hidden).map(|d| role_id(d.id)).collect();
+    ids.push("custom".into());
+    let efforts = json!({"type": "string", "enum": ["", "low", "medium", "high", "xhigh", "max"]});
+    let rung = json!({
+        "type": "object", "additionalProperties": false, "required": ["model", "openrouter", "effort"],
+        "properties": {"model": text(), "openrouter": {"type": "boolean"}, "effort": efforts.clone()}
+    });
+    // Built a field at a time: one `json!` for the whole node is deeper than the macro will expand.
+    let mut props = serde_json::Map::new();
+    for (k, v) in [
+        ("id", text()),
+        ("name", text()),
+        ("role", json!({"type": "string", "enum": ids})),
+        ("engine", json!({"type": "string", "enum": ["claude", "codex"]})),
+        ("model", text()),
+        ("system_prompt", text()),
+        ("checkpoint", json!({"type": "boolean"})),
+        ("openrouter", json!({"type": "boolean"})),
+        ("model_reason", text()),
+        ("effort", efforts),
+        ("routing", json!({"type": "string", "enum": ["pinned", "ladder", "auto"]})),
+        ("ladder", json!({"type": "array", "items": rung})),
+        // The three that define a custom role; empty for every other agent.
+        ("custom_label", text()),
+        ("custom_capability", json!({"type": "string", "enum": ["", "read", "inspect", "write"]})),
+        ("custom_output", json!({"type": "string", "enum": ["", "plan", "report", "change", "verdict", "questions"]})),
+    ] {
+        props.insert(k.into(), v);
+    }
+    let required: Vec<Value> = props.keys().map(|k| json!(k)).collect();
+    let node = json!({"type": "object", "additionalProperties": false, "required": required, "properties": props});
+    let edge = json!({
+        "type": "object", "additionalProperties": false, "required": ["from", "to", "retry"],
+        "properties": {"from": text(), "to": text(), "retry": {"type": "boolean"}}
+    });
     json!({
         "type": "object", "additionalProperties": false, "required": ["name", "nodes", "edges"],
-        "properties": {
-            "name": text(),
-            "nodes": {"type": "array", "items": {
-                "type": "object", "additionalProperties": false,
-                "required": ["id", "name", "role", "engine", "model", "system_prompt", "checkpoint", "openrouter", "model_reason", "effort", "routing", "ladder"],
-                "properties": {"id": text(), "name": text(), "role": role, "engine": engine, "model": text(),
-                               "system_prompt": text(), "checkpoint": {"type": "boolean"},
-                               "openrouter": {"type": "boolean"}, "model_reason": text(),
-                               "effort": {"type": "string", "enum": ["", "low", "medium", "high", "xhigh", "max"]},
-                               "routing": {"type": "string", "enum": ["pinned", "ladder", "auto"]},
-                               "ladder": {"type": "array", "items": {
-                                   "type": "object", "additionalProperties": false, "required": ["model", "openrouter", "effort"],
-                                   "properties": {"model": text(), "openrouter": {"type": "boolean"},
-                                                  "effort": {"type": "string", "enum": ["", "low", "medium", "high", "xhigh", "max"]}}}}}}},
-            "edges": {"type": "array", "items": {
-                "type": "object", "additionalProperties": false, "required": ["from", "to", "retry"],
-                "properties": {"from": text(), "to": text(), "retry": {"type": "boolean"}}}},
-        }
+        "properties": {"name": text(), "nodes": {"type": "array", "items": node}, "edges": {"type": "array", "items": edge}}
     })
 }
 
@@ -249,18 +272,24 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
         }
         let id = format!("n{}", i + 1);
         ids.insert(s("id"), id.clone());
+        let custom = (role == Role::Custom).then(|| custom_of(n, &s("name")));
         let prompt = s("system_prompt");
         let effort = Some(s("effort")).filter(|e| EFFORTS.contains(&e.as_str()));
         let (routing, ladder) = suggested_ladder(n, codex_models, or_models);
         nodes.push(Node {
             id,
-            name: if s("name").is_empty() { format!("{role:?}") } else { s("name") },
+            name: if s("name").is_empty() { custom.as_ref().map_or_else(|| format!("{role:?}"), |c| c.label.clone()) } else { s("name") },
             role,
-            custom: None,
+            system_prompt: match (&custom, prompt.is_empty()) {
+                (_, false) => prompt,
+                (Some(c), true) => custom_prompt(&c.label),
+                (None, true) => starters::default_prompt(role).into(),
+            },
+            // An agent that changes files waits for the user's approval, whatever the designer said.
+            checkpoint: n.get("checkpoint").and_then(Value::as_bool).unwrap_or(false) || custom.as_ref().is_some_and(|c| c.capability == super::roles::Capability::Write),
+            custom,
             engine,
             model,
-            system_prompt: if prompt.is_empty() { starters::default_prompt(role).into() } else { prompt },
-            checkpoint: n.get("checkpoint").and_then(Value::as_bool).unwrap_or(false),
             token_cap: None,
             keep_model: false,
             account: pick.map(|m| m.account.clone()),
@@ -300,6 +329,27 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
     flow.validate().map_err(anyhow::Error::msg).context("the suggested flow is not valid")?;
     lay_out(&mut flow);
     Ok((flow, notes))
+}
+
+/// The role a designer defined for an agent, from its `custom_*` fields. A label it left out becomes the agent's name, and
+/// a capability and output that do not go together are made to: only a writer hands back a change, and a writer must.
+fn custom_of(n: &Value, fallback_name: &str) -> crate::orch::graph::CustomRole {
+    use super::roles::{Capability, Output};
+    let s = |k: &str| n.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let label: String = Some(s("custom_label")).filter(|l| !l.is_empty()).unwrap_or_else(|| fallback_name.to_string()).chars().take(40).collect();
+    let capability: Capability = serde_json::from_value(Value::String(s("custom_capability"))).unwrap_or(Capability::Read);
+    let output: Output = serde_json::from_value(Value::String(s("custom_output"))).unwrap_or(if capability == Capability::Write { Output::Change } else { Output::Report });
+    let output = match (capability, output) {
+        (Capability::Write, _) => Output::Change,
+        (_, Output::Change) => Output::Report,
+        (_, o) => o,
+    };
+    crate::orch::graph::CustomRole { label: if label.is_empty() { "Agent".into() } else { label }, capability, output }
+}
+
+/// Instructions for a custom agent whose designer wrote none.
+fn custom_prompt(label: &str) -> String {
+    format!("You are the {label}. Do your part of the work from the inputs you are given, and hand back what the next agent needs.")
 }
 
 /// The ladder a designer asked for, kept only as far as its rungs are models that exist: a rung that names something unknown is
@@ -529,6 +579,9 @@ fn edit_view(flow: &Flow) -> Value {
             "engine": match n.engine { Engine::Claude => "claude", Engine::Codex => "codex" },
             "model": n.model, "system_prompt": n.system_prompt, "checkpoint": n.checkpoint,
             "openrouter": n.account.is_some(), "model_reason": "",
+            "custom_label": n.custom.as_ref().map_or("", |c| c.label.as_str()),
+            "custom_capability": n.custom.as_ref().map_or("", |c| match c.capability { Capability::Read => "read", Capability::Inspect => "inspect", Capability::Write => "write" }),
+            "custom_output": n.custom.as_ref().map_or("", |c| match c.output { Output::Plan => "plan", Output::Report => "report", Output::Change => "change", Output::Verdict => "verdict", Output::Questions => "questions" }),
         })).collect::<Vec<_>>(),
         "edges": flow.edges.iter().map(|e| json!({"from": e.from, "to": e.to, "retry": e.kind == EdgeKind::Retry})).collect::<Vec<_>>(),
     })
@@ -593,9 +646,6 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
         let (id, mut node) = match existing {
             Some(e) => (e.id.clone(), e.clone()),
             None => {
-                if role == Role::Custom {
-                    bail!("a new agent cannot have a custom role; add it yourself with More roles, Custom role");
-                }
                 let id = free_id(&taken);
                 taken.push(id.clone());
                 added.push(id.clone());
@@ -603,7 +653,7 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
                     id: id.clone(),
                     name: String::new(),
                     role,
-                    custom: None,
+                    custom: (role == Role::Custom).then(|| custom_of(n, &s("name"))),
                     engine,
                     model: model.clone(),
                     system_prompt: String::new(),
@@ -644,14 +694,17 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
         if !s("name").is_empty() {
             node.name = s("name").chars().take(60).collect();
         } else if node.name.is_empty() {
-            node.name = format!("{:?}", node.role);
+            node.name = node.custom.as_ref().map_or_else(|| format!("{:?}", node.role), |c| c.label.clone());
         }
         if !s("system_prompt").is_empty() {
             node.system_prompt = s("system_prompt");
         } else if node.system_prompt.is_empty() {
-            node.system_prompt = starters::default_prompt(node.role).into();
+            node.system_prompt = match &node.custom {
+                Some(c) => custom_prompt(&c.label),
+                None => starters::default_prompt(node.role).into(),
+            };
         }
-        node.checkpoint = n.get("checkpoint").and_then(Value::as_bool).unwrap_or(node.checkpoint);
+        node.checkpoint = n.get("checkpoint").and_then(Value::as_bool).unwrap_or(node.checkpoint) || (existing.is_none() && node.writes());
         nodes.push(node);
     }
     let mut edges = Vec::new();
@@ -1047,19 +1100,26 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_custom_agent_stays_custom_and_a_new_one_cannot_be() {
+    fn a_kept_custom_agent_stays_custom_and_the_editor_may_define_a_new_one() {
         let b = base();
         // The editor says "reporter" for the custom agent: it stays the user's own role.
         let (f, _) = flow_from_edit(&b, &edit_answer(|v| v["nodes"][3]["role"] = json!("reporter")), &models()).unwrap();
         let c = f.node("n9").unwrap();
         assert_eq!(c.role, Role::Custom);
         assert_eq!(c.custom.as_ref().unwrap().label, "Security reviewer");
-        let err = flow_from_edit(&b, &edit_answer(|v| {
-            v["nodes"].as_array_mut().unwrap().push(json!({"id": "z", "name": "Mine", "role": "custom", "engine": "claude",
-                "model": "sonnet", "system_prompt": "x", "checkpoint": false}));
+        // A new agent may be a custom role the editor defines, and it is made consistent: a writer hands back a change and waits for approval.
+        let (f, _) = flow_from_edit(&b, &edit_answer(|v| {
+            v["nodes"].as_array_mut().unwrap().push(json!({"id": "z", "name": "Migrator", "role": "custom", "engine": "claude",
+                "model": "sonnet", "system_prompt": "Write the migration.", "checkpoint": false,
+                "custom_label": "Migration writer", "custom_capability": "write", "custom_output": "report"}));
         }), &models())
-        .unwrap_err();
-        assert!(err.to_string().contains("custom role"), "{err}");
+        .unwrap();
+        let m = f.nodes.iter().find(|n| n.name == "Migrator").expect("added");
+        assert_eq!(m.role, Role::Custom);
+        let c = m.custom.as_ref().unwrap();
+        assert_eq!((c.label.as_str(), c.capability, c.output), ("Migration writer", crate::orch::roles::Capability::Write, crate::orch::roles::Output::Change));
+        assert!(m.checkpoint, "an agent that changes files waits for approval");
+        assert_eq!(m.system_prompt, "Write the migration.");
     }
 
     #[test]
@@ -1116,7 +1176,8 @@ mod tests {
         let roles = edit_schema()["properties"]["nodes"]["items"]["properties"]["role"]["enum"].clone();
         assert!(roles.as_array().unwrap().contains(&json!("custom")));
         assert!(edit_schema()["required"].as_array().unwrap().contains(&json!("summary")));
-        assert!(!suggest_schema()["properties"]["nodes"]["items"]["properties"]["role"]["enum"].as_array().unwrap().contains(&json!("custom")));
+        // The editor can also see the roles that are kept out of the palette, to edit a flow that has one.
+        assert!(roles.as_array().unwrap().contains(&json!("architect")));
     }
 
     /// A stand-in chat endpoint that always answers with `content` and reports a cost of half a cent.
@@ -1470,20 +1531,58 @@ mod tests {
     }
 
     #[test]
-    fn the_suggest_prompt_offers_every_catalog_role_and_the_researched_rules() {
+    fn the_suggest_prompt_offers_the_roles_on_offer_and_custom_and_the_researched_rules() {
         let p = suggest_system(false);
         for d in crate::orch::roles::catalog() {
-            assert!(p.contains(&format!("- {} (", role_id(d.id))), "{:?} is missing from the prompt", d.id);
+            assert_eq!(p.contains(&format!("- {} (", role_id(d.id))), !d.hidden, "{:?}", d.id);
         }
-        assert!(!p.contains("- custom ("), "a custom role is not offered to the designer");
+        assert!(p.contains("- custom (a role you define)"), "a designer may define its own");
+        assert!(p.contains("custom_label") && p.contains("custom_capability") && p.contains("custom_output"));
         for rule in ["3 to 5 agents", "never have two agents", "also have a retry edge", "different model for the judge"] {
             assert!(p.contains(rule), "{rule}");
         }
-        // The schema accepts exactly the ids the prompt offers.
+        // The schema accepts exactly the ids the prompt offers, and every agent must say its custom fields.
         let sch = suggest_schema();
-        let ids: Vec<&str> = sch["properties"]["nodes"]["items"]["properties"]["role"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(ids.len(), crate::orch::roles::catalog().len());
-        assert!(ids.contains(&"architect") && ids.contains(&"debugger") && ids.contains(&"reporter"));
+        let item = &sch["properties"]["nodes"]["items"];
+        let ids: Vec<&str> = item["properties"]["role"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(ids.len(), crate::orch::roles::catalog().iter().filter(|d| !d.hidden).count() + 1);
+        assert!(ids.contains(&"custom") && ids.contains(&"griller") && !ids.contains(&"architect") && !ids.contains(&"reporter"));
+        let required = item["required"].as_array().unwrap();
+        for k in ["custom_label", "custom_capability", "custom_output"] {
+            assert!(required.contains(&json!(k)), "{k}");
+        }
+    }
+
+    #[test]
+    fn a_suggestion_can_define_a_custom_role_and_it_is_made_consistent() {
+        let mut v = suggestion();
+        for (k, val) in [("name", "Test writer"), ("role", "custom"), ("engine", "claude"), ("model", "sonnet"), ("system_prompt", ""), ("custom_label", "Test writer"), ("custom_capability", "inspect"), ("custom_output", "change")] {
+            v["nodes"][1][k] = json!(val);
+        }
+        let (f, _) = flow_from_suggestion_with(&v, "f", &models(), &[]).unwrap();
+        let n = &f.nodes[1];
+        assert_eq!((n.role, n.name.as_str()), (Role::Custom, "Test writer"));
+        let c = n.custom.as_ref().unwrap();
+        assert_eq!((c.label.as_str(), c.capability, c.output), ("Test writer", crate::orch::roles::Capability::Inspect, crate::orch::roles::Output::Report), "only a writer hands back a change");
+        assert!(n.system_prompt.starts_with("You are the Test writer."), "{}", n.system_prompt);
+        // A verdict from a custom role may own a way back, like a judge.
+        v["nodes"][1]["custom_output"] = json!("verdict");
+        v["nodes"][1]["custom_capability"] = json!("read");
+        let (f, _) = flow_from_suggestion_with(&v, "f", &models(), &[]).unwrap();
+        assert_eq!(f.nodes[1].output(), crate::orch::roles::Output::Verdict);
+        // An agent that is not custom has its custom fields ignored.
+        let mut v = suggestion();
+        v["nodes"][1]["custom_label"] = json!("Stray");
+        let (f, _) = flow_from_suggestion_with(&v, "f", &models(), &[]).unwrap();
+        assert!(f.nodes[1].custom.is_none());
+        // A custom writer waits for approval, whatever the designer said.
+        let mut v = suggestion();
+        v["nodes"][1]["role"] = json!("custom");
+        v["nodes"][1]["custom_label"] = json!("Migrator");
+        v["nodes"][1]["custom_capability"] = json!("write");
+        v["nodes"][1]["checkpoint"] = json!(false);
+        let (f, _) = flow_from_suggestion_with(&v, "f", &models(), &[]).unwrap();
+        assert!(f.nodes[1].checkpoint);
     }
 
     #[test]

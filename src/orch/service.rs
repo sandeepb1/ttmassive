@@ -582,7 +582,44 @@ impl Service {
                 live.runner.end_leases();
             }
             live.driving.store(false, Ordering::SeqCst);
+            // Parked on a usage limit: carry on by itself once it lifts.
+            let parked = match &live.shared.lock().unwrap_or_else(|e| e.into_inner()).status {
+                RunStatus::Paused { pause: Pause::Limit { resume_at, .. } } => Some(*resume_at),
+                _ => None,
+            };
+            if let Some(at) = parked {
+                let id = live.shared.lock().unwrap_or_else(|e| e.into_inner()).id.clone();
+                svc.arm_limit_resume(st.clone(), id, at);
+            }
         });
+    }
+
+    /// Resume run `id` at `resume_at` (unix seconds) if it is still parked on that same limit then. A person who resumed it
+    /// sooner, stopped it, or deleted it makes this do nothing.
+    pub fn arm_limit_resume(&self, st: Arc<AppState>, id: String, resume_at: i64) {
+        tokio::spawn(async move {
+            let wait = (resume_at - super::limits::now_secs()).max(0) as u64;
+            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            let still = match st.orch.get(&id) {
+                Ok(r) => matches!(r.status, RunStatus::Paused { pause: Pause::Limit { resume_at: at, .. } } if at == resume_at),
+                Err(_) => false,
+            };
+            if still {
+                tracing::info!("orchestrator: the usage limit holding run {id} should have lifted; carrying on");
+                if let Err(e) = st.orch.resume(&st, &id, false) {
+                    tracing::warn!("orchestrator: carrying on run {id} after a usage limit: {e:?}");
+                }
+            }
+        });
+    }
+
+    /// After ttm starts: runs that were parked on a usage limit are waited for again.
+    pub fn rearm_limits(&self, st: &Arc<AppState>) {
+        for r in self.store.all_runs() {
+            if let RunStatus::Paused { pause: Pause::Limit { resume_at, .. } } = r.status {
+                self.arm_limit_resume(st.clone(), r.id.clone(), resume_at);
+            }
+        }
     }
 
     /// Flows the user can start from: their own, then the built-in ones.

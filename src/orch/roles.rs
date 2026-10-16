@@ -62,6 +62,9 @@ pub struct RoleDef {
     pub output: Output,
     /// Frequently needed: shown first in the palette.
     pub core: bool,
+    /// Not offered for a new flow: saved flows that use it keep working, and a designer can describe the same job as a
+    /// custom role. The out-of-the-box set is kept small.
+    pub hidden: bool,
     /// Ask the user before it starts (it changes files).
     pub checkpoint: bool,
     /// The engine to start it on if the model is available, then the model for each engine.
@@ -69,6 +72,12 @@ pub struct RoleDef {
     pub claude_model: &'static str,
     pub codex_model: Option<&'static str>,
     pub prompt: &'static str,
+}
+
+/// The roles kept out of the palette and out of what a designer is offered: each is a job a custom role can describe, and
+/// flows already saved with one still run as they did.
+pub const fn is_hidden(role: Role) -> bool {
+    matches!(role, Role::Search | Role::Analyst | Role::Architect | Role::Debugger | Role::Reporter)
 }
 
 /// The roles that look things up and so are given the web tools unless told otherwise.
@@ -96,7 +105,8 @@ const fn def(
         icon,
         capability,
         output,
-        core,
+        core: core && !is_hidden(id),
+        hidden: is_hidden(id),
         checkpoint: matches!(capability, Capability::Write),
         prefer: Engine::Claude,
         claude_model: "sonnet",
@@ -149,7 +159,7 @@ pub fn catalog() -> Vec<RoleDef> {
                 "help",
                 Capability::Read,
                 Output::Questions,
-                false,
+                true,
                 "You are the griller. Read the brief and what comes before you and look for what would make the work go wrong: assumptions nobody stated, requirements that are missing or contradict each other, risks, and decisions that were skipped. Ask only the questions whose answers would change what gets built, most important first, each answerable in a sentence. For each question give two to four distinct answers the person can choose from, and the one you would recommend (which must be one of them); set multiple to true only when several can apply. Write the question without a number in front of it. Do not answer them yourself and do not suggest a plan. If the work is already clear and sound, ask nothing and say it is resolved.",
             )
         },
@@ -177,7 +187,7 @@ pub fn catalog() -> Vec<RoleDef> {
             "book",
             Capability::Read,
             Output::Report,
-            false,
+            true,
             "You research one question using primary sources: official documentation, the project's own repository, original papers. Return findings as claims, each with the source and the exact passage relied on. Say what you could not verify. Prefer fewer, better sources over many weak ones, and stop when the question is answered. Do not give recommendations, and do not state anything you did not see in a source.",
         ),
         // Sonnet, not the strong tier the research suggested for it: measured on one analyst task, Opus cost 2.2x as much
@@ -342,10 +352,15 @@ mod tests {
     }
 
     #[test]
-    fn the_core_roles_are_the_four_almost_every_flow_needs() {
+    fn the_roles_on_offer_are_the_five_every_flow_is_made_of() {
         let mut core: Vec<_> = catalog().iter().filter(|d| d.core).map(|d| d.label).collect();
         core.sort();
-        assert_eq!(core, vec!["Builder", "Judge", "Orchestrator", "Search"]);
+        assert_eq!(core, vec!["Builder", "Griller", "Judge", "Orchestrator", "Researcher"]);
+        // The rest are kept so saved flows still run, but are not offered: a custom role can describe the same job.
+        let mut kept: Vec<_> = catalog().iter().filter(|d| d.hidden).map(|d| d.label).collect();
+        kept.sort();
+        assert_eq!(kept, vec!["Analyst", "Architect", "Debugger", "Reporter", "Search"]);
+        assert!(catalog().iter().all(|d| d.core != d.hidden), "every role is either on offer or kept out of sight");
     }
 
     #[test]

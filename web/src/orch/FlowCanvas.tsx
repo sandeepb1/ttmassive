@@ -8,7 +8,7 @@ import {
 } from '@xyflow/react';
 import { AgentCard, type CardData } from './AgentCard';
 import type { MenuItem, MenuState } from './ContextMenu';
-import { addEdge, awaitingApproval, connectionProblem, duplicateNode, edgeLabel, removeNode, roleLabel } from './model';
+import { addEdge, awaitingApproval, connectionProblem, duplicateNode, edgeLabel, offered, removeNode, roleLabel } from './model';
 import type { EdgeKind, Flow, Role, RoleDef, Run } from './types';
 
 const nodeTypes = { agent: AgentCard };
@@ -175,7 +175,8 @@ export function FlowCanvas({ flow, run, selected, selectedEdge, editable, onFlow
     if (editable) {
       const at = rf.screenToFlowPosition({ x: e.clientX - 116, y: e.clientY - 40 });
       const add = (r: RoleDef): MenuItem => ({ label: `Add ${r.label}`, icon: 'plus', onSelect: () => onAddAt(r.id, at) });
-      items.push(...roles.filter((r) => r.core).map(add), { kind: 'separator' }, ...roles.filter((r) => !r.core).map(add), { kind: 'separator' });
+      const on = offered(roles);
+      items.push(...on.filter((r) => r.core).map(add), { kind: 'separator' }, ...on.filter((r) => !r.core).map(add), { kind: 'separator' });
       items.push({ label: 'Tidy up', icon: 'grid', disabled: flow.nodes.length < 2, onSelect: onTidy });
     }
     items.push({ label: 'Fit to screen', icon: 'columns', disabled: flow.nodes.length === 0, onSelect: fit });

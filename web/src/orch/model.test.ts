@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -760,4 +760,33 @@ test('running a run again keeps its flow, brief and project, and fetches pages o
   assert.equal(req.flow, flow, 'the agents and settings it ran with');
   const plain = rerunRequest({ ...run, brief: '', references: [], docs: undefined } as unknown as Run);
   assert.deepEqual([plain.brief, plain.readLinks, plain.docs], [undefined, false, []]);
+});
+
+test('a run waiting for a usage limit says when it carries on, by itself, and is not shown as needing you', () => {
+  const now = Math.floor(Date.now() / 1000);
+  const f = emptyFlow('f', 'F');
+  const flow = { ...f, nodes: [{ ...newNode(f, def('builder'), models, at), id: 'n3', name: 'Architect' }] };
+  const run = { flow, status: { state: 'paused', pause: { kind: 'limit', node: 'n3', message: "You've hit your session limit · resets 6pm (Europe/London)", resumeAt: now + 20 * 60 } }, retriesUsed: 0 } as unknown as Run;
+  const info = pauseInfo(run)!;
+  assert.equal(info.title, 'Architect hit a usage limit');
+  assert.match(info.detail, /carries on by itself at .* \(in 20 minutes\)/);
+  assert.match(info.detail, /do not need to do anything/);
+  assert.deepEqual([info.primary!.label, info.primary!.action], ['Try now', 'resume']);
+  assert.deepEqual(statusLabel(run.status), { text: 'Waiting', tone: 'warn' });
+  assert.equal(untilLabel(now + 30, now), 'a moment');
+  assert.equal(untilLabel(now + 3600, now), '1 hour');
+  assert.equal(untilLabel(now + 3 * 3600 + 5 * 60, now), '3 hours 5 minutes');
+  assert.equal(untilLabel(now + 2 * 86400, now), '2 days');
+  assert.equal(untilLabel(now - 5, now), 'a moment');
+  assert.ok(!resumeLabel(now + 600, now).includes(','), 'today is just a time');
+  assert.ok(resumeLabel(now + 3 * 86400, now).includes(','), 'another day names the day');
+});
+
+test('the palette offers only the roles that are on offer, and the hidden ones still resolve for flows that use them', () => {
+  const mk = (id: string, hidden?: boolean) => ({ ...def('builder'), id: id as Role, label: id, core: !hidden, hidden });
+  const roles = [mk('builder'), mk('judge'), mk('architect', true), mk('reporter', true)];
+  assert.deepEqual(offered(roles).map((r) => r.id), ['builder', 'judge']);
+  setCatalog(roles);
+  assert.equal(roleDef('architect')?.label, 'architect', 'a saved flow with an architect still finds its role');
+  setCatalog([]);
 });

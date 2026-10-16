@@ -24,6 +24,8 @@ export interface RoleDef {
   capability: Capability;
   output: Output;
   core: boolean;
+  /** Kept so flows that use it still run, but not offered for a new agent. */
+  hidden?: boolean;
   checkpoint: boolean;
   prefer: Engine;
   claudeModel: string;
@@ -158,7 +160,9 @@ export type Pause =
   | { kind: 'retriesExhausted'; node: string }
   | { kind: 'budget'; message: string }
   | { kind: 'failed'; node: string; message: string }
-  | { kind: 'questions'; node: string };
+  | { kind: 'questions'; node: string }
+  /** An agent hit its plan's usage limit; the run carries on by itself at `resumeAt` (unix seconds). */
+  | { kind: 'limit'; node: string; message: string; resumeAt: number };
 
 export type RunStatus =
   | { state: 'grilling' }

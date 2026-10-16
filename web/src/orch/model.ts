@@ -14,8 +14,8 @@ import type {
 const FIRST_SIX: RoleDef[] = [
   { id: 'orchestrator', label: 'Orchestrator', blurb: 'Plans the work', stage: 'plan', icon: 'workflow', capability: 'read', output: 'plan', core: true, checkpoint: false, prefer: 'claude', claudeModel: 'opus', prompt: 'You are the orchestrator. Turn the brief into a short, concrete plan the other agents can follow. Do not do the work yourself.' },
   { id: 'researcher', label: 'Researcher', blurb: 'Reads code and sources', stage: 'gather', icon: 'book', capability: 'read', output: 'report', core: true, checkpoint: false, prefer: 'claude', claudeModel: 'sonnet', prompt: 'You are a researcher. Find out what is needed to do the task well and report findings with their sources. Do not change files.' },
-  { id: 'search', label: 'Search', blurb: 'Finds files and facts, fast', stage: 'gather', icon: 'search', capability: 'read', output: 'report', core: true, checkpoint: false, prefer: 'codex', claudeModel: 'haiku', codexModel: 'gpt-6-luna', prompt: 'You are a search agent. Locate the files, symbols and facts the task touches and report exact locations. Do not change files.' },
-  { id: 'analyst', label: 'Analyst', blurb: 'Weighs findings, recommends', stage: 'gather', icon: 'scale', capability: 'read', output: 'report', core: true, checkpoint: false, prefer: 'claude', claudeModel: 'sonnet', prompt: 'You are an analyst. Weigh the findings you are given, point out risks, and recommend one approach with reasons. Do not change files.' },
+  { id: 'search', label: 'Search', blurb: 'Finds files and facts, fast', stage: 'gather', icon: 'search', capability: 'read', output: 'report', core: false, hidden: true, checkpoint: false, prefer: 'codex', claudeModel: 'haiku', codexModel: 'gpt-6-luna', prompt: 'You are a search agent. Locate the files, symbols and facts the task touches and report exact locations. Do not change files.' },
+  { id: 'analyst', label: 'Analyst', blurb: 'Weighs findings, recommends', stage: 'gather', icon: 'scale', capability: 'read', output: 'report', core: false, hidden: true, checkpoint: false, prefer: 'claude', claudeModel: 'sonnet', prompt: 'You are an analyst. Weigh the findings you are given, point out risks, and recommend one approach with reasons. Do not change files.' },
   { id: 'builder', label: 'Builder', blurb: 'The one that changes files', stage: 'build', icon: 'hammer', capability: 'write', output: 'change', core: true, checkpoint: true, prefer: 'codex', claudeModel: 'sonnet', codexModel: 'gpt-6.1-sol', prompt: 'You are the builder. Do the work described by the plan and findings, keep changes small, run the checks, and report what you changed.' },
   { id: 'judge', label: 'Judge', blurb: 'Reviews, and can send work back', stage: 'check', icon: 'gavel', capability: 'inspect', output: 'verdict', core: true, checkpoint: false, prefer: 'claude', claudeModel: 'opus', prompt: 'You are a strict reviewer. Approve only if the work is correct and complete; otherwise reject and say exactly what to fix.' },
 ];
@@ -304,6 +304,7 @@ export function statusLabel(s: RunStatus): { text: string; tone: Tone } {
     case 'done': return { text: 'Done', tone: 'ok' };
     case 'cancelled': return { text: 'Cancelled', tone: 'idle' };
     case 'paused':
+      if (s.pause.kind === 'limit') return { text: 'Waiting', tone: 'warn' };
       return s.pause.kind === 'failed' || s.pause.kind === 'retriesExhausted'
         ? { text: 'Needs you', tone: 'bad' }
         : { text: 'Paused', tone: 'warn' };
@@ -319,6 +320,26 @@ export interface PauseInfo {
   limits?: boolean;
   /** Offer to let the agent that stopped send work back this many more times. */
   moreRounds?: number;
+}
+
+/** When a run parked on a usage limit will try again, as a person reads it: "6:01 pm", or with the day when it is not today. */
+export function resumeLabel(resumeAt: number, now: number): string {
+  const at = new Date(resumeAt * 1000);
+  const time = at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toLowerCase();
+  const sameDay = at.toDateString() === new Date(now * 1000).toDateString();
+  return sameDay ? time : `${at.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}, ${time}`;
+}
+
+/** How long until then: "12 minutes", "3 hours 5 minutes", "2 days". */
+export function untilLabel(resumeAt: number, now: number): string {
+  const s = Math.max(0, resumeAt - now);
+  if (s < 90) return 'a moment';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} minute${m === 1 ? '' : 's'}`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 === 0 ? `${h} hour${h === 1 ? '' : 's'}` : `${h} hour${h === 1 ? '' : 's'} ${m % 60} minutes`;
+  const d = Math.round(h / 24);
+  return `${d} day${d === 1 ? '' : 's'}`;
 }
 
 export function pauseInfo(run: Run): PauseInfo | null {
@@ -352,6 +373,14 @@ export function pauseInfo(run: Run): PauseInfo | null {
             primary: { label: 'Accept the work as it is', action: 'resume' },
             moreRounds: 2,
           };
+    }
+    case 'limit': {
+      const now = Math.floor(Date.now() / 1000);
+      return {
+        title: `${name(p.node)} hit a usage limit`,
+        detail: `${p.message}. Nothing is wrong with the work: the run carries on by itself at ${resumeLabel(p.resumeAt, now)} (in ${untilLabel(p.resumeAt, now)}). You do not need to do anything.`,
+        primary: { label: 'Try now', action: 'resume' },
+      };
     }
     case 'questions':
       return {
@@ -846,3 +875,6 @@ export function rerunRequest(r: Run): { flow: Flow; goal: string; project: strin
     docs: (r.docs ?? []).map((d) => d.url),
   };
 }
+
+/** The roles to offer for a new agent: the ones that are not kept only for flows that already use them. */
+export const offered = (roles: RoleDef[]): RoleDef[] => roles.filter((r) => !r.hidden);

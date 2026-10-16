@@ -7,6 +7,7 @@ pub mod downshift;
 pub mod exec;
 pub mod gate;
 pub mod graph;
+pub mod limits;
 pub mod handoff;
 pub mod prompts;
 pub mod roles;

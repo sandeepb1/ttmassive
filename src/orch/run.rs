@@ -74,6 +74,9 @@ pub enum Pause {
     Failed { node: String, message: String },
     /// An agent asked questions that only the user can answer; the run waits for them.
     Questions { node: String },
+    /// An agent hit its plan's usage limit. Nothing is wrong with the work: the run carries on by itself once the limit lifts.
+    #[serde(rename_all = "camelCase")]
+    Limit { node: String, message: String, resume_at: i64 },
 }
 
 /// Why an agent is being run again, which decides how its prompt puts it.
@@ -255,6 +258,9 @@ pub struct Run {
     /// Firecrawl credits the questions before the run used on looking things up.
     #[serde(default)]
     pub research_credits: u64,
+    /// Times this run has waited for a usage limit to lift. Too many and it stops and asks instead.
+    #[serde(default)]
+    pub limit_waits: u32,
     /// Documentation sites crawled for the run and written into each builder's worktree to read.
     #[serde(default)]
     pub docs: Vec<Reference>,
@@ -394,6 +400,7 @@ impl Run {
             overhead: Tokens::default(),
             overhead_usd: 0.0,
             research_credits: 0,
+            limit_waits: 0,
             docs: Vec::new(),
             references: Vec::new(),
             status: RunStatus::Running,
@@ -503,6 +510,14 @@ mod tests {
             dial: 2,
         };
         Run::new("r1".into(), flow, "brief".into(), 100)
+    }
+
+    #[test]
+    fn a_limit_pause_is_written_with_the_names_the_page_reads() {
+        let p = Pause::Limit { node: "n3".into(), message: "m".into(), resume_at: 1_792_170_000 };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v, serde_json::json!({"kind": "limit", "node": "n3", "message": "m", "resumeAt": 1_792_170_000}));
+        assert_eq!(serde_json::from_value::<Pause>(v).unwrap(), p);
     }
 
     #[test]

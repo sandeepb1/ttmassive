@@ -78,6 +78,8 @@ pub async fn serve(cfg: Config) -> Result<()> {
         cfg,
         auth,
     });
+    // Runs that were waiting for a usage limit to lift are waited for again.
+    state.orch.rearm_limits(&state);
 
     use axum::serve::ListenerExt;
     // Keystrokes and echoes are tiny writes: without TCP_NODELAY they wait to be batched with

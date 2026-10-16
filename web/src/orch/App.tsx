@@ -16,7 +16,7 @@ import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
 import { Sidebar } from './Sidebar';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
 import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
 const PHONE = '(max-width: 699px)';
@@ -40,7 +40,10 @@ const cloneFlow = (f: Flow): Flow => ({ ...structuredClone(f), id: newFlowId() }
 function AddAgent({ roles, count, onAdd, onCustom }: { roles: RoleDef[]; count: number; onAdd: (role: Role, at: { x: number; y: number }) => void; onCustom: () => void }) {
   const center = useViewportCenter();
   const [open, setOpen] = useState(false);
-  const core = roles.filter((r) => r.core);
+  const shown = offered(roles);
+  const core = shown.filter((r) => r.core);
+  // With every offered role in the toolbar there is no list to open: the one extra is a role of your own.
+  const hasMore = shown.some((r) => !r.core);
   const add = (role: Role) => {
     onAdd(role, center(count));
     setOpen(false);
@@ -56,7 +59,7 @@ function AddAgent({ roles, count, onAdd, onCustom }: { roles: RoleDef[]; count: 
       {open && (
         <div className="mc-addpanel" role="menu" aria-label="All roles">
           {STAGES.map((st) => {
-            const list = roles.filter((r) => r.stage === st.id);
+            const list = shown.filter((r) => r.stage === st.id);
             if (!list.length) return null;
             return (
               <div key={st.id} className="mc-addgroup">
@@ -104,9 +107,15 @@ function AddAgent({ roles, count, onAdd, onCustom }: { roles: RoleDef[]; count: 
           <Icon name={iconFor({ role: r.id })} /> {r.label}
         </button>
       ))}
-      <button type="button" className="mc-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        <Icon name="plus" /> More roles
-      </button>
+      {hasMore ? (
+        <button type="button" className="mc-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          <Icon name="plus" /> More roles
+        </button>
+      ) : (
+        <button type="button" className="mc-btn" title="Describe a job; Sonnet writes the instructions" onClick={onCustom}>
+          <Icon name="wand" /> Custom role
+        </button>
+      )}
     </div>
   );
 }
