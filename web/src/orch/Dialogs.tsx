@@ -550,3 +550,40 @@ export function QuestionsDialog({ run, busy, error, onAnswer, onClose }: {
     </Dialog>
   );
 }
+
+/** A run could not be started again. Says why, and for a project that has no git history to work from, offers to set one up. */
+export function RerunProblemDialog({ message, project, git, busy, onFix, onClose }: {
+  message: string;
+  project: string;
+  /** The reason is that the project has no repository or no commit to build from. */
+  git: boolean;
+  busy: boolean;
+  onFix: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      title="It could not be run again"
+      onClose={onClose}
+      foot={
+        <>
+          <button type="button" className="mc-btn" onClick={onClose}>
+            {git ? 'Not now' : 'Close'}
+          </button>
+          {git && (
+            <button type="button" className="mc-btn mc-btn-primary" disabled={busy} onClick={onFix}>
+              <Icon name="branch" /> {busy ? 'Setting up…' : 'Set up git and run again'}
+            </button>
+          )}
+        </>
+      }
+    >
+      <p>{message}</p>
+      {git && (
+        <p className="mc-hint">
+          This does <code>git init</code> if needed, then makes a first commit of what is in <span className="mc-mono">{project}</span>, leaving out anything its ignore rules exclude. Your files are not changed.
+        </p>
+      )}
+    </Dialog>
+  );
+}

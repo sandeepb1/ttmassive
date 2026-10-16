@@ -5,7 +5,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import type { RecentDir } from '../dirs';
 import { orch, watchRun } from './api';
 import { Icon, iconFor } from './bits';
-import { CustomRoleDialog, GrillDialog, NewRunDialog, QuestionsDialog, SuggestDialog, type RoleDraft } from './Dialogs';
+import { CustomRoleDialog, GrillDialog, NewRunDialog, QuestionsDialog, RerunProblemDialog, SuggestDialog, type RoleDraft } from './Dialogs';
 import { Assistant } from './Assistant';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
@@ -147,6 +147,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const [view, setView] = useState<'canvas' | 'list'>('canvas');
   // An execution opens on its timeline; the chart is one tap away. A flow being designed has only the chart.
   const [runView, setRunView] = useState<'timeline' | 'chart'>('timeline');
+  // A run that could not be started again: why, and where it was.
+  const [rerunProblem, setRerunProblem] = useState<{ id: string; message: string; project: string; git: boolean } | null>(null);
   const [dialog, setDialog] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [roles, setRoles] = useState<RoleDef[]>(getCatalog());
@@ -500,26 +502,38 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       },
     );
 
-  /** Start a run like an earlier one, with the flow and brief it had. It waits to be started like any new run. */
-  const rerun = (id: string) =>
-    void act(
-      async () => {
-        const old = await orch.getRun(id);
-        if (!old.ok) return old;
-        const made = await orch.createRun(rerunRequest(old.data));
-        if (!made.ok) return made;
-        // It runs at once: the brief and everything else is the earlier run's, so there is nothing to confirm.
-        return orch.start(made.data.id);
-      },
-      (r) => {
-        setRun(r);
-        setRunId(r.id);
-        setSelected(null);
-        setRunView('timeline');
-        void refreshLists();
-        say('Running it again');
-      },
-    );
+  /** Start a run like an earlier one, with the flow and brief it had. It starts at once, as everything it needs is the earlier run's. */
+  const rerun = useCallback(
+    async (id: string) => {
+      setBusy(true);
+      setError(null);
+      const old = await orch.getRun(id);
+      const made = old.ok ? await orch.createRun(rerunRequest(old.data)) : old;
+      const started = made.ok ? await orch.start(made.data.id) : made;
+      setBusy(false);
+      if (!started.ok) {
+        // Nothing opens, so the reason is shown here: a run that cannot start must never look like a button that does nothing.
+        setRerunProblem({ id, message: started.error, project: old.ok ? old.data.project : '', git: /git repository/i.test(started.error) });
+        return;
+      }
+      setRerunProblem(null);
+      setRun(started.data);
+      setRunId(started.data.id);
+      setSelected(null);
+      setRunView('timeline');
+      void refreshLists();
+      say('Running it again');
+    },
+    [refreshLists, say],
+  );
+  const fixAndRerun = async () => {
+    if (!rerunProblem) return;
+    setBusy(true);
+    const r = await orch.projectInit(rerunProblem.project);
+    setBusy(false);
+    if (!r.ok) return setRerunProblem({ ...rerunProblem, message: r.error, git: false });
+    void rerun(rerunProblem.id);
+  };
 
   /** Put an older execution's design back in the editor, as the flow's current design. */
   // ------------------------------------------------------------------ deleting and quick actions
@@ -757,7 +771,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           )}
           {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
           {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
-          {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
+          {rerunProblem && <RerunProblemDialog message={rerunProblem.message} project={rerunProblem.project} git={rerunProblem.git} busy={busy} onFix={() => void fixAndRerun()} onClose={() => setRerunProblem(null)} />}
+        {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
           {run?.status.state === 'grilling' && (
             <GrillDialog
               run={run}
