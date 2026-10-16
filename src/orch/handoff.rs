@@ -419,8 +419,8 @@ mod tests {
     fn pages_from_the_goal_follow_the_brief_for_every_agent_and_failed_ones_are_left_out() {
         let mut r = run();
         r.references = vec![
-            crate::orch::run::Reference { url: "https://a.test/docs".into(), text: "Docs text.".into(), credits: 1, failed: false },
-            crate::orch::run::Reference { url: "https://b.test".into(), text: "could not be read".into(), credits: 0, failed: true },
+            crate::orch::run::Reference { url: "https://a.test/docs".into(), text: "Docs text.".into(), credits: 1, web_usd: 0.0, failed: false },
+            crate::orch::run::Reference { url: "https://b.test".into(), text: "could not be read".into(), credits: 0, web_usd: 0.0, failed: true },
         ];
         let node = r.flow.nodes[0].clone();
         let p = build_prompt(&r, &node);

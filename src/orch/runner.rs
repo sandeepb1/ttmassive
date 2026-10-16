@@ -194,7 +194,7 @@ impl EngineRunner {
         self.waived.store(true, Ordering::SeqCst);
         for n in &self.flow.nodes {
             self.leases.set_cap(&self.lease_tag(&n.id), None);
-            self.leases.set_credit_cap(&self.web_tag(&n.id), None);
+            self.leases.set_web_cap(&self.web_tag(&n.id), None);
         }
     }
 
@@ -211,18 +211,18 @@ impl EngineRunner {
         let accounts = crate::secrets::load(&self.data_dir).await;
         let account = accounts.firecrawl()?;
         let tag = self.web_tag(&node.id);
-        let cap = if self.waived.load(Ordering::SeqCst) { None } else { self.limits.lock().unwrap_or_else(|e| e.into_inner()).run_credits };
+        let cap = if self.waived.load(Ordering::SeqCst) { None } else { self.limits.lock().unwrap_or_else(|e| e.into_inner()).run_web_usd };
         let token = match self.leases.by_tag(&tag) {
             Some((token, _)) => token,
             None => self.leases.mint(&account.id, "firecrawl", &tag, None),
         };
-        self.leases.set_credit_cap(&tag, cap);
+        self.leases.set_web_cap(&tag, cap);
         Some(Proxy { origin: self.origin.clone(), token })
     }
 
-    /// Firecrawl credits the agent's web lease has used so far.
-    fn web_spent(&self, node: &Node) -> u64 {
-        self.leases.by_tag(&self.web_tag(&node.id)).map_or(0, |(_, l)| l.spent.credits)
+    /// Provider credits, and their cost in dollars, that the agent's web lease has used so far.
+    fn web_spent(&self, node: &Node) -> (u64, f64) {
+        self.leases.by_tag(&self.web_tag(&node.id)).map_or((0, 0.0), |(_, l)| (l.spent.credits, l.spent.web_usd))
     }
 
     /// End the leases of every agent of this run. Called when the run is over.
@@ -305,7 +305,7 @@ impl EngineRunner {
         log(format!("→ asked {} directly", node.model));
         // With web access it may search and fetch pages (a few calls a turn, and nothing else: no files, no shell).
         let web = if node.web { accounts.firecrawl().and_then(|a| crate::web::client::Client::new(a).ok()) } else { None };
-        let (reply, credits) = match web {
+        let (reply, credits, web_usd) = match web {
             Some(client) => {
                 let r = chat::complete_with_tools(&endpoint, &history, Some(&schema), &crate::web::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::web::tools::Web(client)).await?;
                 for e in &r.events {
@@ -314,17 +314,17 @@ impl EngineRunner {
                     trace.push(Kind::Result, "result", &e.result);
                 }
                 history = r.messages;
-                (r.reply, r.credits)
+                (r.reply, r.credits, r.web_usd)
             }
             None => {
                 let r = chat::complete(&endpoint, &history, Some(&schema)).await?;
                 history.push(Message::assistant(r.text.clone()));
-                (r, 0)
+                (r, 0, 0.0)
             }
         };
         trace.push(Kind::Say, node.model.clone(), &reply.text);
         self.direct.lock().await.insert(node.id.clone(), history);
-        Ok(Outcome { structured: reply.structured, text: reply.text, tokens: reply.tokens, cost_usd: reply.cost_usd.unwrap_or(0.0), credits, is_error: false, session: None })
+        Ok(Outcome { structured: reply.structured, text: reply.text, tokens: reply.tokens, cost_usd: reply.cost_usd.unwrap_or(0.0), credits, web_usd, is_error: false, session: None })
     }
 
     async fn run_claude(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace) -> Result<Outcome> {
@@ -495,7 +495,7 @@ impl EngineRunner {
         trace.push(Kind::Prompt, "prompt", &prompt);
         let folder = cwd.clone();
         let before = self.spent(node);
-        let credits_before = self.web_spent(node);
+        let web_before = self.web_spent(node);
         let mut result = match node.engine {
             Engine::Claude => self.run_claude(node, cwd, &prompt, log, trace).await,
             Engine::Codex => self.run_codex(node, cwd, &prompt, log, trace).await,
@@ -524,6 +524,7 @@ impl EngineRunner {
                     second.tokens.add(&first.tokens);
                     second.cost_usd += first.cost_usd;
                     second.credits += first.credits;
+                    second.web_usd += first.web_usd;
                     second.session = second.session.or_else(|| first.session.clone());
                     if second.structured.is_none() && !second.is_error {
                         second.structured = handoff::salvage(&schema, &second.text);
@@ -540,7 +541,9 @@ impl EngineRunner {
             }
         }
         if let Ok(o) = &mut result {
-            o.credits = self.web_spent(node).saturating_sub(credits_before);
+            let now = self.web_spent(node);
+            o.credits = now.0.saturating_sub(web_before.0);
+            o.web_usd = (now.1 - web_before.1).max(0.0);
         }
         // Whatever the builder got done is kept on its branch, even if its turn then failed: the work is not lost.
         if node.writes() {
@@ -661,8 +664,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ttm-docs-{}", std::process::id()));
         let (runner, _) = runner_with_account("http://127.0.0.1:1/v1", vec![]);
         let runner = runner.with_docs(vec![
-            crate::orch::run::Reference { url: "https://a.test/docs".into(), text: "Doc body".into(), credits: 3, failed: false },
-            crate::orch::run::Reference { url: "https://b.test".into(), text: "failed".into(), credits: 0, failed: true },
+            crate::orch::run::Reference { url: "https://a.test/docs".into(), text: "Doc body".into(), credits: 3, web_usd: 0.0, failed: false },
+            crate::orch::run::Reference { url: "https://b.test".into(), text: "failed".into(), credits: 0, web_usd: 0.0, failed: true },
         ]);
         runner.write_docs(&dir).await;
         let f = dir.join("docs/_ref/1-a-test-docs.md");

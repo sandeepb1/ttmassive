@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -579,6 +579,17 @@ test('agents that look things up start with web access on, and a run adds up its
   assert.equal(builder.web, false);
   const run = { nodes: { a: { credits: 3 }, b: { credits: 2 }, c: {} } } as unknown as Run;
   assert.equal(runCredits(run), 5, 'an agent that used none counts as none');
+});
+
+test('a run adds up what its web access has cost in dollars, from agents, pages, docs and research', () => {
+  const run = {
+    nodes: { a: { webUsd: 0.5 }, b: { webUsd: 0.25 }, c: {} },
+    references: [{ webUsd: 0.125 }, {}],
+    docs: [{ webUsd: 0.0625 }],
+    researchWebUsd: 0.03125,
+  } as unknown as Run;
+  assert.equal(runWebUsd(run), 0.96875);
+  assert.equal(runWebUsd({ nodes: {} } as unknown as Run), 0, 'a run saved before web access was priced costs nothing');
 });
 
 test('an agent that asks questions can send work back, to one place only, with the usual limits', () => {

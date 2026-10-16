@@ -224,7 +224,7 @@ fn forward() -> EdgeKind {
 /// The plan limits: the share of each window a single run may use, and the line no window may pass. One set for
 /// the whole app, changed any time and applied to runs that are going.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "BudgetSaved")]
 pub struct Budget {
     pub claude_pct: f64,
     pub codex_pct: f64,
@@ -233,9 +233,32 @@ pub struct Budget {
     /// Most dollars a run may spend on OpenRouter, or `None` for no cap.
     #[serde(default)]
     pub run_usd: Option<f64>,
-    /// Most Firecrawl credits a run may use on web access, or `None` for no cap.
+    /// Most dollars a run may spend on web access (search, pages, crawls), or `None` for no cap.
     #[serde(default)]
-    pub run_credits: Option<u64>,
+    pub run_web_usd: Option<f64>,
+}
+
+/// A budget as it may have been saved. Before web access was priced in dollars the cap was a count of Firecrawl
+/// credits, which is carried over at Firecrawl's list price per credit.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetSaved {
+    claude_pct: f64,
+    codex_pct: f64,
+    stop_window_pct: f64,
+    #[serde(default)]
+    run_usd: Option<f64>,
+    #[serde(default)]
+    run_web_usd: Option<f64>,
+    #[serde(default)]
+    run_credits: Option<u64>,
+}
+
+impl From<BudgetSaved> for Budget {
+    fn from(s: BudgetSaved) -> Self {
+        let from_credits = s.run_credits.map(|c| (c as f64 * crate::web::types::Provider::Firecrawl.default_usd_per_credit() * 10_000.0).round() / 10_000.0);
+        Budget { claude_pct: s.claude_pct, codex_pct: s.codex_pct, stop_window_pct: s.stop_window_pct, run_usd: s.run_usd, run_web_usd: s.run_web_usd.or(from_credits) }
+    }
 }
 
 impl Budget {
@@ -244,8 +267,8 @@ impl Budget {
         if !(pct(self.claude_pct) && pct(self.codex_pct) && pct(self.stop_window_pct)) {
             return Err("limits must be above 0 and at most 100".into());
         }
-        if self.run_credits == Some(0) {
-            return Err("the credit cap must be more than zero".into());
+        if self.run_web_usd.is_some_and(|c| !(c.is_finite() && c > 0.0 && c < 1.0e6)) {
+            return Err("the web cost cap must be more than zero".into());
         }
         match self.run_usd {
             Some(c) if !(c.is_finite() && c > 0.0 && c < 1.0e6) => Err("the dollar cap must be more than zero".into()),
@@ -256,7 +279,7 @@ impl Budget {
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { claude_pct: 15.0, codex_pct: 10.0, stop_window_pct: 85.0, run_usd: None, run_credits: None }
+        Self { claude_pct: 15.0, codex_pct: 10.0, stop_window_pct: 85.0, run_usd: None, run_web_usd: None }
     }
 }
 

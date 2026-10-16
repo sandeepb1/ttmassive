@@ -77,15 +77,15 @@ function FlowPanel({ flow, run, editable, limits, onLimits, onFlow }: Props) {
             onChange={(e) => onLimits({ ...b, runUsd: Number(e.target.value) > 0 ? Number(e.target.value) : null })}
           />
         </Field>
-        <Field label="Most one run may use on web access" hint="Firecrawl credits. The run pauses, and asks you, when it reaches this; an agent that would go past it is told to work from what it has. Leave empty for no cap.">
+        <Field label="Most one run may use on web access" hint="Dollars, at each web account's price per credit. The run pauses, and asks you, when it reaches this; an agent that would go past it is told to work from what it has. Leave empty for no cap.">
           <input
             className="mc-field mc-mono"
             type="number"
             min={0}
-            step={5}
+            step={0.05}
             placeholder="No cap"
-            value={b.runCredits ?? ''}
-            onChange={(e) => onLimits({ ...b, runCredits: Number(e.target.value) >= 1 ? Math.round(Number(e.target.value)) : null })}
+            value={b.runWebUsd ?? ''}
+            onChange={(e) => onLimits({ ...b, runWebUsd: Number(e.target.value) > 0 ? Number(e.target.value) : null })}
           />
         </Field>
         {run?.waived && <p className="mc-hint">You chose to carry on past the limits for this run, so it is not being stopped by them.</p>}
@@ -543,7 +543,10 @@ function RunDetail({ nr, node, feedback }: { nr: NodeRun; node: FlowNode; feedba
         {(nr.credits ?? 0) > 0 && (
           <>
             <dt>Web</dt>
-            <dd>{nr.credits} credit{nr.credits === 1 ? '' : 's'}</dd>
+            <dd>
+              {nr.credits} credit{nr.credits === 1 ? '' : 's'}
+              {(nr.webUsd ?? 0) > 0 ? ` · ${usdLabel(nr.webUsd ?? 0)}` : ''}
+            </dd>
           </>
         )}
         {(nr.cacheBreaks ?? 0) > 0 && (

@@ -184,6 +184,9 @@ pub struct NodeRun {
     /// Firecrawl credits its web tools used over all attempts.
     #[serde(default)]
     pub credits: u64,
+    /// What those credits cost, in dollars.
+    #[serde(default)]
+    pub web_usd: f64,
     pub transcript: Vec<String>,
     /// The agent's own conversation id after its latest finished turn, for opening it in a live session.
     #[serde(default)]
@@ -215,7 +218,7 @@ impl NodeRun {
             error: None,
             tokens: Tokens::default(),
             cost_usd: 0.0,
-            credits: 0,
+            credits: 0, web_usd: 0.0,
             transcript: Vec::new(),
             session: None,
             model_used: None,
@@ -258,6 +261,9 @@ pub struct Run {
     /// Firecrawl credits the questions before the run used on looking things up.
     #[serde(default)]
     pub research_credits: u64,
+    /// What those credits cost, in dollars.
+    #[serde(default)]
+    pub research_web_usd: f64,
     /// Times this run has waited for a usage limit to lift. Too many and it stops and asks instead.
     #[serde(default)]
     pub limit_waits: u32,
@@ -315,6 +321,9 @@ pub struct Reference {
     pub text: String,
     /// Firecrawl credits it cost.
     pub credits: u64,
+    /// What those credits cost, in dollars.
+    #[serde(default)]
+    pub web_usd: f64,
     /// The page could not be fetched.
     #[serde(default)]
     pub failed: bool,
@@ -356,6 +365,9 @@ pub struct Turn {
     pub tokens: Tokens,
     pub cost_usd: f64,
     pub credits: u64,
+    /// What those credits cost, in dollars.
+    #[serde(default)]
+    pub web_usd: f64,
     /// The agent's own conversation id, when it keeps one.
     pub session: Option<String>,
     /// Why the turn failed, when it did.
@@ -399,7 +411,7 @@ impl Run {
             baseline: Baseline::default(),
             overhead: Tokens::default(),
             overhead_usd: 0.0,
-            research_credits: 0,
+            research_credits: 0, research_web_usd: 0.0,
             limit_waits: 0,
             docs: Vec::new(),
             references: Vec::new(),
@@ -427,9 +439,14 @@ impl Run {
         self.overhead_usd + self.flow.nodes.iter().filter(|n| !n.uses_plan()).filter_map(|n| self.nodes.get(&n.id)).map(|n| n.cost_usd).sum::<f64>()
     }
 
-    /// Firecrawl credits the run's agents have used on web tools.
+    /// Provider credits the run's web access has used.
     pub fn credits(&self) -> u64 {
         self.nodes.values().map(|n| n.credits).sum::<u64>() + self.references.iter().chain(&self.docs).map(|r| r.credits).sum::<u64>() + self.research_credits
+    }
+
+    /// Dollars the run's web access has cost: agents' tools, reference pages, doc snapshots and the research before it.
+    pub fn web_usd(&self) -> f64 {
+        self.nodes.values().map(|n| n.web_usd).sum::<f64>() + self.references.iter().chain(&self.docs).map(|r| r.web_usd).sum::<f64>() + self.research_web_usd
     }
 
     /// Add a line to the run's log.
@@ -590,5 +607,30 @@ mod tests {
         r.approved.insert("a".into());
         let back: Run = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn a_run_saved_before_web_access_was_priced_still_loads_with_no_dollars() {
+        let r = run();
+        let mut v = serde_json::to_value(&r).unwrap();
+        v.as_object_mut().unwrap().remove("researchWebUsd");
+        for n in v["nodes"].as_object_mut().unwrap().values_mut() {
+            n.as_object_mut().unwrap().remove("webUsd");
+        }
+        let back: Run = serde_json::from_value(v).unwrap();
+        assert_eq!(back.web_usd(), 0.0);
+        let page: Reference = serde_json::from_str(r#"{"url":"u","text":"t","credits":2}"#).unwrap();
+        assert_eq!((page.credits, page.web_usd), (2, 0.0));
+    }
+
+    #[test]
+    fn a_runs_web_cost_is_its_agents_pages_docs_and_research() {
+        let mut r = run();
+        let id = r.flow.nodes[0].id.clone();
+        r.nodes.get_mut(&id).unwrap().web_usd = 0.5;
+        r.references.push(Reference { url: "u".into(), text: "t".into(), credits: 1, web_usd: 0.25, failed: false });
+        r.docs.push(Reference { url: "d".into(), text: "t".into(), credits: 1, web_usd: 0.125, failed: false });
+        r.research_web_usd = 0.0625;
+        assert_eq!(r.web_usd(), 0.9375);
     }
 }

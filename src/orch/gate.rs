@@ -88,10 +88,10 @@ pub fn check(run: &Run, w: &Windows, b: &Budget) -> Option<String> {
     if run.waived {
         return None;
     }
-    if let Some(cap) = b.run_credits {
-        let used = run.credits();
-        if used >= cap {
-            return Some(format!("This run has used {used} web credits (its cap is {cap})"));
+    if let Some(cap) = b.run_web_usd {
+        let spent = run.web_usd();
+        if spent >= cap {
+            return Some(format!("This run has spent {} on web access (its cap is {})", usd(spent), usd(cap)));
         }
     }
     if let Some(cap) = b.run_usd {
@@ -244,21 +244,24 @@ mod tests {
     }
 
     #[test]
-    fn a_run_stops_when_its_web_tools_have_used_its_credit_cap() {
+    fn a_run_stops_when_its_web_tools_have_spent_its_cost_cap() {
         let mut r = run();
         on_openrouter(&mut r);
         let ids: Vec<String> = r.flow.nodes.iter().map(|n| n.id.clone()).collect();
-        r.nodes.get_mut(&ids[0]).unwrap().credits = 7;
-        r.nodes.get_mut(&ids[1]).unwrap().credits = 5;
-        let cap = |c: u64| Budget { run_credits: Some(c), ..Budget::default() };
-        assert_eq!(r.credits(), 12);
-        assert_eq!(check(&r, &Windows::default(), &cap(13)), None);
-        let m = check(&r, &Windows::default(), &cap(12)).expect("at the cap");
-        assert!(m.contains("12 web credits") && m.contains("cap is 12"), "{m}");
+        r.nodes.get_mut(&ids[0]).unwrap().web_usd = 0.75;
+        r.nodes.get_mut(&ids[1]).unwrap().web_usd = 0.5;
+        r.research_web_usd = 0.25;
+        let cap = |c: f64| Budget { run_web_usd: Some(c), ..Budget::default() };
+        assert_eq!(r.web_usd(), 1.5);
+        assert_eq!(check(&r, &Windows::default(), &cap(1.75)), None);
+        let m = check(&r, &Windows::default(), &cap(1.5)).expect("at the cap");
+        assert!(m.contains("$1.50 on web access") && m.contains("cap is $1.50"), "{m}");
         assert_eq!(check(&r, &Windows::default(), &Budget::default()), None, "no cap, no stop");
-        assert!(Budget { run_credits: Some(0), ..Budget::default() }.validate().is_err(), "a zero cap would stop every run");
+        for bad in [0.0, -1.0, f64::NAN] {
+            assert!(cap(bad).validate().is_err(), "a cap of {bad} would stop every run");
+        }
         r.waived = true;
-        assert_eq!(check(&r, &Windows::default(), &cap(1)), None);
+        assert_eq!(check(&r, &Windows::default(), &cap(0.01)), None);
     }
 
     #[test]

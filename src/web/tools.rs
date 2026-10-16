@@ -112,10 +112,10 @@ pub fn chat_tools() -> Vec<crate::providers::chat::ToolDef> {
 pub struct Web(pub Client);
 
 impl crate::providers::chat::ToolRunner for Web {
-    async fn call(&self, name: &str, args: &Value) -> (String, u64) {
+    async fn call(&self, name: &str, args: &Value) -> (String, u64, f64) {
         match call(&self.0, name, args).await {
-            Ok(out) => (out.text, out.credits),
-            Err(e) => (format!("{e:#}"), 0),
+            Ok(out) => (out.text, out.credits, out.usd),
+            Err(e) => (format!("{e:#}"), 0, 0.0),
         }
     }
 }

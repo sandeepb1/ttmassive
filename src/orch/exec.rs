@@ -306,6 +306,7 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
     n.tokens.add(&outcome.tokens);
     n.cost_usd += outcome.cost_usd;
     n.credits += outcome.credits;
+    n.web_usd += outcome.web_usd;
     watch_cache(n, &outcome.tokens);
     if let Some(id) = &outcome.session {
         n.session = Some(id.clone());
@@ -353,9 +354,9 @@ fn finish_turn(run: &mut Run, done: Finished) -> (Option<Pause>, TurnDetail) {
     let logged = run.log_total;
     let round = run.retries_used;
     let attempt = run.nodes.get(&node.id).map_or(1, |n| n.attempts);
-    let (tokens, cost_usd, credits, session, output, error) = match &result {
-        Ok(o) => (o.tokens, o.cost_usd, o.credits, o.session.clone(), o.structured.clone(), None),
-        Err(e) => (Default::default(), 0.0, 0, None, None, Some(e.to_string())),
+    let (tokens, cost_usd, credits, web_usd, session, output, error) = match &result {
+        Ok(o) => (o.tokens, o.cost_usd, o.credits, o.web_usd, o.session.clone(), o.structured.clone(), None),
+        Err(e) => (Default::default(), 0.0, 0, 0.0, None, None, Some(e.to_string())),
     };
     let pause = finish(run, &node, result);
     // What the run decided is what it wrote in its log while it dealt with the answer.
@@ -382,6 +383,7 @@ fn finish_turn(run: &mut Run, done: Finished) -> (Option<Pause>, TurnDetail) {
         tokens,
         cost_usd,
         credits,
+        web_usd,
         session,
         failed: failed.clone(),
         decision: Some(decision).filter(|d| !d.is_empty()),
@@ -760,7 +762,7 @@ mod tests {
             text: String::new(),
             tokens: Tokens { input: 10, output: 10, cache_read: 0, cache_write: 0 },
             cost_usd: 0.0,
-            credits: 0,
+            credits: 0, web_usd: 0.0,
             is_error: false,
             session: None,
         })
@@ -1024,7 +1026,7 @@ mod tests {
             text: "I could not".into(),
             tokens: Tokens::default(),
             cost_usd: 0.0,
-            credits: 0,
+            credits: 0, web_usd: 0.0,
             is_error: false,
             session: None,
         });
@@ -1263,7 +1265,7 @@ mod tests {
     }
 
     fn ok_with(v: serde_json::Value, tokens: Tokens) -> anyhow::Result<Outcome> {
-        Ok(Outcome { structured: Some(v), text: String::new(), tokens, cost_usd: 0.0, credits: 0, is_error: false, session: None })
+        Ok(Outcome { structured: Some(v), text: String::new(), tokens, cost_usd: 0.0, credits: 0, web_usd: 0.0, is_error: false, session: None })
     }
 
     fn tok(input: u64, cache_read: u64) -> Tokens {
@@ -1689,7 +1691,7 @@ mod tests {
     #[tokio::test]
     async fn an_answer_that_cannot_be_used_is_a_failed_turn_though_the_agent_finished() {
         let run = new_run(flow());
-        let runner = Traced(Fake::with(vec![("orch", Ok(Outcome { structured: None, text: "just words".into(), tokens: Tokens::default(), cost_usd: 0.0, credits: 0, is_error: false, session: None }))]));
+        let runner = Traced(Fake::with(vec![("orch", Ok(Outcome { structured: None, text: "just words".into(), tokens: Tokens::default(), cost_usd: 0.0, credits: 0, web_usd: 0.0, is_error: false, session: None }))]));
         go_recording(&run, &runner).await;
         let r = run.lock().unwrap();
         assert!(r.turns[0].failed.clone().unwrap().contains("required shape"), "{:?}", r.turns[0].failed);
@@ -1699,7 +1701,7 @@ mod tests {
     async fn the_list_of_turns_is_capped_and_a_questions_pause_is_part_of_the_record() {
         let mut r = Run::new("r".into(), flow(), "b".into(), 0);
         for i in 1..=(MAX_TURNS as u32 + 5) {
-            r.turns.push(Turn { n: i, node: "orch".into(), attempt: 1, round: 0, started: 0, ended: 0, engine: "claude".into(), model: "m".into(), account: None, tokens: Tokens::default(), cost_usd: 0.0, credits: 0, session: None, failed: None, decision: None, commit: None, effort: None, reason: None });
+            r.turns.push(Turn { n: i, node: "orch".into(), attempt: 1, round: 0, started: 0, ended: 0, engine: "claude".into(), model: "m".into(), account: None, tokens: Tokens::default(), cost_usd: 0.0, credits: 0, web_usd: 0.0, session: None, failed: None, decision: None, commit: None, effort: None, reason: None });
         }
         let first_n = r.turns[0].n;
         let run = Mutex::new(r);

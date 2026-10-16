@@ -43,8 +43,10 @@ pub struct Outcome {
     /// What this turn used.
     pub tokens: Tokens,
     pub cost_usd: f64,
-    /// Firecrawl credits the agent used on web tools this turn.
+    /// Provider credits the agent used on web tools this turn.
     pub credits: u64,
+    /// What those credits cost, in dollars.
+    pub web_usd: f64,
     pub is_error: bool,
     /// The agent's own conversation id, so a person can later open it in a live session.
     pub session: Option<String>,

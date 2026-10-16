@@ -745,9 +745,16 @@ export function priceNote(m: Pick<FlowModel, 'priceIn' | 'priceOut'>): string {
 /** Whether an agent in this role could call its model directly: it must need no tools. */
 export const canCallDirectly = (n: Pick<FlowNode, 'role' | 'custom'>): boolean => capabilityOf(n) === 'read';
 
-/** Firecrawl credits the run's agents have used. */
+/** Web-service credits the run's agents have used. */
 export function runCredits(run: Run): number {
   return Object.values(run.nodes).reduce((n, x) => n + (x.credits ?? 0), 0);
+}
+
+/** Dollars the run's web access has cost: the agents' tools, the pages and docs fetched for them, and the research before it. */
+export function runWebUsd(run: Run): number {
+  const agents = Object.values(run.nodes).reduce((n, x) => n + (x.webUsd ?? 0), 0);
+  const pages = [...(run.references ?? []), ...(run.docs ?? [])].reduce((n, x) => n + (x.webUsd ?? 0), 0);
+  return agents + pages + (run.researchWebUsd ?? 0);
 }
 
 // ---------------------------------------------------------------------------- the timeline of a run
@@ -804,7 +811,7 @@ export function turnFacts(t: Turn, nodeName: string): string[] {
   if (t.effort) out.push(`${t.effort} effort`);
   out.push(turnLength(t), `${fmtTokens(totalTokens(t.tokens))} tok`);
   if (t.account && t.costUsd > 0) out.push(usdLabel(t.costUsd));
-  if (t.credits > 0) out.push(`${t.credits} web credit${t.credits === 1 ? '' : 's'}`);
+  if (t.credits > 0) out.push(`${t.credits} web credit${t.credits === 1 ? '' : 's'}${(t.webUsd ?? 0) > 0 ? ` (${usdLabel(t.webUsd ?? 0)})` : ''}`);
   if (t.attempt > 1) out.push(`${nodeName}, try ${t.attempt}`);
   return out;
 }

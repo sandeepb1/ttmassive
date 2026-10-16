@@ -1,5 +1,5 @@
 //! An MCP server (streamable HTTP, answering in plain JSON) that gives an agent CLI the Firecrawl tools. The agent
-//! holds a lease token, not the account's key; every call is checked against the lease's credit cap and its cost
+//! holds a lease token, not the account's key; every call is checked against the lease's cost cap and its cost
 //! is added to the lease, so a run's web use is counted exactly.
 
 use std::{net::SocketAddr, sync::Arc};
@@ -48,13 +48,13 @@ pub async fn handle_message(msg: &Value, token: &str, leases: &Leases, client: O
             let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("");
             let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));
             let Some(lease) = leases.get(token) else { return Some(tool_result(&id, "This web access has ended.".into(), true)) };
-            if lease.over_credit_cap() {
-                return Some(tool_result(&id, format!("The web credit cap for this run is reached ({} credits used). Work from what you already have.", lease.spent.credits), true));
+            if lease.over_web_cap() {
+                return Some(tool_result(&id, format!("The web cost cap for this run is reached (${:.2} spent). Work from what you already have.", lease.spent.web_usd), true));
             }
             let Some(client) = client else { return Some(tool_result(&id, "Web access is not set up: there is no Firecrawl account to use.".into(), true)) };
             match tools::call(client, name, &args).await {
                 Ok(out) => {
-                    leases.record_credits(token, out.credits);
+                    leases.record_web(token, out.credits, out.usd);
                     tool_result(&id, out.text, false)
                 }
                 Err(e) => tool_result(&id, format!("{e:#}"), true),
@@ -145,18 +145,20 @@ mod tests {
         assert_eq!(a["result"]["isError"], false);
         assert!(a["result"]["content"][0]["text"].as_str().unwrap().contains("1. A — https://a.test"));
         handle_message(&call("scrape", json!({"url": "https://x.test"})), &t, &l, Some(&c)).await.unwrap();
-        assert_eq!(l.get(&t).unwrap().spent.credits, 3, "2 for the search and 1 for the page");
+        let spent = l.get(&t).unwrap().spent;
+        assert_eq!(spent.credits, 3, "2 for the search and 1 for the page");
+        assert!((spent.web_usd - 3.0 * 0.00083).abs() < 1e-9, "priced at the account's rate: {}", spent.web_usd);
     }
 
     #[tokio::test]
-    async fn at_the_credit_cap_a_call_is_refused_without_reaching_firecrawl() {
+    async fn at_the_cost_cap_a_call_is_refused_without_reaching_firecrawl() {
         let (l, c) = (Leases::new(), firecrawl().await);
         let t = l.mint("fc", "firecrawl", "tag", None);
-        l.set_credit_cap("tag", Some(2));
+        l.set_web_cap("tag", Some(0.001));
         handle_message(&call("web_search", json!({"query": "rust"})), &t, &l, Some(&c)).await.unwrap();
         let refused = handle_message(&call("scrape", json!({"url": "https://x.test"})), &t, &l, Some(&c)).await.unwrap();
         assert_eq!(refused["result"]["isError"], true);
-        assert!(refused["result"]["content"][0]["text"].as_str().unwrap().contains("credit cap"));
+        assert!(refused["result"]["content"][0]["text"].as_str().unwrap().contains("cost cap"));
         assert_eq!(l.get(&t).unwrap().spent.credits, 2, "nothing more was spent");
     }
 

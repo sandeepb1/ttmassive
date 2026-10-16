@@ -522,14 +522,14 @@ pub(crate) async fn helper_call(via: Option<&Endpoint>, default: &str, system: &
     let Some(e) = via else { return one_shot(default, system, prompt, schema, cwd).await };
     let r = chat::complete(e, &[Message::system(system), Message::user(prompt)], Some(&schema)).await?;
     let answer = r.structured.clone().with_context(|| format!("{} did not answer in the required shape", e.model))?;
-    Ok((answer, Outcome { structured: r.structured, text: r.text, tokens: r.tokens, cost_usd: r.cost_usd.unwrap_or(0.0), credits: 0, is_error: false, session: None }))
+    Ok((answer, Outcome { structured: r.structured, text: r.text, tokens: r.tokens, cost_usd: r.cost_usd.unwrap_or(0.0), credits: 0, web_usd: 0.0, is_error: false, session: None }))
 }
 
 /// A helper call that may search the web and read pages first (a few calls), when the user has chosen a direct model for it.
 async fn helper_call_web(via: &Endpoint, system: &str, prompt: &str, schema: Value, web: crate::web::client::Client) -> Result<(Value, Outcome)> {
     let r = chat::complete_with_tools(via, &[Message::system(system), Message::user(prompt)], Some(&schema), &crate::web::tools::chat_tools(), 4, &crate::web::tools::Web(web)).await?;
     let answer = r.reply.structured.clone().with_context(|| format!("{} did not answer in the required shape", via.model))?;
-    Ok((answer, Outcome { structured: r.reply.structured, text: r.reply.text, tokens: r.reply.tokens, cost_usd: r.reply.cost_usd.unwrap_or(0.0), credits: r.credits, is_error: false, session: None }))
+    Ok((answer, Outcome { structured: r.reply.structured, text: r.reply.text, tokens: r.reply.tokens, cost_usd: r.reply.cost_usd.unwrap_or(0.0), credits: r.credits, web_usd: r.web_usd, is_error: false, session: None }))
 }
 
 /// Sonnet designs a flow for a goal.
@@ -1197,8 +1197,8 @@ mod tests {
     #[test]
     fn the_grill_is_shown_the_pages_the_goal_linked_to_but_not_ones_that_failed() {
         let pages = vec![
-            crate::orch::run::Reference { url: "https://a.test/doc".into(), text: "Some documentation.".into(), credits: 1, failed: false },
-            crate::orch::run::Reference { url: "https://b.test".into(), text: "no".into(), credits: 0, failed: true },
+            crate::orch::run::Reference { url: "https://a.test/doc".into(), text: "Some documentation.".into(), credits: 1, web_usd: 0.0, failed: false },
+            crate::orch::run::Reference { url: "https://b.test".into(), text: "no".into(), credits: 0, web_usd: 0.0, failed: true },
         ];
         let p = grill_prompt_with("Do a thing", "/p", &base(), &[], 1, false, &pages);
         assert!(p.contains("# Pages the goal links to") && p.contains("## https://a.test/doc\n\nSome documentation."), "{p}");

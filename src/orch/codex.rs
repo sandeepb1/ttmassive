@@ -172,7 +172,7 @@ impl TurnAcc {
                     text: std::mem::take(&mut self.text),
                     tokens: self.total().since(&self.base),
                     cost_usd: 0.0,
-                    credits: 0,
+                    credits: 0, web_usd: 0.0,
                     is_error: false,
                     session: Some(self.thread_id.clone()),
                 }))

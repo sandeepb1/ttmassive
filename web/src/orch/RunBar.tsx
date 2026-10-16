@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { orch } from './api';
 import { Icon, StatusPill } from './bits';
-import { builderBranches, cacheBreakCount, cacheHit, fmtDuration, fmtTokens, pauseInfo, runCost, runCredits, runTokens, summary, totalTokens, usdLabel, writes } from './model';
+import { builderBranches, cacheBreakCount, cacheHit, fmtDuration, fmtTokens, pauseInfo, runCost, runCredits, runTokens, runWebUsd, summary, totalTokens, usdLabel, writes } from './model';
 import type { RepoState, Run } from './types';
 
 interface Props {
@@ -94,6 +94,7 @@ export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onMoreR
   const breaks = cacheBreakCount(run);
   const cost = runCost(run);
   const credits = runCredits(run);
+  const webUsd = runWebUsd(run);
   const sum = summary(run);
   const failed = run.status.state === 'paused' && (run.status.pause.kind === 'failed' || run.status.pause.kind === 'retriesExhausted');
 
@@ -114,8 +115,8 @@ export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onMoreR
             </span>
           )}
           {credits > 0 && (
-            <span title="Firecrawl credits the agents' web tools have used in this run">
-              <b>{credits}</b> web {credits === 1 ? 'credit' : 'credits'}
+            <span title={`What the agents' web tools have cost in this run, from ${credits} ${credits === 1 ? 'credit' : 'credits'} across your web accounts`}>
+              <b>{usdLabel(webUsd)}</b> on web
             </span>
           )}
           {hit !== null && (
@@ -201,7 +202,7 @@ export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onMoreR
             {[
               `${fmtTokens(sum.tokens)} tokens`,
               runCost(run) > 0 ? `${usdLabel(runCost(run))} on API models` : null,
-              credits > 0 ? `${credits} web credit${credits === 1 ? '' : 's'}` : null,
+              credits > 0 ? `${usdLabel(webUsd)} on web access (${credits} credit${credits === 1 ? '' : 's'})` : null,
               sum.cached !== null ? `${Math.round(sum.cached * 100)}% from the cache` : null,
               sum.sentBack ? `sent back ${sum.sentBack}×` : null,
               sum.cheaper ? `${sum.cheaper} on a cheaper model` : null,

@@ -394,15 +394,15 @@ async fn chat_direct(State(st): State<Arc<AppState>>, Json(b): Json<DirectChat>)
             Some(client) => {
                 let r = chat::complete_with_tools(&endpoint, &messages, None, &crate::web::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::web::tools::Web(client)).await?;
                 let tools: Vec<_> = r.events.iter().map(|e| serde_json::json!({"name": e.name, "arguments": e.arguments})).collect();
-                (r.reply, tools, r.credits)
+                (r.reply, tools, r.credits, r.web_usd)
             }
-            None => (chat::complete(&endpoint, &messages, None).await?, Vec::new(), 0),
+            None => (chat::complete(&endpoint, &messages, None).await?, Vec::new(), 0, 0.0),
         })
     };
     match run.await {
-        Ok((reply, tools, credits)) => Json(serde_json::json!({
+        Ok((reply, tools, credits, web_usd)) => Json(serde_json::json!({
             "text": reply.text, "tokensIn": reply.tokens.input + reply.tokens.cache_read + reply.tokens.cache_write, "tokensOut": reply.tokens.output,
-            "costUsd": reply.cost_usd, "tools": tools, "credits": credits,
+            "costUsd": reply.cost_usd, "tools": tools, "credits": credits, "webUsd": web_usd,
         }))
         .into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),

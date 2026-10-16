@@ -33,6 +33,8 @@ const CRAWL_WAIT: Duration = Duration::from_secs(90);
 pub struct Client {
     base: String,
     key: String,
+    /// What one credit costs, in dollars, to price what a call used.
+    usd_per_credit: f64,
     http: reqwest::Client,
     /// How long to wait between looks at a crawl.
     poll: Duration,
@@ -43,6 +45,8 @@ pub struct Client {
 pub struct Output {
     pub text: String,
     pub credits: u64,
+    /// What those credits cost, at the account's price per credit.
+    pub usd: f64,
 }
 
 /// Credits left on an account, and what its plan includes.
@@ -55,12 +59,16 @@ pub struct Balance {
 impl Client {
     pub fn new(account: &Account) -> Result<Client> {
         anyhow::ensure!(!account.key.is_empty(), "the Firecrawl account has no key");
-        Ok(Client::with(&account.base_url, &account.key))
+        Ok(Client { usd_per_credit: account.credit_usd(), ..Client::with(&account.base_url, &account.key) })
     }
 
     pub fn with(base: &str, key: &str) -> Client {
         let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(120)).build().expect("http client");
-        Client { base: base.trim_end_matches('/').to_owned(), key: key.to_owned(), http, poll: CRAWL_POLL }
+        Client { base: base.trim_end_matches('/').to_owned(), key: key.to_owned(), usd_per_credit: super::types::Provider::Firecrawl.default_usd_per_credit(), http, poll: CRAWL_POLL }
+    }
+
+    fn output(&self, text: String, credits: u64) -> Output {
+        Output { text, credits, usd: credits as f64 * self.usd_per_credit }
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -136,28 +144,28 @@ impl Client {
 
     pub async fn search(&self, query: &str, limit: u32) -> Result<Output> {
         let f = self.search_hits(query, limit, SearchOpts::default()).await?;
-        Ok(Output { text: render::search(&f.value), credits: f.credits })
+        Ok(self.output(render::search(&f.value), f.credits))
     }
 
     pub async fn scrape(&self, url: &str) -> Result<Output> {
         let f = self.scrape_page(url).await?;
-        Ok(Output { text: render::page(&f.value, MAX_PAGE), credits: f.credits })
+        Ok(self.output(render::page(&f.value, MAX_PAGE), f.credits))
     }
 
     pub async fn map(&self, url: &str, limit: u32) -> Result<Output> {
         let f = self.map_site(url, limit).await?;
-        Ok(Output { text: render::map(&f.value), credits: f.credits })
+        Ok(self.output(render::map(&f.value), f.credits))
     }
 
     pub async fn crawl(&self, url: &str, limit: u32) -> Result<Output> {
         let f = self.crawl_site(url, limit).await?;
-        Ok(Output { text: render::crawl(&f.value, MAX_CRAWLED_PAGE, MAX_ANSWER), credits: f.credits })
+        Ok(self.output(render::crawl(&f.value, MAX_CRAWLED_PAGE, MAX_ANSWER), f.credits))
     }
 
     /// A crawl kept in full, for reading later in files rather than handing straight to a model.
     pub async fn crawl_pages(&self, url: &str, limit: u32) -> Result<Output> {
         let f = self.crawl_site(url, limit).await?;
-        Ok(Output { text: render::crawl(&f.value, MAX_DOC_PAGE, MAX_DOC_TOTAL), credits: f.credits })
+        Ok(self.output(render::crawl(&f.value, MAX_DOC_PAGE, MAX_DOC_TOTAL), f.credits))
     }
 }
 

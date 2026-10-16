@@ -154,9 +154,9 @@ pub struct ToolDef {
     pub parameters: Value,
 }
 
-/// Runs a tool a model asked for. Returns what to tell the model, and how many credits it used.
+/// Runs a tool a model asked for. Returns what to tell the model, the credits it used, and what they cost in dollars.
 pub trait ToolRunner {
-    async fn call(&self, name: &str, args: &Value) -> (String, u64);
+    async fn call(&self, name: &str, args: &Value) -> (String, u64, f64);
 }
 
 /// One tool call a model made, and what came back.
@@ -173,6 +173,8 @@ pub struct ToolReply {
     pub reply: Reply,
     pub events: Vec<ToolEvent>,
     pub credits: u64,
+    /// What those credits cost, in dollars.
+    pub web_usd: f64,
     /// The conversation so far, including the tool calls and their results, to continue from.
     pub messages: Vec<Message>,
 }
@@ -186,7 +188,7 @@ pub async fn complete_with_tools(e: &Endpoint, messages: &[Message], schema: Opt
     let http = client()?;
     let offered: Vec<Value> = tools.iter().map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}})).collect();
     let mut msgs = messages.to_vec();
-    let (mut events, mut credits, mut tokens, mut cost) = (Vec::new(), 0u64, Tokens::default(), None::<f64>);
+    let (mut events, mut credits, mut web_usd, mut tokens, mut cost) = (Vec::new(), 0u64, 0.0f64, Tokens::default(), None::<f64>);
     let mut calls_made = 0usize;
     let mut text;
     loop {
@@ -228,8 +230,9 @@ pub async fn complete_with_tools(e: &Endpoint, messages: &[Message], schema: Opt
                 calls_made += 1;
                 match serde_json::from_str::<Value>(&arguments) {
                     Ok(args) => {
-                        let (out, used) = runner.call(&name, &args).await;
+                        let (out, used, usd) = runner.call(&name, &args).await;
                         credits += used;
+                        web_usd += usd;
                         out
                     }
                     Err(_) => "The arguments were not valid JSON.".to_owned(),
@@ -255,7 +258,7 @@ pub async fn complete_with_tools(e: &Endpoint, messages: &[Message], schema: Opt
         msgs.pop();
     }
     msgs.push(Message::assistant(text.clone()));
-    Ok(ToolReply { reply: Reply { structured, text, tokens, cost_usd: cost }, events, credits, messages: msgs })
+    Ok(ToolReply { reply: Reply { structured, text, tokens, cost_usd: cost }, events, credits, web_usd, messages: msgs })
 }
 
 /// A turn in a conversation a person is having with a model, as the page sends it.
@@ -490,9 +493,9 @@ mod tests {
     struct Echo(Mutex<Vec<(String, Value)>>);
 
     impl ToolRunner for Echo {
-        async fn call(&self, name: &str, args: &Value) -> (String, u64) {
+        async fn call(&self, name: &str, args: &Value) -> (String, u64, f64) {
             self.0.lock().unwrap().push((name.to_owned(), args.clone()));
-            (format!("result of {name}"), 2)
+            (format!("result of {name}"), 2, 0.25)
         }
     }
 
@@ -535,6 +538,7 @@ mod tests {
         assert_eq!(r.events, vec![ToolEvent { name: "scrape".into(), arguments: "{\"url\":\"https://x.test\"}".into(), result: "result of scrape".into() }]);
         assert_eq!(*echo.0.lock().unwrap(), vec![("scrape".to_string(), json!({"url": "https://x.test"}))]);
         assert_eq!(r.credits, 2);
+        assert_eq!(r.web_usd, 0.25);
         assert_eq!((r.reply.tokens.input, r.reply.tokens.output), (20, 4), "both requests are counted");
         assert!((r.reply.cost_usd.unwrap() - 0.002).abs() < 1e-12);
         let reqs = seen.0.lock().unwrap();

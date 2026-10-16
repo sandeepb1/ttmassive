@@ -104,11 +104,11 @@ export interface Budget {
   stopWindowPct: number;
   /** Most dollars one run may spend on OpenRouter; null for no cap. */
   runUsd?: number | null;
-  /** Most Firecrawl credits one run may use; null for no cap. */
-  runCredits?: number | null;
+  /** Most dollars one run may spend on web access (search, pages, crawls); null for no cap. */
+  runWebUsd?: number | null;
 }
 
-export const DEFAULT_LIMITS: Budget = { claudePct: 15, codexPct: 10, stopWindowPct: 85, runUsd: null, runCredits: null };
+export const DEFAULT_LIMITS: Budget = { claudePct: 15, codexPct: 10, stopWindowPct: 85, runUsd: null, runWebUsd: null };
 
 export interface Flow {
   id: string;
@@ -140,8 +140,10 @@ export interface NodeRun {
   tokens: Tokens;
   /** Dollars over all attempts: charged by OpenRouter, or Claude Code's estimate at API prices for an agent on your plan. */
   costUsd?: number;
-  /** Firecrawl credits its web tools used. */
+  /** Provider credits its web tools used. */
   credits?: number;
+  /** What those credits cost, in dollars. */
+  webUsd?: number;
   transcript: string[];
   /** The agent's conversation id after its latest finished turn; present once it has finished one. */
   session?: string | null;
@@ -218,9 +220,11 @@ export interface Run {
   /** Every turn the agents have taken, oldest first. */
   turns?: Turn[];
   /** Pages fetched from the links in the goal. */
-  references?: { url: string; text: string; credits: number; failed?: boolean }[];
+  references?: { url: string; text: string; credits: number; webUsd?: number; failed?: boolean }[];
   /** Documentation sites crawled for the builders. */
-  docs?: { url: string; text: string; credits: number; failed?: boolean }[];
+  docs?: { url: string; text: string; credits: number; webUsd?: number; failed?: boolean }[];
+  /** Dollars the questions before the run spent on looking things up. */
+  researchWebUsd?: number;
   /** Dollars spent outside the agents, such as on choosing their models. */
   overheadUsd?: number;
   /** How many entries the run's log has ever had; it holds only the latest. */
@@ -282,6 +286,7 @@ export interface Turn {
   tokens: Tokens;
   costUsd: number;
   credits: number;
+  webUsd?: number;
   session?: string | null;
   failed?: string | null;
   decision?: string | null;

@@ -230,7 +230,7 @@ pub fn parse(line: &str) -> Event {
             text: s(&v, "result"),
             tokens: v.get("usage").map(Tokens::from_claude).unwrap_or_default(),
             cost_usd: v.get("total_cost_usd").and_then(Value::as_f64).unwrap_or(0.0),
-            credits: 0,
+            credits: 0, web_usd: 0.0,
             is_error: v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
             session: v.get("session_id").and_then(Value::as_str).map(String::from),
         }),

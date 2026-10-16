@@ -232,12 +232,29 @@ mod tests {
         let dir = tmp("limits");
         let s = Store::new(&dir);
         assert_eq!(s.load_limits(), crate::orch::graph::Budget::default());
-        let b = crate::orch::graph::Budget { claude_pct: 40.0, codex_pct: 30.0, stop_window_pct: 90.0, run_usd: Some(2.5), run_credits: Some(120) };
+        let b = crate::orch::graph::Budget { claude_pct: 40.0, codex_pct: 30.0, stop_window_pct: 90.0, run_usd: Some(2.5), run_web_usd: Some(1.25) };
         s.save_limits(&b).unwrap();
         assert_eq!(s.load_limits(), b);
         assert!(s.save_limits(&crate::orch::graph::Budget { claude_pct: 0.0, ..b }).is_err());
         assert!(s.save_limits(&crate::orch::graph::Budget { codex_pct: 101.0, ..b }).is_err());
         assert_eq!(s.load_limits(), b, "a refused save leaves the old limits");
+    }
+
+    #[test]
+    fn a_credit_cap_saved_before_web_access_was_priced_is_carried_over_in_dollars() {
+        let dir = tmp("limits-old");
+        let s = Store::new(&dir);
+        let old = r#"{"claudePct":40.0,"codexPct":30.0,"stopWindowPct":90.0,"runUsd":2.5,"runCredits":120}"#;
+        let b: crate::orch::graph::Budget = serde_json::from_str(old).unwrap();
+        assert_eq!(b.run_web_usd, Some(0.0996), "120 Firecrawl credits at list price");
+        assert_eq!(b.run_usd, Some(2.5));
+        let both: crate::orch::graph::Budget = serde_json::from_str(r#"{"claudePct":40.0,"codexPct":30.0,"stopWindowPct":90.0,"runCredits":120,"runWebUsd":3.0}"#).unwrap();
+        assert_eq!(both.run_web_usd, Some(3.0), "a dollar cap wins over the old credit count");
+        let none: crate::orch::graph::Budget = serde_json::from_str(r#"{"claudePct":40.0,"codexPct":30.0,"stopWindowPct":90.0}"#).unwrap();
+        assert_eq!(none.run_web_usd, None);
+        s.save_limits(&b).unwrap();
+        let saved = serde_json::to_string(&s.load_limits()).unwrap();
+        assert!(saved.contains("runWebUsd") && !saved.contains("runCredits"), "{saved}");
     }
 
     #[test]

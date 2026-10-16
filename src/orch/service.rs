@@ -249,8 +249,8 @@ impl Service {
         let mut out = Vec::new();
         for url in links {
             out.push(match client.scrape(&url).await {
-                Ok(page) => super::run::Reference { url, text: crate::orch::trace::clip(&page.text, super::run::MAX_REFERENCE), credits: page.credits, failed: false },
-                Err(e) => super::run::Reference { url, text: format!("{e:#}"), credits: 0, failed: true },
+                Ok(page) => super::run::Reference { url, text: crate::orch::trace::clip(&page.text, super::run::MAX_REFERENCE), credits: page.credits, web_usd: page.usd, failed: false },
+                Err(e) => super::run::Reference { url, text: format!("{e:#}"), credits: 0, web_usd: 0.0, failed: true },
             });
         }
         out
@@ -263,10 +263,10 @@ impl Service {
         let mut out = Vec::new();
         for url in urls.iter().map(|u| u.trim()).filter(|u| !u.is_empty()).take(crate::web::tools::MAX_LINKS) {
             out.push(match crate::web::tools::url_ok(url) {
-                Err(why) => super::run::Reference { url: url.into(), text: why, credits: 0, failed: true },
+                Err(why) => super::run::Reference { url: url.into(), text: why, credits: 0, web_usd: 0.0, failed: true },
                 Ok(()) => match client.crawl_pages(url, crate::web::client::DOCS_PAGES).await {
-                    Ok(page) => super::run::Reference { url: url.into(), text: crate::orch::trace::clip(&page.text, super::run::MAX_DOCS), credits: page.credits, failed: false },
-                    Err(e) => super::run::Reference { url: url.into(), text: format!("{e:#}"), credits: 0, failed: true },
+                    Ok(page) => super::run::Reference { url: url.into(), text: crate::orch::trace::clip(&page.text, super::run::MAX_DOCS), credits: page.credits, web_usd: page.usd, failed: false },
+                    Err(e) => super::run::Reference { url: url.into(), text: format!("{e:#}"), credits: 0, web_usd: 0.0, failed: true },
                 },
             });
         }
@@ -378,6 +378,7 @@ impl Service {
         run.overhead.add(&outcome.tokens);
         run.overhead_usd += outcome.cost_usd;
         run.research_credits += outcome.credits;
+        run.research_web_usd += outcome.web_usd;
         let g = run.grill.get_or_insert_with(Grill::default);
         g.round = round;
         history.clear();
