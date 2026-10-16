@@ -12,6 +12,8 @@ interface Props {
   link: boolean;
   onApprove: (node: string) => void;
   onResume: (waive?: boolean) => void;
+  /** Open the questions the run is waiting on. */
+  onAnswer: () => void;
   onLimits: () => void;
   onCancel: () => void;
   onCopy: (text: string) => void;
@@ -75,7 +77,7 @@ function GitNotice({ run, busy, onFixed }: { run: Run; busy: boolean; onFixed: (
   );
 }
 
-export function RunBar({ run, busy, link, onApprove, onResume, onLimits, onCancel, onCopy }: Props) {
+export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimits, onCancel, onCopy }: Props) {
   const info = pauseInfo(run);
   const tokens = runTokens(run);
   const hit = cacheHit(tokens);
@@ -100,7 +102,7 @@ export function RunBar({ run, busy, link, onApprove, onResume, onLimits, onCance
             <b>{fmtTokens(totalTokens(tokens))}</b> tok
           </span>
           {cost > 0 && (
-            <span title="What OpenRouter has charged for this run's agents on it">
+            <span title="What the run's agents on OpenRouter and other API accounts have cost">
               <b>{usdLabel(cost)}</b> spent
             </span>
           )}
@@ -151,9 +153,9 @@ export function RunBar({ run, busy, link, onApprove, onResume, onLimits, onCance
                 className="mc-btn mc-btn-primary"
                 disabled={busy}
                 title={info.primary.waive ? 'Ignore the plan limits for the rest of this run' : undefined}
-                onClick={() => (info.primary!.action === 'approve' ? onApprove(info.primary!.node!) : onResume(info.primary!.waive))}
+                onClick={() => (info.primary!.action === 'approve' ? onApprove(info.primary!.node!) : info.primary!.action === 'answer' ? onAnswer() : onResume(info.primary!.waive))}
               >
-                <Icon name={info.primary.action === 'approve' ? 'check' : 'play'} /> {info.primary.label}
+                <Icon name={info.primary.action === 'approve' ? 'check' : info.primary.action === 'answer' ? 'help' : 'play'} /> {info.primary.label}
               </button>
             )}
             {info.limits && (
@@ -174,7 +176,7 @@ export function RunBar({ run, busy, link, onApprove, onResume, onLimits, onCance
           <p className="mc-notice-detail mc-mono">
             {[
               `${fmtTokens(sum.tokens)} tokens`,
-              runCost(run) > 0 ? `${usdLabel(runCost(run))} on OpenRouter` : null,
+              runCost(run) > 0 ? `${usdLabel(runCost(run))} on API models` : null,
               credits > 0 ? `${credits} web credit${credits === 1 ? '' : 's'}` : null,
               sum.cached !== null ? `${Math.round(sum.cached * 100)}% from the cache` : null,
               sum.sentBack ? `sent back ${sum.sentBack}×` : null,

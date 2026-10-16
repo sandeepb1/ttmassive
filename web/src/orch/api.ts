@@ -54,6 +54,8 @@ export const orch = {
   grill: (id: string, answers: string[]) => send<Run>('POST', `${run(id)}/grill`, { answers }),
   start: (id: string, brief?: string) => send<Run>('POST', `${run(id)}/start`, { brief }),
   approve: (id: string, node: string) => send<Run>('POST', `${run(id)}/approve`, { node }),
+  /** The user's answers to the questions a paused run is waiting on. */
+  answers: (id: string, answers: string[]) => send<Run>('POST', `${run(id)}/answers`, { answers }),
   /** `waive` also stops the plan limits being checked again for this run. */
   resume: (id: string, waive = false) => send<Run>('POST', `${run(id)}/resume`, waive ? { waive: true } : undefined),
   limits: () => send<Budget>('GET', `${base}/limits`),

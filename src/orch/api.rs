@@ -58,6 +58,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/runs/{id}/grill", post(grill))
         .route("/api/orch/runs/{id}/start", post(start))
         .route("/api/orch/runs/{id}/approve", post(approve))
+        .route("/api/orch/runs/{id}/answers", post(answer))
         .route("/api/orch/runs/{id}/resume", post(resume))
         .route("/api/orch/runs/{id}/cancel", post(cancel))
         .route("/api/orch/runs/{id}/popout", post(pop_out))
@@ -234,6 +235,15 @@ async fn set_limits(State(st): St, Json(b): Json<super::graph::Budget>) -> Resul
 async fn resume(State(st): St, Path(id): Path<String>, body: Option<Json<ResumeBody>>) -> Result<Response, Fail> {
     let waive = body.map(|Json(b)| b.waive).unwrap_or_default();
     Ok(json_nocache(st.orch.resume(&st, &id, waive)?))
+}
+
+#[derive(Deserialize)]
+struct RunAnswersBody {
+    answers: Vec<String>,
+}
+
+async fn answer(State(st): St, Path(id): Path<String>, Json(b): Json<RunAnswersBody>) -> Result<Response, Fail> {
+    Ok(json_nocache(st.orch.answer(&st, &id, b.answers)?))
 }
 
 async fn cancel(State(st): St, Path(id): Path<String>) -> Result<Response, Fail> {

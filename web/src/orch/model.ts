@@ -2,9 +2,9 @@
 // out, what a paused run is waiting for, and how full the plan windows are. Pure, so node tests it.
 // The server checks everything again; these rules exist so the page can say no before asking.
 
-import { DEFAULT_LIMITS } from './types.ts';
+import { DEFAULT_ITERATIONS, DEFAULT_LIMITS } from './types.ts';
 import type {
-  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowModel, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
+  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowModel, OnCap, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
 // ---------------------------------------------------------------------------- roles
@@ -35,6 +35,8 @@ export const outputOf = (n: Pick<FlowNode, 'role' | 'custom'>): Output => n.cust
 export const writes = (n: Pick<FlowNode, 'role' | 'custom'>) => capabilityOf(n) === 'write';
 /** Hands back a decision, so it may send work back to an earlier agent. */
 export const decides = (n: Pick<FlowNode, 'role' | 'custom'>) => outputOf(n) === 'verdict';
+/** Hands back questions, so it may send work back until they are answered. */
+export const asks = (n: Pick<FlowNode, 'role' | 'custom'>) => outputOf(n) === 'questions';
 export const roleLabel = (n: Pick<FlowNode, 'role' | 'custom'>): string => n.custom?.label ?? roleDef(n.role)?.label ?? 'Agent';
 export const roleBlurb = (n: Pick<FlowNode, 'role' | 'custom'>): string => (n.custom ? 'A role you defined' : (roleDef(n.role)?.blurb ?? ''));
 export const roleIconName = (n: Pick<FlowNode, 'role' | 'custom'>): string => (n.custom ? 'wand' : (roleDef(n.role)?.icon ?? 'agent'));
@@ -56,6 +58,7 @@ export const OUTPUT_TEXT: Record<Output, string> = {
   report: 'A report of findings',
   change: 'A change it made',
   verdict: 'A verdict: approve or reject',
+  questions: 'Open questions',
 };
 
 /** The same rules the server applies to a role it generates: a writer reports a change and nothing else does,
@@ -208,15 +211,33 @@ export function connectionProblem(flow: Flow, from: string, to: string, kind: Ed
     if (reaches(flow.edges, to, from)) return 'That would make a loop; only an agent that gives a verdict may send work back';
     return null;
   }
-  if (!decides(a)) return 'Only an agent that gives a verdict can send work back';
+  if (!decides(a) && !asks(a)) return 'Only an agent that gives a verdict or asks questions can send work back';
+  if (asks(a) && flow.edges.some((e) => e.from === from && e.kind === 'retry')) return 'An agent that asks questions can send work back to only one place';
   if (!reaches(flow.edges, to, from)) return 'Send work back to an agent that runs before this one';
+  if (decides(b) || asks(b)) return 'Send work back to an agent that does not itself send work back';
   return null;
 }
 
 export function addEdge(flow: Flow, from: string, to: string, kind: EdgeKind): Flow {
   const id = freeId(flow.edges.map((e) => e.id), 'e');
-  return { ...flow, edges: [...flow.edges, { id, from, to, kind }] };
+  // A send-back edge starts with the usual limits: twice, then stop and ask; an agent that asks questions asks the user.
+  const retry: Partial<FlowEdge> = kind === 'retry' ? { maxIterations: DEFAULT_ITERATIONS, onCap: 'pause', answeredBy: 'user' } : {};
+  return { ...flow, edges: [...flow.edges, { id, from, to, kind, ...retry }] };
 }
+
+/** The text on a send-back edge: what it is, and how often it may be used, or has been. */
+export function edgeLabel(e: FlowEdge, run: Run | null): string | undefined {
+  if (e.kind !== 'retry') return undefined;
+  const max = e.maxIterations ?? DEFAULT_ITERATIONS;
+  return run ? `send back ${run.iterations?.[e.id] ?? 0}/${max}` : `send back ×${max}`;
+}
+
+/** What "used up" does, in words for the editor. */
+export const ON_CAP_TEXT: Record<OnCap, string> = {
+  pause: 'Stop and ask me',
+  proceed: 'Carry on with the work as it is',
+  fail: 'Fail the agent that wanted to send it back',
+};
 
 /** Agents grouped by when they can start (a judge's retry edge is not a dependency). Empty if there is a loop. */
 export function layers(flow: Flow): string[][] {
@@ -292,7 +313,7 @@ export interface PauseInfo {
   title: string;
   detail: string;
   /** What the main button does; none when the user must change something first. */
-  primary: { label: string; action: 'approve' | 'resume'; node?: string; /** Also ignore the plan limits from now on. */ waive?: boolean } | null;
+  primary: { label: string; action: 'approve' | 'resume' | 'answer'; node?: string; /** Also ignore the plan limits from now on. */ waive?: boolean } | null;
   /** Offer to change the plan limits: the pause is because of them. */
   limits?: boolean;
 }
@@ -316,6 +337,12 @@ export function pauseInfo(run: Run): PauseInfo | null {
         title: 'The judge sent the work back too many times',
         detail: `${name(p.node)} was still not satisfied after ${run.retriesUsed} ${run.retriesUsed === 1 ? 'retry' : 'retries'}. Read its feedback, then accept the work as it is, or stop here.`,
         primary: { label: 'Accept the work as it is', action: 'resume' },
+      };
+    case 'questions':
+      return {
+        title: `${name(p.node)} has questions for you`,
+        detail: 'Your answers go back to the agent that is asked to revise its work. Nothing runs until you answer.',
+        primary: { label: 'Answer the questions', action: 'answer' },
       };
     case 'budget':
       return {

@@ -2,13 +2,13 @@
 // names, so the set can change without touching them.
 
 import {
-  ArrowDown, ArrowLeft, ArrowUp, BookOpen, Bot, Bug, ChevronDown, ChevronRight, ChevronUp, Columns2, Command, createElement, Dot, Ellipsis, FileCheck, FileText, Folder,
+  ArrowDown, ArrowLeft, ArrowUp, BookOpen, Bot, Bug, CircleHelp, ChevronDown, ChevronRight, ChevronUp, Columns2, Command, createElement, Dot, Ellipsis, FileCheck, FileText, Folder,
   Gavel, GitBranch, Globe, Hammer, Grid2x2, Image, Info, Layers, ListChecks, Menu, Minus, PanelLeft, PanelRight, Pause, Pencil, Play, Plus, Radar, RotateCcw, Route,
   Save, Scale, Search, ShieldAlert, SlidersHorizontal, Sparkles, Square, Terminal, Trash2, WandSparkles, Workflow, X, Check, CircleAlert,
   type IconNode,
 } from 'lucide';
 
-export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command' | 'memory' | 'route' | 'more' | 'arrow-up' | 'arrow-down' | 'stop' | 'minus' | 'shield-alert' | 'play' | 'pause' | 'check' | 'alert' | 'back' | 'save' | 'trash' | 'wand' | 'retry' | 'radar' | 'workflow' | 'book' | 'scale' | 'gavel' | 'hammer' | 'bug';
+export type IconName = 'shell' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'todo' | 'skill' | 'dot' | 'chevron' | 'plus' | 'panel-left' | 'panel-right' | 'sliders' | 'menu' | 'info' | 'files' | 'image' | 'close' | 'branch' | 'folder' | 'columns' | 'grid' | 'chevron-up' | 'chevron-down' | 'command' | 'memory' | 'route' | 'more' | 'arrow-up' | 'arrow-down' | 'stop' | 'minus' | 'shield-alert' | 'play' | 'pause' | 'check' | 'alert' | 'back' | 'save' | 'trash' | 'wand' | 'retry' | 'radar' | 'workflow' | 'book' | 'scale' | 'gavel' | 'hammer' | 'bug' | 'help';
 
 const NODES: Record<IconName, IconNode> = {
   shell: Terminal,
@@ -61,6 +61,7 @@ const NODES: Record<IconName, IconNode> = {
   gavel: Gavel,
   hammer: Hammer,
   bug: Bug,
+  help: CircleHelp,
 };
 
 /** The category a tool belongs to, for its icon and tint. */

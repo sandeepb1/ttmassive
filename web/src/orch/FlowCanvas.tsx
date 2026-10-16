@@ -8,7 +8,7 @@ import {
 } from '@xyflow/react';
 import { AgentCard, type CardData } from './AgentCard';
 import type { MenuItem, MenuState } from './ContextMenu';
-import { addEdge, awaitingApproval, connectionProblem, duplicateNode, removeNode, roleLabel } from './model';
+import { addEdge, awaitingApproval, connectionProblem, duplicateNode, edgeLabel, removeNode, roleLabel } from './model';
 import type { EdgeKind, Flow, Role, RoleDef, Run } from './types';
 
 const nodeTypes = { agent: AgentCard };
@@ -24,9 +24,12 @@ export interface CanvasProps {
   flow: Flow;
   run: Run | null;
   selected: string | null;
+  /** The edge whose settings are open, if any. */
+  selectedEdge: string | null;
   editable: boolean;
   onFlow: (update: (f: Flow) => Flow) => void;
   onSelect: (id: string | null) => void;
+  onSelectEdge: (id: string) => void;
   onProblem: (message: string) => void;
   /** Changes when the view should refit the agents (after Tidy, say). */
   fitToken: number;
@@ -38,7 +41,7 @@ export interface CanvasProps {
   openMenu: (m: MenuState) => void;
 }
 
-export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, onProblem, fitToken, viewKey, roles, onAddAt, onTidy, openMenu }: CanvasProps) {
+export function FlowCanvas({ flow, run, selected, selectedEdge, editable, onFlow, onSelect, onSelectEdge, onProblem, fitToken, viewKey, roles, onAddAt, onTidy, openMenu }: CanvasProps) {
   const rf = useReactFlow();
   useEffect(() => {
     if (!fitToken) return;
@@ -76,12 +79,13 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
           sourceHandle: retry ? 'back-out' : 'out',
           targetHandle: retry ? 'back-in' : 'in',
           className: state ? `mc-edge-${state}` : undefined,
-          label: retry ? 'send back' : undefined,
+          label: edgeLabel(e, run),
+          selected: e.id === selectedEdge,
           markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
           deletable: editable,
         } satisfies Edge;
       }),
-    [flow.edges, run, editable],
+    [flow.edges, run, editable, selectedEdge],
   );
 
   const onNodesChange = useCallback(
@@ -201,6 +205,7 @@ export function FlowCanvas({ flow, run, selected, editable, onFlow, onSelect, on
       onNodesDelete={onNodesDelete}
       onEdgesDelete={onEdgesDelete}
       onNodeClick={(_: MouseEvent, n: Node) => onSelect(n.id)}
+      onEdgeClick={(_: MouseEvent, e: Edge) => onSelectEdge(e.id)}
       onPaneClick={() => onSelect(null)}
       onNodeContextMenu={onNodeContextMenu}
       onEdgeContextMenu={onEdgeContextMenu}

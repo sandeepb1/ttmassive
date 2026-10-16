@@ -28,7 +28,7 @@ fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: us
 }
 
 fn edge(from: &str, to: &str, kind: EdgeKind) -> Edge {
-    Edge { id: format!("{from}-{to}-{}", if kind == EdgeKind::Retry { "retry" } else { "next" }), from: from.into(), to: to.into(), kind }
+    Edge::new(format!("{from}-{to}-{}", if kind == EdgeKind::Retry { "retry" } else { "next" }), from, to, kind)
 }
 
 /// A flow of these agents and edges. Nodes are (id, name, role, engine, model, column, row, asks first).
@@ -83,6 +83,21 @@ pub fn all() -> Vec<Flow> {
             ("check", "design", R),
         ],
         2,
+        default,
+    );
+
+    // A plan that is questioned before anyone builds on it: the griller asks you what the plan leaves open, the planner
+    // revises with your answers, and the loop ends when the griller has nothing left to ask.
+    let grilled = flow(
+        "starter-grilled-plan",
+        "Grilled plan",
+        &[
+            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 0, false),
+            ("grill", "Griller", Role::Griller, claude, "opus", 1, 0, false),
+            ("report", "Reporter", Role::Reporter, claude, "sonnet", 2, 0, false),
+        ],
+        &[("plan", "grill", F), ("grill", "report", F), ("grill", "plan", R)],
+        3,
         default,
     );
 
@@ -156,7 +171,7 @@ pub fn all() -> Vec<Flow> {
         Budget { claude_pct: 10.0, codex_pct: 5.0, stop_window_pct: 85.0, run_usd: None, run_credits: None },
     );
 
-    vec![feature, bug, refactor, review, report]
+    vec![feature, grilled, bug, refactor, review, report]
 }
 
 #[cfg(test)]
@@ -186,7 +201,7 @@ mod tests {
             let writers = f.nodes.iter().filter(|n| n.writes()).count();
             assert!(writers <= 1, "{}: one writer per piece of work", f.name);
             assert!(f.nodes.len() <= 6, "{}: over six agents needs a written reason", f.name);
-            assert!(f.max_retries <= 2, "{}: cap send-back loops at 2", f.name);
+            assert!(f.max_retries <= 3, "{}: cap send-back loops at 3", f.name);
             // A judge may have a second place to send work back to (a wrong design goes to the architect), no more.
             let retries = f.edges.iter().filter(|e| e.kind == EdgeKind::Retry).count();
             assert!(retries <= 2, "{}: at most the code and the design", f.name);
@@ -206,9 +221,21 @@ mod tests {
                 assert!(judge.is_some(), "{}: nobody checks the change", f.name);
                 assert!(f.edges.iter().any(|e| e.kind == EdgeKind::Retry), "{}: no way to send it back", f.name);
             } else {
-                assert!(f.edges.iter().all(|e| e.kind == EdgeKind::Forward), "{}: nothing to send back to", f.name);
+                // Only an agent that questions the work, not one that judges it, may loop back in a flow that changes nothing.
+                let from_asker = |e: &Edge| f.node(&e.from).is_some_and(|n| n.asks());
+                assert!(f.edges.iter().all(|e| e.kind == EdgeKind::Forward || from_asker(e)), "{}: nothing to send back to", f.name);
             }
         }
+    }
+
+    #[test]
+    fn the_grilled_plan_asks_the_user_and_loops_back_to_the_planner() {
+        let f = all().into_iter().find(|f| f.id == "starter-grilled-plan").expect("the starter exists");
+        let back = f.edges.iter().find(|e| e.kind == EdgeKind::Retry).expect("a way back");
+        assert_eq!((back.from.as_str(), back.to.as_str()), ("grill", "plan"));
+        assert_eq!((back.answered_by, back.max_iterations), (crate::orch::graph::Answerer::User, 2), "the user answers, a couple of rounds");
+        assert!(f.nodes.iter().all(|n| !n.writes()), "it only plans: nothing to run checks on");
+        assert!(f.nodes.iter().any(|n| n.asks()));
     }
 
     #[test]

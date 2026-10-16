@@ -6,9 +6,9 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  asks, edgeLabel, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
-import type { Flow, FlowNode, Models, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
+import type { Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
 const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'], openrouter: [] };
 const at = { x: 0, y: 0 };
@@ -571,4 +571,46 @@ test('agents that look things up start with web access on, and a run adds up its
   assert.equal(builder.web, false);
   const run = { nodes: { a: { credits: 3 }, b: { credits: 2 }, c: {} } } as unknown as Run;
   assert.equal(runCredits(run), 5, 'an agent that used none counts as none');
+});
+
+test('an agent that asks questions can send work back, to one place only, with the usual limits', () => {
+  let f = emptyFlow('f', 'F');
+  for (const r of ['orchestrator', 'researcher', 'griller'] as Role[]) f = { ...f, nodes: [...f.nodes, newNode(f, { ...def(r === 'griller' ? 'orchestrator' : r), id: r }, models, at)] };
+  const [a, b, g] = f.nodes.map((n) => n.id) as [string, string, string];
+  // The page's catalog stands in for the server's: a griller asks questions, an orchestrator does not.
+  const gNode = f.nodes.find((n) => n.id === g)!;
+  assert.equal(asks({ ...gNode, role: 'griller', custom: { label: 'G', capability: 'read', output: 'questions' } }), true);
+  assert.equal(asks(f.nodes[0]!), false);
+  f = { ...f, nodes: f.nodes.map((n) => (n.id === g ? { ...n, custom: { label: 'Griller', capability: 'read' as Capability, output: 'questions' as Output }, role: 'custom' } : n)) };
+  f = addEdge(f, a, b, 'forward');
+  f = addEdge(f, b, g, 'forward');
+  assert.equal(connectionProblem(f, g, a, 'retry'), null, 'a griller may send work back like a judge');
+  f = addEdge(f, g, a, 'retry');
+  assert.deepEqual(f.edges.at(-1), { id: 'e3', from: g, to: a, kind: 'retry', maxIterations: 2, onCap: 'pause', answeredBy: 'user' });
+  assert.deepEqual(f.edges[0], { id: 'e1', from: a, to: b, kind: 'forward' }, 'a plain edge carries no limits');
+  assert.match(connectionProblem(f, g, b, 'retry') ?? '', /only one place/, 'one way back');
+  assert.match(connectionProblem(f, a, b, 'retry') ?? '', /verdict or asks questions/);
+  // The card only has a place to receive a send-back on an agent that does not send work back itself.
+  const griller = f.nodes.find((n) => n.id === g)!;
+  const g2: FlowNode = { ...griller, id: 'g2' };
+  const before = { ...f, nodes: [...f.nodes, g2], edges: [{ id: 'x1', from: a, to: 'g2', kind: 'forward' as const }, { id: 'x2', from: 'g2', to: g, kind: 'forward' as const }] };
+  assert.match(connectionProblem(before, g, 'g2', 'retry') ?? '', /does not itself send work back/);
+  assert.equal(connectionProblem(before, g, a, 'retry'), null, 'an ordinary agent can be sent work');
+});
+
+test('a send-back edge says how often it may be used, and in a run how often it has been', () => {
+  const e = { id: 'e', from: 'a', to: 'b', kind: 'retry' as const, maxIterations: 3 };
+  assert.equal(edgeLabel(e, null), 'send back ×3');
+  assert.equal(edgeLabel({ ...e, maxIterations: undefined }, null), 'send back ×2', 'an older edge has the usual limit');
+  assert.equal(edgeLabel(e, { iterations: { e: 1 } } as unknown as Run), 'send back 1/3');
+  assert.equal(edgeLabel(e, { } as unknown as Run), 'send back 0/3');
+  assert.equal(edgeLabel({ ...e, kind: 'forward' }, null), undefined);
+});
+
+test('a run waiting for the user\'s answers says so and offers to answer', () => {
+  const f = emptyFlow('f', 'F');
+  const run = { flow: { ...f, nodes: [{ ...newNode(f, def('orchestrator'), models, at), id: 'g', name: 'Griller' }] }, status: { state: 'paused', pause: { kind: 'questions', node: 'g' } }, nodes: {} } as unknown as Run;
+  const info = pauseInfo(run)!;
+  assert.equal(info.title, 'Griller has questions for you');
+  assert.equal(info.primary?.action, 'answer');
 });

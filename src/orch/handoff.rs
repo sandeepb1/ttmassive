@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::graph::Node;
 use super::roles::Output;
-use super::run::{NodeStatus, Run};
+use super::run::{FeedbackKind, NodeStatus, Run};
 
 /// JSON Schema for the answer an agent must give, by what it hands back. Both CLIs enforce it. A verdict from an
 /// agent that can send work back to more than one place must also say which: `send_back_to` is one of `targets`, or
@@ -32,6 +32,7 @@ pub fn schema_for(output: Output, targets: &[&str]) -> Value {
             json!({"verdict": {"type": "string", "enum": ["approve", "reject"]}, "feedback": text}),
             &["verdict", "feedback"],
         ),
+        Output::Questions => obj(json!({"questions": list, "resolved": {"type": "boolean"}}), &["questions", "resolved"]),
         Output::Change => obj(
             json!({"summary": text, "files_changed": list, "notes": text}),
             &["summary", "files_changed", "notes"],
@@ -60,6 +61,32 @@ pub fn verdict(output: &Value) -> Verdict {
             send_back_to: output.get("send_back_to").and_then(Value::as_str).filter(|s| *s != "none" && !s.is_empty()).map(String::from),
         },
     }
+}
+
+/// The questions an agent asked, or none when it said it was satisfied. A claim that it is satisfied wins over
+/// questions left in the list, and so does an empty list over a claim that it is not.
+pub fn open_questions(output: &Value) -> Vec<String> {
+    if output.get("resolved").and_then(Value::as_bool) == Some(true) {
+        return Vec::new();
+    }
+    output
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).map(|q| q.trim().to_string()).filter(|q| !q.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// Questions and answers as plain text, for a prompt or a log line.
+pub fn qa_text(pairs: &[(String, Option<String>)]) -> String {
+    pairs
+        .iter()
+        .enumerate()
+        .map(|(i, (q, a))| match a.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+            Some(a) => format!("{}. {q}\n   Answer: {a}", i + 1),
+            None => format!("{}. {q}", i + 1),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The user prompt for a node's next turn.
@@ -99,7 +126,18 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
         );
     }
     if let Some(f) = run.feedback.get(&node.id) {
-        p.push_str(&format!("\n# Judge feedback\n\nYour previous work was sent back. Fix this:\n\n{}\n", f.trim()));
+        let (title, intro) = match run.feedback_kind.get(&node.id).copied().unwrap_or_default() {
+            FeedbackKind::Judge => ("Judge feedback", "Your previous work was sent back. Fix this:"),
+            FeedbackKind::Answers => ("Answers to questions about your work", "Questions were asked about your previous work and the user answered them. Revise your work in the light of the answers:"),
+            FeedbackKind::Questions => ("Questions about your work", "Questions were asked about your previous work. Answer each one in your output, and change the work where an answer shows a flaw in it:"),
+        };
+        p.push_str(&format!("\n# {title}\n\n{intro}\n\n{}\n", f.trim()));
+    }
+    if node.asks() {
+        if let Some(before) = run.asked.get(&node.id).filter(|a| !a.is_empty()) {
+            let pairs: Vec<_> = before.iter().map(|a| (a.question.clone(), a.answer.clone())).collect();
+            p.push_str(&format!("\n# What you have asked before\n\nDo not ask these again. Ask only what is still open now that the work has changed.\n\n{}\n", qa_text(&pairs)));
+        }
     }
     p.push_str(
         "\nDo your role's part and answer in the required JSON shape. Refer to files by paths relative to your \
@@ -138,7 +176,7 @@ mod tests {
             id: "f".into(),
             name: "F".into(),
             nodes: vec![node("r", "Research", Role::Researcher), node("b", "Build", Role::Builder)],
-            edges: vec![Edge { id: "e".into(), from: "r".into(), to: "b".into(), kind: EdgeKind::Forward }],
+            edges: vec![Edge::new("e", "r", "b", EdgeKind::Forward)],
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
@@ -232,7 +270,7 @@ mod tests {
         r.flow.nodes.push(node("j", "Judge", Role::Judge));
         r.nodes.insert("j".into(), crate::orch::run::Run::new("x".into(), r.flow.clone(), "g".into(), 0).nodes.remove("j").unwrap());
         for (i, to) in ["r", "b"].iter().enumerate() {
-            r.flow.edges.push(Edge { id: format!("x{i}"), from: "j".into(), to: (*to).into(), kind: EdgeKind::Retry });
+            r.flow.edges.push(Edge::new(format!("x{i}"), "j", *to, EdgeKind::Retry));
         }
         let p = build_prompt(&r, r.flow.node("j").unwrap());
         assert!(p.contains("Where you can send work back to") && p.contains("`r`: Research") && p.contains("`b`: Build"), "{p}");

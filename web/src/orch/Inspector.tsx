@@ -3,12 +3,14 @@
 
 import { useState } from 'react';
 import { Icon, iconFor, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
-import type { Budget, Capability, Engine, Flow, FlowNode, Models, NodeRun, Output, Run } from './types';
+import { CAPABILITY_SHORT, ON_CAP_TEXT, OUTPUT_TEXT, asks, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
+import { DEFAULT_ITERATIONS, type Answerer, type Budget, type Capability, type Engine, type Flow, type FlowEdge, type FlowNode, type Models, type NodeRun, type OnCap, type Output, type Run } from './types';
 
 interface Props {
   flow: Flow;
   node: FlowNode | null;
+  /** A send-back edge (or any edge) selected instead of an agent. */
+  edge: FlowEdge | null;
   run: Run | null;
   models: Models;
   editable: boolean;
@@ -16,6 +18,7 @@ interface Props {
   limits: Budget;
   onLimits: (b: Budget) => void;
   onNode: (id: string, patch: Partial<FlowNode>) => void;
+  onEdge: (id: string, patch: Partial<FlowEdge>) => void;
   onFlow: (patch: Partial<Flow>) => void;
   onDelete: (id: string) => void;
   onWritePrompt: (node: FlowNode) => Promise<string | null>;
@@ -29,12 +32,12 @@ export function Inspector(p: Props) {
   return (
     <>
       <div className="mc-panel-head">
-        <span style={{ flex: 1 }}>{p.node ? p.node.name : 'Settings'}</span>
+        <span style={{ flex: 1 }}>{p.node ? p.node.name : p.edge ? (p.edge.kind === 'retry' ? 'Send back' : 'Connection') : 'Settings'}</span>
         <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label="Close" onClick={p.onClose}>
           <Icon name="close" />
         </button>
       </div>
-      <div className="mc-scroll">{p.node ? <NodePanel {...p} node={p.node} /> : <FlowPanel {...p} />}</div>
+      <div className="mc-scroll">{p.node ? <NodePanel {...p} node={p.node} /> : p.edge ? <EdgePanel {...p} edge={p.edge} /> : <FlowPanel {...p} />}</div>
     </>
   );
 }
@@ -63,7 +66,7 @@ function FlowPanel({ flow, run, editable, limits, onLimits, onFlow }: Props) {
         <Field label="Stop everything at" hint="Stop whenever any window reaches this, so your own sessions are never left with nothing.">
           <input className="mc-field mc-mono" type="number" min={1} max={100} value={b.stopWindowPct} onChange={(e) => onLimits({ ...b, stopWindowPct: pct(e.target.value, b.stopWindowPct) })} />
         </Field>
-        <Field label="Most one run may spend on OpenRouter" hint="Dollars. The run pauses, and asks you, when it reaches this; an agent that would go past it mid-turn is stopped. Leave empty for no cap. Agents on your own plan are not counted.">
+        <Field label="Most one run may spend on API models" hint="Dollars, for agents on OpenRouter or another API account. The run pauses, and asks you, when it reaches this; an OpenRouter agent that would go past it mid-turn is stopped. Leave empty for no cap. Agents on your own plan are not counted.">
           <input
             className="mc-field mc-mono"
             type="number"
@@ -104,6 +107,62 @@ function FlowPanel({ flow, run, editable, limits, onLimits, onFlow }: Props) {
           />
         </div>
       </div>
+    </>
+  );
+}
+
+/** One connection: what it hands over, or, for a send-back, how often it may be used and what happens then. */
+function EdgePanel({ flow, edge, run, editable, onEdge }: Props & { edge: FlowEdge }) {
+  const from = flow.nodes.find((n) => n.id === edge.from);
+  const to = flow.nodes.find((n) => n.id === edge.to);
+  if (edge.kind !== 'retry') {
+    return (
+      <p className="mc-hint">
+        {from?.name ?? 'An agent'} hands its output to {to?.name ?? 'the next agent'}. Nothing to set here.
+      </p>
+    );
+  }
+  const max = edge.maxIterations ?? DEFAULT_ITERATIONS;
+  const used = run?.iterations?.[edge.id] ?? 0;
+  return (
+    <>
+      <p className="mc-hint" style={{ margin: '0 0 1rem' }}>
+        {from?.name ?? 'An agent'} can send work back to {to?.name ?? 'an earlier agent'}, which then runs again, and everything between them with it.
+      </p>
+      <Field label="Most times it may be used" hint={`In one run. The flow also has its own limit on all send-backs together (${flow.maxRetries}).`}>
+        <input
+          className="mc-field mc-mono"
+          type="number"
+          min={1}
+          max={10}
+          disabled={!editable}
+          value={max}
+          onChange={(e) => onEdge(edge.id, { maxIterations: Math.min(10, Math.max(1, Math.round(Number(e.target.value) || 1))) })}
+        />
+      </Field>
+      <Field label="When it has been used that many times">
+        <select className="mc-field" disabled={!editable} value={edge.onCap ?? 'pause'} onChange={(e) => onEdge(edge.id, { onCap: e.target.value as OnCap })}>
+          {(Object.keys(ON_CAP_TEXT) as OnCap[]).map((k) => (
+            <option key={k} value={k}>
+              {ON_CAP_TEXT[k]}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {from && asks(from) && (
+        <Field label="Who answers its questions" hint="The agent it asks about the work either gets your answers, or has to answer them itself.">
+          <select className="mc-field" disabled={!editable} value={edge.answeredBy ?? 'user'} onChange={(e) => onEdge(edge.id, { answeredBy: e.target.value as Answerer })}>
+            <option value="user">You: the run stops and asks</option>
+            <option value="agent">{to?.name ?? 'The agent it goes back to'}: it answers in its next turn</option>
+          </select>
+        </Field>
+      )}
+      {run && (
+        <p className="mc-hint">
+          Used {used} of {max} {max === 1 ? 'time' : 'times'} in this run.
+        </p>
+      )}
+      {!editable && <p className="mc-hint">These were fixed when the run started. Go back to the design to change them.</p>}
     </>
   );
 }

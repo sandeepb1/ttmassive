@@ -14,7 +14,8 @@ use super::Outcome;
 use super::downshift;
 use super::graph::{Engine, Node};
 use super::handoff::{self, Verdict};
-use super::run::{LogKind, NodeStatus, Pause, Run, RunStatus, SKILL_PREFIX, SUBAGENT_PREFIX, now_secs};
+use super::graph::{Answerer, Edge, OnCap};
+use super::run::{Asked, FeedbackKind, LogKind, NodeStatus, Pause, PendingQuestions, Run, RunStatus, SKILL_PREFIX, SUBAGENT_PREFIX, now_secs};
 
 /// Whatever actually runs a node: the Claude or Codex driver in production, a script in tests.
 pub trait NodeRunner {
@@ -141,6 +142,7 @@ fn settle(run: &mut Run, halt: Option<Pause>, waiting: Option<String>) {
             Pause::Budget { message } => format!("Stopped: {message}"),
             Pause::Failed { node, message } if node.is_empty() => format!("Stopped: {message}"),
             Pause::Failed { node, message } => format!("Stopped: {} failed ({message})", name_of(run, &node)),
+            Pause::Questions { node } => format!("{} has questions for you; the run is waiting for your answers", name_of(run, &node)),
         },
         _ => return,
     };
@@ -229,26 +231,52 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
     if node.decides() {
         return judged(run, node, &output);
     }
+    if node.asks() {
+        return questioned(run, node, &output);
+    }
     None
 }
 
 /// A judge has answered: either carry on, or send work back to the builder it points at.
 fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pause> {
-    let (feedback, send_back_to) = match handoff::verdict(output) {
+    match handoff::verdict(output) {
         Verdict::Approve => {
             run.note(Some(&judge.id), LogKind::Decision, format!("{} approved the work: carrying on", judge.name), None);
-            return None;
+            None
         }
-        Verdict::Reject { feedback, send_back_to } => (feedback, send_back_to),
-    };
-    let targets: Vec<String> = run.flow.send_back_targets(&judge.id).into_iter().map(String::from).collect();
-    if targets.is_empty() {
-        // No way back drawn: the judge is advisory.
-        run.note(Some(&judge.id), LogKind::Decision, format!("{} rejected the work, but no send-back is drawn from it, so the flow carries on", judge.name), Some(feedback));
+        Verdict::Reject { feedback, send_back_to } => send_back(run, judge, feedback, send_back_to, Why::Rejected),
+    }
+}
+
+/// An agent that asks questions has answered: either it has none and the flow carries on, or the work goes back
+/// along its send-back edge and the questions go with it.
+fn questioned(run: &mut Run, asker: &Node, output: &serde_json::Value) -> Option<Pause> {
+    let questions = handoff::open_questions(output);
+    if questions.is_empty() {
+        run.note(Some(&asker.id), LogKind::Decision, format!("{} has no questions left: carrying on", asker.name), None);
         return None;
     }
-    if run.retries_used >= run.flow.max_retries {
-        return Some(Pause::RetriesExhausted { node: judge.id.clone() });
+    send_back(run, asker, questions.join("\n"), None, Why::Asked(questions))
+}
+
+/// Why work is being sent back.
+enum Why {
+    Rejected,
+    Asked(Vec<String>),
+}
+
+/// Send work back from `from` along its send-back edge, or say why not. Each edge may be used only so many times, and
+/// the flow only so many sends-back in all; when an edge is used up, its own setting says what happens.
+fn send_back(run: &mut Run, from: &Node, feedback: String, send_back_to: Option<String>, why: Why) -> Option<Pause> {
+    let targets: Vec<String> = run.flow.send_back_targets(&from.id).into_iter().map(String::from).collect();
+    if targets.is_empty() {
+        // No way back drawn: it is advisory.
+        let what = match why {
+            Why::Rejected => "rejected the work, but no send-back is drawn from it",
+            Why::Asked(_) => "asked questions, but no send-back is drawn from it",
+        };
+        run.note(Some(&from.id), LogKind::Decision, format!("{} {what}, so the flow carries on", from.name), Some(feedback));
+        return None;
     }
     // One place to go needs no answer. With several, the verdict must name one of them.
     let target = match (targets.as_slice(), send_back_to) {
@@ -256,25 +284,87 @@ fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pau
         (_, Some(t)) if targets.contains(&t) => t,
         _ => {
             let message = "it rejected the work but did not say which agent should redo it".to_string();
-            let n = run.nodes.get_mut(&judge.id).expect("every node has a state");
+            let n = run.nodes.get_mut(&from.id).expect("every node has a state");
             n.status = NodeStatus::Failed;
             n.output = None;
             n.error = Some(message.clone());
-            run.note(Some(&judge.id), LogKind::Error, format!("✕ {} did not say where to send the work", judge.name), Some(message.clone()));
-            return Some(Pause::Failed { node: judge.id.clone(), message });
+            run.note(Some(&from.id), LogKind::Error, format!("✕ {} did not say where to send the work", from.name), Some(message.clone()));
+            return Some(Pause::Failed { node: from.id.clone(), message });
         }
     };
+    let edge: Edge = run.flow.edges.iter().find(|e| e.kind == super::graph::EdgeKind::Retry && e.from == from.id && e.to == target).cloned().expect("a target comes from an edge");
+    let used = run.iterations.get(&edge.id).copied().unwrap_or(0);
+    // The flow's own limit is a backstop over every edge together: reaching it always stops for the user.
+    if run.retries_used >= run.flow.max_retries {
+        run.note(Some(&from.id), LogKind::Decision, format!("The flow allows {} send-backs in all and they have been used", run.flow.max_retries), None);
+        return Some(Pause::RetriesExhausted { node: from.id.clone() });
+    }
+    if used >= edge.max_iterations {
+        return edge_used_up(run, from, &target, &edge);
+    }
+    *run.iterations.entry(edge.id.clone()).or_insert(0) += 1;
     run.retries_used += 1;
-    run.feedback.insert(target.clone(), feedback);
-    // Redo what lies between the builder and the judge, and nothing else: a branch running beside them keeps its work.
-    let redo: Vec<String> = run.flow.between(&target, &judge.id).into_iter().map(String::from).collect();
+    match why {
+        Why::Rejected => {
+            apply_loop(run, from, &target, feedback, FeedbackKind::Judge);
+            None
+        }
+        Why::Asked(questions) => {
+            run.asked.entry(from.id.clone()).or_default().extend(questions.iter().map(|q| Asked { question: q.clone(), answer: None }));
+            if edge.answered_by == Answerer::User {
+                run.note(Some(&from.id), LogKind::Decision, format!("{} asked {} question{}; waiting for your answers", from.name, questions.len(), if questions.len() == 1 { "" } else { "s" }), Some(feedback));
+                run.pending = Some(PendingQuestions { node: from.id.clone(), target, edge: edge.id, questions });
+                Some(Pause::Questions { node: from.id.clone() })
+            } else {
+                let pairs: Vec<_> = questions.iter().map(|q| (q.clone(), None)).collect();
+                apply_loop(run, from, &target, handoff::qa_text(&pairs), FeedbackKind::Questions);
+                None
+            }
+        }
+    }
+}
+
+/// An edge has been used as many times as it may be.
+fn edge_used_up(run: &mut Run, from: &Node, target: &str, edge: &Edge) -> Option<Pause> {
+    let line = format!("{} wants to send work back to {} again, but that edge has been used {} time{}", from.name, name_of(run, target), edge.max_iterations, if edge.max_iterations == 1 { "" } else { "s" });
+    match edge.on_cap {
+        OnCap::Pause => {
+            run.note(Some(&from.id), LogKind::Decision, format!("{line}: stopping for you to decide"), None);
+            Some(Pause::RetriesExhausted { node: from.id.clone() })
+        }
+        OnCap::Proceed => {
+            run.note(Some(&from.id), LogKind::Decision, format!("{line}: carrying on with the work as it is"), None);
+            None
+        }
+        OnCap::Fail => {
+            let message = format!("work was sent back along an edge as many times as it may be ({})", edge.max_iterations);
+            let n = run.nodes.get_mut(&from.id).expect("every node has a state");
+            n.status = NodeStatus::Failed;
+            n.error = Some(message.clone());
+            run.note(Some(&from.id), LogKind::Error, format!("✕ {line}"), Some(message.clone()));
+            Some(Pause::Failed { node: from.id.clone(), message })
+        }
+    }
+}
+
+/// Send the work back: the target gets `feedback`, and what lies between it and `from` runs again.
+fn apply_loop(run: &mut Run, from: &Node, target: &str, feedback: String, kind: FeedbackKind) {
+    run.feedback.insert(target.to_string(), feedback);
+    run.feedback_kind.insert(target.to_string(), kind);
+    // Redo what lies between the target and the one that sent it back, and nothing else: a branch running beside them keeps its work.
+    let redo: Vec<String> = run.flow.between(target, &from.id).into_iter().map(String::from).collect();
     let (used, max) = (run.retries_used, run.flow.max_retries);
     let again: Vec<String> = redo.iter().map(|i| name_of(run, i)).collect();
+    let what = match kind {
+        FeedbackKind::Judge => "rejected the work and sent it back",
+        FeedbackKind::Answers => "had its questions answered and sent the work back",
+        FeedbackKind::Questions => "asked questions and sent the work back",
+    };
     run.note(
-        Some(&judge.id),
+        Some(&from.id),
         LogKind::Decision,
-        format!("{} rejected the work and sent it back to {} (send-back {used} of {max}); {} run again", judge.name, name_of(run, &target), list(&again)),
-        Some(feedback_for_log(run, &target)),
+        format!("{} {what} to {} (send-back {used} of {max}); {} run again", from.name, name_of(run, target), list(&again)),
+        Some(feedback_for_log(run, target)),
     );
     for id in redo {
         let n = run.nodes.get_mut(&id).expect("every node has a state");
@@ -282,7 +372,30 @@ fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pau
         n.output = None;
         n.error = None;
     }
-    None
+}
+
+/// The user's answers to the questions the run is waiting on. The work then goes back as it was going to, with the
+/// answers, and the run is ready to be started again.
+pub fn answer_questions(run: &mut Run, answers: Vec<String>) -> Result<(), String> {
+    let Some(p) = run.pending.clone() else { return Err("the run is not waiting for answers".into()) };
+    if answers.len() != p.questions.len() {
+        return Err(format!("there are {} questions and {} answers", p.questions.len(), answers.len()));
+    }
+    let answers: Vec<String> = answers.into_iter().map(|a| a.trim().chars().take(4000).collect()).collect();
+    let pairs: Vec<(String, Option<String>)> = p.questions.iter().cloned().zip(answers.iter().cloned().map(Some)).collect();
+    // Remember the answers, against the questions they belong to (the last ones this agent asked).
+    if let Some(list) = run.asked.get_mut(&p.node) {
+        let from = list.len().saturating_sub(p.questions.len());
+        for (slot, a) in list[from..].iter_mut().zip(&answers) {
+            slot.answer = Some(a.clone());
+        }
+    }
+    let asker = run.flow.node(&p.node).cloned().ok_or("the agent that asked is gone")?;
+    run.pending = None;
+    run.note(Some(&p.node), LogKind::Decision, "You answered the questions", Some(handoff::qa_text(&pairs)));
+    apply_loop(run, &asker, &p.target, handoff::qa_text(&pairs), FeedbackKind::Answers);
+    run.status = RunStatus::Running;
+    Ok(())
 }
 
 fn feedback_for_log(run: &Run, target: &str) -> String {
@@ -380,7 +493,7 @@ mod tests {
     }
 
     fn edge(id: &str, from: &str, to: &str, kind: EdgeKind) -> Edge {
-        Edge { id: id.into(), from: from.into(), to: to.into(), kind }
+        Edge::new(id, from, to, kind)
     }
 
     /// orch -> res -> build -> judge, with the judge able to send work back to build.
@@ -1036,6 +1149,144 @@ mod tests {
         go(&run, &fake).await;
         assert_eq!(status(&run), RunStatus::Done);
         assert_eq!(fake.ran().iter().filter(|i| *i == "build").count(), 2);
+    }
+
+    // ---- loops: questions, per-edge caps, and who answers ----
+
+    fn asks(qs: &[&str]) -> anyhow::Result<Outcome> {
+        ok(json!({"questions": qs, "resolved": false}))
+    }
+
+    fn satisfied() -> anyhow::Result<Outcome> {
+        ok(json!({"questions": [], "resolved": true}))
+    }
+
+    /// plan -> grill -> report, with the griller able to send work back to the plan.
+    fn grilled(answered_by: Answerer, max_iterations: u8, on_cap: OnCap) -> Flow {
+        let mut back = edge("back", "grill", "plan", EdgeKind::Retry);
+        back.answered_by = answered_by;
+        back.max_iterations = max_iterations;
+        back.on_cap = on_cap;
+        Flow {
+            id: "f".into(),
+            name: "F".into(),
+            nodes: vec![node("plan", Role::Orchestrator), node("grill", Role::Griller), node("report", Role::Reporter)],
+            edges: vec![edge("e1", "plan", "grill", EdgeKind::Forward), edge("e2", "grill", "report", EdgeKind::Forward), back],
+            max_retries: 6,
+            budget: Budget::default(),
+            downshift: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_griller_that_asks_sends_the_work_back_with_its_questions_until_it_is_satisfied() {
+        let run = new_run(grilled(Answerer::Agent, 3, OnCap::Pause));
+        let fake = Fake::with(vec![("grill", asks(&["Which database?", "Who logs in?"])), ("grill", satisfied())]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        assert_eq!(fake.ran(), vec!["plan", "grill", "plan", "grill", "report"]);
+        let again = fake.prompt("plan", 1);
+        assert!(again.contains("# Questions about your work") && again.contains("1. Which database?") && again.contains("2. Who logs in?"), "{again}");
+        assert!(!again.contains("Judge feedback"), "it is not a verdict");
+        // The griller is told what it asked before, so it does not ask it again.
+        let second = fake.prompt("grill", 1);
+        assert!(second.contains("# What you have asked before") && second.contains("Which database?"), "{second}");
+        assert!(!fake.prompt("grill", 0).contains("asked before"), "nothing before the first time");
+        let r = run.lock().unwrap();
+        assert_eq!(r.iterations["back"], 1);
+        assert_eq!(r.retries_used, 1);
+    }
+
+    #[tokio::test]
+    async fn questions_for_the_user_stop_the_run_and_the_answers_go_back_with_the_work() {
+        let run = new_run(grilled(Answerer::User, 3, OnCap::Pause));
+        let fake = Fake::with(vec![("grill", asks(&["Which database?", "Who logs in?"])), ("grill", satisfied())]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Paused { pause: Pause::Questions { node: "grill".into() } });
+        {
+            let r = run.lock().unwrap();
+            let p = r.pending.clone().expect("waiting for answers");
+            assert_eq!((p.node.as_str(), p.target.as_str(), p.questions.len()), ("grill", "plan", 2));
+            assert_eq!(r.nodes["plan"].status, NodeStatus::Done, "nothing is redone until the user has answered");
+        }
+        let mut r = run.lock().unwrap();
+        assert!(answer_questions(&mut r, vec!["only one".into()]).unwrap_err().contains("2 questions and 1 answers"));
+        assert!(r.pending.is_some(), "a bad answer changes nothing");
+        answer_questions(&mut r, vec!["Postgres".into(), "  Staff only  ".into()]).unwrap();
+        assert_eq!((r.status.clone(), r.pending.clone()), (RunStatus::Running, None));
+        assert_eq!(r.nodes["plan"].status, NodeStatus::Pending);
+        assert_eq!(r.nodes["grill"].status, NodeStatus::Pending);
+        assert_eq!(r.nodes["report"].status, NodeStatus::Pending, "report had not run, and is still waiting its turn");
+        drop(r);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        let again = fake.prompt("plan", 1);
+        assert!(again.contains("# Answers to questions about your work") && again.contains("Answer: Postgres") && again.contains("Answer: Staff only"), "{again}");
+        assert!(fake.prompt("grill", 1).contains("Answer: Postgres"), "the griller sees what was answered");
+        assert!(answer_questions(&mut run.lock().unwrap(), vec![]).unwrap_err().contains("not waiting"));
+    }
+
+    #[tokio::test]
+    async fn an_edge_used_up_does_what_it_says() {
+        // Pause: stop and ask.
+        let run = new_run(grilled(Answerer::Agent, 1, OnCap::Pause));
+        let fake = Fake::with(vec![("grill", asks(&["a?"])), ("grill", asks(&["b?"]))]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Paused { pause: Pause::RetriesExhausted { node: "grill".into() } });
+        assert_eq!(run.lock().unwrap().iterations["back"], 1, "the second send-back was not counted");
+
+        // Proceed: carry on with what there is.
+        let run = new_run(grilled(Answerer::Agent, 1, OnCap::Proceed));
+        let fake = Fake::with(vec![("grill", asks(&["a?"])), ("grill", asks(&["b?"]))]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        assert_eq!(fake.ran(), vec!["plan", "grill", "plan", "grill", "report"], "the report still runs, on the work as it is");
+
+        // Fail: the agent that wanted to send it back fails.
+        let run = new_run(grilled(Answerer::Agent, 1, OnCap::Fail));
+        let fake = Fake::with(vec![("grill", asks(&["a?"])), ("grill", asks(&["b?"]))]);
+        go(&run, &fake).await;
+        let RunStatus::Paused { pause: Pause::Failed { node, message } } = status(&run) else { panic!("not failed") };
+        assert_eq!(node, "grill");
+        assert!(message.contains("as many times as it may be (1)"), "{message}");
+        assert_eq!(run.lock().unwrap().nodes["grill"].status, NodeStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn the_same_caps_apply_to_a_judges_send_backs() {
+        let mut f = flow();
+        f.edges[3].max_iterations = 1;
+        f.edges[3].on_cap = OnCap::Proceed;
+        let run = new_run(f);
+        let fake = Fake::with(vec![("judge", reject("first")), ("judge", reject("second"))]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done, "the second rejection could not go back, and the flow carried on");
+        assert_eq!(fake.ran().iter().filter(|i| *i == "build").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_flows_own_limit_still_stops_everything_whatever_the_edges_allow() {
+        let mut f = grilled(Answerer::Agent, 9, OnCap::Proceed);
+        f.max_retries = 2;
+        let run = new_run(f);
+        let fake = Fake::with(vec![("grill", asks(&["1?"])), ("grill", asks(&["2?"])), ("grill", asks(&["3?"]))]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Paused { pause: Pause::RetriesExhausted { node: "grill".into() } }, "the backstop pauses even when the edge would proceed");
+        assert_eq!(run.lock().unwrap().retries_used, 2);
+    }
+
+    #[tokio::test]
+    async fn a_griller_with_nothing_to_ask_lets_the_flow_through_and_one_with_nowhere_to_send_it_is_advisory() {
+        let run = new_run(grilled(Answerer::User, 2, OnCap::Pause));
+        go(&run, &Fake::with(vec![("grill", satisfied())])).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        assert!(run.lock().unwrap().pending.is_none());
+
+        let mut f = grilled(Answerer::User, 2, OnCap::Pause);
+        f.edges.pop(); // no way back drawn
+        let run = new_run(f);
+        go(&run, &Fake::with(vec![("grill", asks(&["still unclear?"]))])).await;
+        assert_eq!(status(&run), RunStatus::Done, "questions with nowhere to go do not stop the flow");
     }
 
     #[tokio::test]

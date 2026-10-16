@@ -72,6 +72,41 @@ pub enum Pause {
     Budget { message: String },
     /// A node failed; Resume tries it again.
     Failed { node: String, message: String },
+    /// An agent asked questions that only the user can answer; the run waits for them.
+    Questions { node: String },
+}
+
+/// Why an agent is being run again, which decides how its prompt puts it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FeedbackKind {
+    /// A judge rejected its work.
+    #[default]
+    Judge,
+    /// An agent asked questions about its work, answered by the user.
+    Answers,
+    /// An agent asked questions about its work, for it to answer itself.
+    Questions,
+}
+
+/// One question an agent asked, and the answer if it has one yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Asked {
+    pub question: String,
+    pub answer: Option<String>,
+}
+
+/// Questions waiting for the user, and where the work goes once they are answered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingQuestions {
+    /// The agent that asked.
+    pub node: String,
+    /// The agent the work goes back to.
+    pub target: String,
+    /// The send-back edge it goes along.
+    pub edge: String,
+    pub questions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -212,7 +247,19 @@ pub struct Run {
     pub approved: HashSet<String>,
     /// Judge feedback waiting for the node it was sent back to.
     pub feedback: HashMap<String, String>,
+    /// What kind each waiting piece of feedback is.
+    #[serde(default)]
+    pub feedback_kind: HashMap<String, FeedbackKind>,
     pub retries_used: u8,
+    /// How many times each send-back edge has been used, by edge id.
+    #[serde(default)]
+    pub iterations: HashMap<String, u8>,
+    /// What each agent that asks questions has asked so far, with the answers, by node id.
+    #[serde(default)]
+    pub asked: HashMap<String, Vec<Asked>>,
+    /// Questions the run is waiting for the user to answer.
+    #[serde(default)]
+    pub pending: Option<PendingQuestions>,
     pub created: i64,
     /// When it reached done or cancelled; `None` while it can still go on.
     #[serde(default)]
@@ -245,7 +292,11 @@ impl Run {
             nodes,
             approved: HashSet::new(),
             feedback: HashMap::new(),
+            feedback_kind: HashMap::new(),
             retries_used: 0,
+            iterations: HashMap::new(),
+            asked: HashMap::new(),
+            pending: None,
             created,
             finished: None,
             waived: false,

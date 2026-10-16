@@ -484,3 +484,64 @@ export function GrillDialog({ run, thinking, error, onAnswer, onStart, onStop }:
     </Dialog>
   );
 }
+
+/** The questions an agent asked that only the user can answer: one box each, and the answers go back with the work. */
+export function QuestionsDialog({ run, busy, error, onAnswer, onClose }: {
+  run: Run;
+  busy: boolean;
+  error: string | null;
+  onAnswer: (answers: string[]) => void;
+  onClose: () => void;
+}) {
+  const pending = run.pending;
+  const [answers, setAnswers] = useState<string[]>([]);
+  useEffect(() => setAnswers((pending?.questions ?? []).map(() => '')), [pending?.questions.join('\n')]);
+  if (!pending) return null;
+  const who = run.flow.nodes.find((n) => n.id === pending.node)?.name ?? 'An agent';
+  const to = run.flow.nodes.find((n) => n.id === pending.target)?.name ?? 'the agent it goes back to';
+  const before = (run.asked?.[pending.node] ?? []).filter((a) => a.answer !== null);
+  return (
+    <Dialog
+      title={`${who} has questions`}
+      onClose={onClose}
+      foot={
+        <>
+          <button type="button" className="mc-btn" onClick={onClose}>
+            Later
+          </button>
+          <button type="button" className="mc-btn mc-btn-primary" disabled={busy} onClick={() => onAnswer(answers)}>
+            <Icon name="play" /> {busy ? 'Sending…' : `Send to ${to}`}
+          </button>
+        </>
+      }
+    >
+      <p className="mc-hint" style={{ margin: '0 0 1rem' }}>
+        Your answers go to {to}, which revises its work with them; {who} then looks again. Leave one empty to say it is up to them.
+      </p>
+      {pending.questions.map((q, i) => (
+        <Field key={`${i}-${q}`} label={`${i + 1}. ${q}`}>
+          <textarea
+            className="mc-field"
+            rows={2}
+            value={answers[i] ?? ''}
+            placeholder="Your answer"
+            onChange={(e) => setAnswers((cur) => cur.map((a, j) => (j === i ? e.target.value : a)))}
+          />
+        </Field>
+      ))}
+      {before.length > 0 && (
+        <details className="mc-hint">
+          <summary>Asked and answered earlier ({before.length})</summary>
+          <ul>
+            {before.map((a, i) => (
+              <li key={i}>
+                {a.question} → {a.answer || 'no answer'}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {error && <p className="mc-error">{error}</p>}
+    </Dialog>
+  );
+}

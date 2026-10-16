@@ -369,6 +369,21 @@ impl Service {
         Ok(b)
     }
 
+    /// The user answers the questions the run is waiting on. The work goes back with the answers, and the run goes on.
+    pub fn answer(&self, st: &Arc<AppState>, id: &str, answers: Vec<String>) -> Result<Run, Fail> {
+        let live = self.live(id)?;
+        {
+            let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
+            if !matches!(run.status, RunStatus::Paused { pause: Pause::Questions { .. } }) {
+                return Err(Fail::Conflict("this run is not waiting for answers".into()));
+            }
+            super::exec::answer_questions(&mut run, answers).map_err(Fail::Bad)?;
+            self.persist(&run);
+        }
+        self.spawn_drive(st.clone(), live);
+        self.get(id)
+    }
+
     /// Carry on after a pause: a failure, a limit, or a restart. `waive` also stops the plan limits being checked
     /// again for this run, which is what "carry on anyway" means after a limit stopped it.
     pub fn resume(&self, st: &Arc<AppState>, id: &str, waive: bool) -> Result<Run, Fail> {
@@ -376,6 +391,7 @@ impl Service {
         {
             let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
             match &run.status {
+                RunStatus::Paused { pause: Pause::Questions { .. } } => return Err(Fail::Conflict("answer the questions first".into())),
                 RunStatus::Paused { .. } => {}
                 _ => return Err(Fail::Conflict("this run is not paused".into())),
             }

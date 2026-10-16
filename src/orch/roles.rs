@@ -31,6 +31,8 @@ pub enum Output {
     Change,
     /// A decision: approve or reject, with feedback. May send work back to an earlier agent.
     Verdict,
+    /// Open questions about the work so far, or none. May send work back to an earlier agent until they are answered.
+    Questions,
 }
 
 /// Where a role sits in a flow, for grouping in the palette.
@@ -135,6 +137,20 @@ pub fn catalog() -> Vec<RoleDef> {
                 Output::Plan,
                 false,
                 "You turn findings into an implementation plan for someone who will write the code and cannot ask you questions. List the files to change, the change in each, the order, the interfaces that must not change, and the exact checks that prove it works. Name the risks and what you assumed. Do not write the code, and do not widen the scope beyond what your inputs ask for.",
+            )
+        },
+        RoleDef {
+            claude_model: "opus",
+            ..def(
+                Role::Griller,
+                "Griller",
+                "Questions the plan until it holds up",
+                Stage::Plan,
+                "help",
+                Capability::Read,
+                Output::Questions,
+                false,
+                "You are the griller. Read the brief and what comes before you and look for what would make the work go wrong: assumptions nobody stated, requirements that are missing or contradict each other, risks, and decisions that were skipped. Ask only the questions whose answers would change what gets built, most important first, each answerable in a sentence. Do not answer them yourself and do not suggest a plan. If the work is already clear and sound, ask nothing and say it is resolved.",
             )
         },
         RoleDef {
@@ -278,6 +294,13 @@ mod tests {
     }
 
     #[test]
+    fn the_griller_only_reads_and_hands_back_questions() {
+        let g = catalog().into_iter().find(|d| d.id == Role::Griller).unwrap();
+        assert_eq!((g.capability, g.output, g.checkpoint), (Capability::Read, Output::Questions, false));
+        assert!(!web_default(Role::Griller), "it works from what it is given, not from the web");
+    }
+
+    #[test]
     fn a_prompt_never_carries_the_users_goal_or_a_placeholder() {
         for d in catalog() {
             for bad in ["{goal}", "{{", "TODO", "<goal>"] {
@@ -296,15 +319,15 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_is_the_researched_nine_and_keeps_the_original_six() {
+    fn the_catalog_is_the_researched_nine_plus_the_griller_and_keeps_the_original_six() {
         let ids: Vec<String> = catalog().iter().map(|d| format!("{:?}", d.id).to_lowercase()).collect();
         for original in ["orchestrator", "researcher", "search", "analyst", "judge", "builder"] {
             assert!(ids.iter().any(|i| i == original), "{original} must stay so saved flows keep working");
         }
-        for added in ["architect", "debugger", "reporter"] {
+        for added in ["architect", "debugger", "reporter", "griller"] {
             assert!(ids.iter().any(|i| i == added), "{added}");
         }
-        assert_eq!(ids.len(), 9, "{ids:?}");
+        assert_eq!(ids.len(), 10, "{ids:?}");
     }
 
     #[test]

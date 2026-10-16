@@ -5,7 +5,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import type { RecentDir } from '../dirs';
 import { orch, watchRun } from './api';
 import { Icon, iconFor } from './bits';
-import { CustomRoleDialog, GrillDialog, NewRunDialog, SuggestDialog, type RoleDraft } from './Dialogs';
+import { CustomRoleDialog, GrillDialog, NewRunDialog, QuestionsDialog, SuggestDialog, type RoleDraft } from './Dialogs';
 import { Assistant } from './Assistant';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
@@ -138,6 +138,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const [run, setRun] = useState<Run | null>(null);
   const [link, setLink] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
+  const [answering, setAnswering] = useState(false);
 
   const [sideOpen, setSideOpen] = useState(false);
   const [inspOpen, setInspOpen] = useState(false);
@@ -331,6 +333,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const editable = !run;
   const problem = useMemo(() => flowProblem(flow), [flow]);
   const selectedNode = shown.nodes.find((n) => n.id === selected) ?? null;
+  const selectedEdgeObj = selectedNode ? null : (shown.edges.find((e) => e.id === selectedEdge) ?? null);
   const showList = phone || view === 'list';
   const meters = useMemo(() => gauges(shown, run, usage, limits), [shown, run, usage, limits]);
 
@@ -389,8 +392,24 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   };
   const select = (id: string | null) => {
     setSelected(id);
+    setSelectedEdge(null);
     if (id && !wide) setInspOpen(true);
   };
+  const selectEdge = (id: string) => {
+    setSelected(null);
+    setSelectedEdge(id);
+    if (!wide) setInspOpen(true);
+  };
+  // A run that stops with questions for the user opens them, once, so the answer is one step away.
+  const askedKey = run?.status.state === 'paused' && run.status.pause.kind === 'questions' && run.pending ? `${run.id}:${run.retriesUsed}` : null;
+  const seenAsk = useRef<string | null>(null);
+  useEffect(() => {
+    if (askedKey && seenAsk.current !== askedKey) {
+      seenAsk.current = askedKey;
+      setAnswering(true);
+    }
+    if (!askedKey) setAnswering(false);
+  }, [askedKey]);
   const save = () =>
     void act(() => orch.saveFlow(flow), () => {
       setDirty(false);
@@ -673,12 +692,12 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         </aside>
 
         <main className="mc-stage" data-list={showList}>
-          {run && <RunBar run={run} busy={busy} link={link} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} />}
+          {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} />}
           {showList ? (
             <NodeList flow={shown} run={run} selected={selected} onSelect={select} />
           ) : (
             <ReactFlowProvider>
-              <FlowCanvas flow={shown} run={run} selected={selected} editable={editable} onFlow={editFlow} onSelect={select} onProblem={say} fitToken={fitToken} viewKey={run ? `run-${run.id}` : flow.id} roles={roles} onAddAt={addNode} onTidy={() => (editFlow(tidy), fit())} openMenu={setMenu} />
+              <FlowCanvas flow={shown} run={run} selected={selected} selectedEdge={selectedEdge} editable={editable} onFlow={editFlow} onSelect={select} onSelectEdge={selectEdge} onProblem={say} fitToken={fitToken} viewKey={run ? `run-${run.id}` : flow.id} roles={roles} onAddAt={addNode} onTidy={() => (editFlow(tidy), fit())} openMenu={setMenu} />
               {editable && <AddAgent roles={roles} count={flow.nodes.length} onAdd={addNode} onCustom={() => (setDraft(null), setCustomError(null), setCustomOpen(true))} />}
             </ReactFlowProvider>
           )}
@@ -726,6 +745,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           <Inspector
             flow={shown}
             node={selectedNode}
+            edge={selectedEdgeObj}
             run={run}
             models={models}
             editable={editable}
@@ -733,6 +753,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             limits={limits}
             onLimits={changeLimits}
             onNode={(id, patch) => editFlow((f) => ({ ...f, nodes: f.nodes.map((n) => (n.id === id ? { ...n, ...patch } : n)) }))}
+            onEdge={(id, patch) => editFlow((f) => ({ ...f, edges: f.edges.map((e) => (e.id === id ? { ...e, ...patch } : e)) }))}
             onFlow={(patch) => editFlow((f) => ({ ...f, ...patch }))}
             onDelete={(id) => (editFlow((f) => ({ ...f, nodes: f.nodes.filter((n) => n.id !== id), edges: f.edges.filter((e) => e.from !== id && e.to !== id) })), setSelected(null))}
             onWritePrompt={async (n) => {
@@ -748,6 +769,9 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           />
         </aside>
       </div>
+      {answering && run?.pending && (
+        <QuestionsDialog run={run} busy={busy} error={error} onClose={() => setAnswering(false)} onAnswer={(a) => void act(() => orch.answers(run.id, a), (r) => (applyRun(r), setAnswering(false)))} />
+      )}
       {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
     </>
   );

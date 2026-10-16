@@ -43,6 +43,7 @@ fn role_lines() -> String {
                 Output::Report => "hands back a report",
                 Output::Change => "hands back a change",
                 Output::Verdict => "hands back approve or reject, and may send work back",
+                Output::Questions => "hands back open questions, and may send work back until they are answered",
             };
             format!("- {} ({}): {}. {can}; {gives}.", role_id(d.id), d.label, d.blurb.to_lowercase())
         })
@@ -120,7 +121,9 @@ orchestrator. Add an agent only for a different kind of work (reading, running c
 check, or a part that can run in parallel with another. Agents that read can run at the same time; never have two agents \
 change the same files, one agent that changes files per piece of work. Anything that changes files is followed by a judge \
 that can run the checks, and the judge's edge back to that agent is marked retry. If a plan or design could be wrong, the \
-judge may also have a retry edge to that earlier agent (the architect, say). A flow that changes nothing has no retry edge. Use the cheapest model that can do the job: opus for the orchestrator, architect and \
+judge may also have a retry edge to that earlier agent (the architect, say). A flow that changes nothing has no retry edge. For a goal that is vague or a plan that could easily be wrong, a griller \
+can come after the planner: it asks what the plan leaves open, and its edge back to the planner is marked retry (a griller has \
+exactly one way back, and asks the user). Do not add one for a small or clear task. Use the cheapest model that can do the job: opus for the orchestrator, architect and \
 judge; sonnet (or a small codex model) for researchers, debuggers and reporters; haiku or a small codex model for simple \
 lookups. Use a different model for the judge than for the agent whose work it checks. Mark checkpoint true on every agent \
 that changes files, so the user approves before files change. Each system_prompt is 2 to 5 sentences: the agent's job, \
@@ -252,7 +255,7 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
         let end = |k: &str| e.get(k).and_then(Value::as_str).and_then(|x| ids.get(x)).cloned();
         let (Some(from), Some(to)) = (end("from"), end("to")) else { bail!("an edge points at an agent that does not exist") };
         let kind = if e.get("retry").and_then(Value::as_bool) == Some(true) { EdgeKind::Retry } else { EdgeKind::Forward };
-        edges.push(Edge { id: format!("e{}", edges.len() + 1), from, to, kind });
+        edges.push(Edge::new(format!("e{}", edges.len() + 1), from, to, kind));
     }
     let name = v.get("name").and_then(Value::as_str).unwrap_or("").trim();
     let mut flow = Flow {
@@ -572,7 +575,12 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
         let end = |k: &str| e.get(k).and_then(Value::as_str).and_then(|x| ids.get(x)).cloned();
         let (Some(from), Some(to)) = (end("from"), end("to")) else { bail!("an edge points at an agent that does not exist") };
         let kind = if e.get("retry").and_then(Value::as_bool) == Some(true) { EdgeKind::Retry } else { EdgeKind::Forward };
-        edges.push(Edge { id: format!("e{}", edges.len() + 1), from, to, kind });
+        let mut edge = Edge::new(format!("e{}", edges.len() + 1), from, to, kind);
+        // An edge the editor kept keeps what the user set on it: how often it may be used, what happens then, who answers.
+        if let Some(old) = base.edges.iter().find(|b| b.from == edge.from && b.to == edge.to && b.kind == edge.kind) {
+            (edge.max_iterations, edge.on_cap, edge.answered_by) = (old.max_iterations, old.on_cap, old.answered_by);
+        }
+        edges.push(edge);
     }
     let name = v.get("name").and_then(Value::as_str).unwrap_or("").trim();
     let mut flow = Flow {
@@ -671,6 +679,7 @@ pub fn describe_role(label: &str, capability: Capability, output: Output) -> Str
         Output::Report => "a report: a summary, the findings and their sources",
         Output::Change => "a change: what it did, the files it touched, and notes",
         Output::Verdict => "a verdict: approve or reject, with feedback saying what to fix",
+        Output::Questions => "questions: what is still open or unclear, or none if the work holds up",
     };
     format!("{label}. It can {can}. It hands back {gives}.")
 }
@@ -806,7 +815,7 @@ mod tests {
             x: 900.0,
             y: 0.0,
         });
-        f.edges.push(Edge { id: "e9".into(), from: "n2".into(), to: "n9".into(), kind: EdgeKind::Forward });
+        f.edges.push(Edge::new("e9", "n2", "n9", EdgeKind::Forward));
         f
     }
 
@@ -863,6 +872,24 @@ mod tests {
         let n = f.nodes.iter().find(|n| n.id == "n2").unwrap();
         assert_eq!((n.name.as_str(), n.model.as_str(), n.system_prompt.as_str()), ("Coder", "gpt-6-luna", "Build it carefully."));
         assert_eq!((n.y, n.token_cap, n.keep_model), (222.0, Some(50_000), true));
+    }
+
+    #[test]
+    fn an_edit_keeps_the_limits_the_user_set_on_the_edges_it_leaves_alone() {
+        let mut b = base();
+        let back = b.edges.iter_mut().find(|e| e.kind == EdgeKind::Retry).expect("the flow has a send-back");
+        (back.max_iterations, back.on_cap, back.answered_by) = (7, crate::orch::graph::OnCap::Proceed, crate::orch::graph::Answerer::Agent);
+        let (f, _) = flow_from_edit(&b, &{
+            let mut v = edit_view(&b);
+            v["summary"] = json!("Nothing.");
+            v
+        }, &models())
+        .unwrap();
+        let kept = f.edges.iter().find(|e| e.kind == EdgeKind::Retry).unwrap();
+        assert_eq!((kept.max_iterations, kept.on_cap, kept.answered_by), (7, crate::orch::graph::OnCap::Proceed, crate::orch::graph::Answerer::Agent));
+        // A new edge starts with the usual limits.
+        let (g, _) = flow_from_edit(&b, &edit_answer(|v| v["edges"].as_array_mut().unwrap().push(json!({"from": "n1", "to": "n3", "retry": false}))), &models()).unwrap();
+        assert!(g.edges.iter().any(|e| e.max_iterations == 2 && e.on_cap == crate::orch::graph::OnCap::Pause));
     }
 
     #[test]

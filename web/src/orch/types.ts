@@ -3,7 +3,7 @@
 /** A built-in role's id, or `custom`. The server's catalog (`/api/orch/roles`) says which exist. */
 export type Role = string;
 export type Capability = 'read' | 'inspect' | 'write';
-export type Output = 'plan' | 'report' | 'change' | 'verdict';
+export type Output = 'plan' | 'report' | 'change' | 'verdict' | 'questions';
 export type Stage = 'plan' | 'gather' | 'build' | 'check' | 'deliver';
 
 /** What makes a custom role what it is; kept on the node. */
@@ -57,12 +57,23 @@ export interface FlowNode {
   y: number;
 }
 
+export type OnCap = 'pause' | 'proceed' | 'fail';
+export type Answerer = 'user' | 'agent';
+
 export interface FlowEdge {
   id: string;
   from: string;
   to: string;
   kind: EdgeKind;
+  /** A send-back edge: how many times work may go back along it in one run. */
+  maxIterations?: number;
+  /** What happens when it has been used that many times. */
+  onCap?: OnCap;
+  /** From an agent that asks questions: who answers them. */
+  answeredBy?: Answerer;
 }
+
+export const DEFAULT_ITERATIONS = 2;
 
 export interface Budget {
   claudePct: number;
@@ -119,7 +130,8 @@ export type Pause =
   | { kind: 'approval'; node: string }
   | { kind: 'retriesExhausted'; node: string }
   | { kind: 'budget'; message: string }
-  | { kind: 'failed'; node: string; message: string };
+  | { kind: 'failed'; node: string; message: string }
+  | { kind: 'questions'; node: string };
 
 export type RunStatus =
   | { state: 'grilling' }
@@ -172,6 +184,12 @@ export interface Run {
   approved: string[];
   feedback: Record<string, string>;
   retriesUsed: number;
+  /** How many times each send-back edge has been used, by edge id. */
+  iterations?: Record<string, number>;
+  /** What agents that ask questions have asked, with the answers, by node id. */
+  asked?: Record<string, { question: string; answer: string | null }[]>;
+  /** Questions the run is waiting for the user to answer. */
+  pending?: { node: string; target: string; edge: string; questions: string[] } | null;
   created: number;
   /** When it reached done or cancelled, in Unix seconds. */
   finished?: number | null;

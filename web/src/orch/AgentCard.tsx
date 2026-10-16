@@ -3,7 +3,7 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Icon, iconFor } from './bits';
-import { cacheHit, decides, fmtTokens, modelShown, roleLabel, totalTokens } from './model';
+import { asks, cacheHit, decides, fmtTokens, modelShown, roleLabel, totalTokens } from './model';
 import type { FlowNode, NodeRun } from './types';
 
 export interface CardData extends Record<string, unknown> {
@@ -92,8 +92,8 @@ function AgentCardImpl({ data }: NodeProps) {
       <CardBody node={node} run={run} waiting={waiting} />
       <Handle id="out" type="source" position={Position.Right} />
       {/* A judge sends work back along the bottom; the builder it goes to takes it there. */}
-      {decides(node) && <Handle id="back-out" type="source" position={Position.Bottom} title="Drag to an earlier agent, to send work back to it" />}
-      {!decides(node) && <Handle id="back-in" type="target" position={Position.Bottom} />}
+      {(decides(node) || asks(node)) && <Handle id="back-out" type="source" position={Position.Bottom} title="Drag to an earlier agent, to send work back to it" />}
+      {!decides(node) && !asks(node) && <Handle id="back-in" type="target" position={Position.Bottom} />}
     </div>
   );
 }

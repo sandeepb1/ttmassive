@@ -26,6 +26,8 @@ pub enum Role {
     Architect,
     Debugger,
     Reporter,
+    /// Questions the work until nothing important is left open; may send it back, to the user or to an agent.
+    Griller,
     /// A role the user wrote: its label, capability and result shape are on the node (`Node::custom`).
     Custom,
 }
@@ -106,12 +108,60 @@ pub struct Node {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Edge {
     pub id: String,
     pub from: String,
     pub to: String,
     #[serde(default = "forward")]
     pub kind: EdgeKind,
+    /// A send-back edge: how many times work may be sent back along it in one run.
+    #[serde(default = "default_iterations")]
+    pub max_iterations: u8,
+    /// What happens when it has been used that many times and the work is sent back once more.
+    #[serde(default)]
+    pub on_cap: OnCap,
+    /// A send-back edge from an agent that asks questions: who answers them.
+    #[serde(default)]
+    pub answered_by: Answerer,
+}
+
+/// What to do when a send-back edge has been used up.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnCap {
+    /// Stop and ask the user.
+    #[default]
+    Pause,
+    /// Carry on with the work as it is.
+    Proceed,
+    /// Fail the agent that wanted to send it back.
+    Fail,
+}
+
+/// Who answers the questions an agent asks when it sends work back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Answerer {
+    /// The run stops and the user answers.
+    #[default]
+    User,
+    /// The agent the work goes back to answers them in its next turn.
+    Agent,
+}
+
+pub const DEFAULT_ITERATIONS: u8 = 2;
+pub const MAX_ITERATIONS: u8 = 10;
+
+fn default_iterations() -> u8 {
+    DEFAULT_ITERATIONS
+}
+
+impl Edge {
+    /// A forward edge or a send-back edge with the usual limits.
+    pub fn new(id: impl Into<String>, from: impl Into<String>, to: impl Into<String>, kind: EdgeKind) -> Edge {
+        Edge { id: id.into(), from: from.into(), to: to.into(), kind, max_iterations: DEFAULT_ITERATIONS, on_cap: OnCap::Pause, answered_by: Answerer::User }
+    }
 }
 
 fn is_false(b: &bool) -> bool {
@@ -212,6 +262,11 @@ impl Node {
         self.output() == Output::Verdict
     }
 
+    /// Hands back questions, and so may send work back until they are answered.
+    pub fn asks(&self) -> bool {
+        self.output() == Output::Questions
+    }
+
     /// The name to show: a custom role's own, else the built-in role's.
     pub fn role_label(&self) -> String {
         match (&self.custom, roles::def_for(self.role)) {
@@ -301,12 +356,18 @@ impl Flow {
             if e.from == e.to {
                 return Err(format!("edge '{}' joins a node to itself", e.id));
             }
+            if !(1..=MAX_ITERATIONS).contains(&e.max_iterations) {
+                return Err(format!("a send-back edge may be used 1 to {MAX_ITERATIONS} times"));
+            }
             if e.kind == EdgeKind::Retry {
-                if !from.decides() {
-                    return Err("only an agent that hands back a verdict can send work back".into());
+                if !from.decides() && !from.asks() {
+                    return Err("only an agent that hands back a verdict or asks questions can send work back".into());
                 }
                 if self.edges.iter().filter(|x| x.kind == EdgeKind::Retry && x.from == e.from && x.to == e.to).count() > 1 {
                     return Err("two send-back edges join the same pair of agents".into());
+                }
+                if from.asks() && self.edges.iter().filter(|x| x.kind == EdgeKind::Retry && x.from == e.from).count() > 1 {
+                    return Err(format!("'{}' asks questions, so it can send work back to only one place", from.name));
                 }
             }
         }
@@ -422,6 +483,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_agent_that_asks_questions_may_send_work_back_but_only_one_way_and_a_few_times() {
+        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator), node("b", Role::Researcher), node("g", Role::Griller)], edges: vec![], max_retries: 2, budget: Budget::default(), downshift: false };
+        f.edges = vec![edge("e1", "a", "b", EdgeKind::Forward), edge("e2", "b", "g", EdgeKind::Forward), edge("r1", "g", "a", EdgeKind::Retry)];
+        assert_eq!(f.validate(), Ok(()), "a griller is allowed what a judge is");
+        f.edges.push(edge("r2", "g", "b", EdgeKind::Retry));
+        assert!(f.validate().unwrap_err().contains("only one place"));
+        f.edges.pop();
+        f.edges[2].max_iterations = 0;
+        assert!(f.validate().unwrap_err().contains("1 to 10 times"));
+        f.edges[2].max_iterations = 11;
+        assert!(f.validate().is_err());
+        f.edges[2].max_iterations = MAX_ITERATIONS;
+        assert_eq!(f.validate(), Ok(()));
+        // An agent that neither decides nor asks still cannot send work back.
+        f.edges.push(edge("r3", "b", "a", EdgeKind::Retry));
+        assert!(f.validate().unwrap_err().contains("verdict or asks questions"));
+    }
+
+    #[test]
+    fn edges_written_before_loops_existed_get_the_usual_limits() {
+        let e: Edge = serde_json::from_str(r#"{"id":"e","from":"a","to":"b","kind":"retry"}"#).unwrap();
+        assert_eq!((e.max_iterations, e.on_cap, e.answered_by), (2, OnCap::Pause, Answerer::User));
+        let j = serde_json::to_value(Edge::new("e", "a", "b", EdgeKind::Retry)).unwrap();
+        assert_eq!((j["maxIterations"].clone(), j["onCap"].clone(), j["answeredBy"].clone()), (serde_json::json!(2), serde_json::json!("pause"), serde_json::json!("user")));
+    }
+
+    #[test]
     fn only_an_agent_that_needs_no_tools_may_call_its_model_directly() {
         let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator)], edges: vec![], max_retries: 1, budget: Budget::default(), downshift: false };
         f.nodes[0].direct = true;
@@ -457,7 +545,7 @@ mod tests {
     }
 
     fn edge(id: &str, from: &str, to: &str, kind: EdgeKind) -> Edge {
-        Edge { id: id.into(), from: from.into(), to: to.into(), kind }
+        Edge::new(id, from, to, kind)
     }
 
     fn line() -> Flow {
