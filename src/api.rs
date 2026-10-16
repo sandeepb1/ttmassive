@@ -84,6 +84,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/layouts", get(get_layouts).put(put_layouts))
         .route("/api/accounts", get(list_accounts).post(create_account))
         .route("/api/accounts/{id}", axum::routing::put(update_account).delete(delete_account))
+        .route("/api/accounts/{id}/remote", get(account_remote))
+        .route("/api/openrouter/models", get(openrouter_models))
         .route("/api/groups/{name}/start", post(start_group))
         .merge(crate::orch::api::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -290,6 +292,29 @@ async fn delete_account(State(st): State<Arc<AppState>>, Path(id): Path<String>)
             tracing::warn!("saving accounts: {e:#}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct RefreshQuery {
+    refresh: Option<u8>,
+}
+
+async fn openrouter_models(State(st): State<Arc<AppState>>, Query(q): Query<RefreshQuery>) -> Response {
+    match crate::openrouter::catalog::get(&st.data_dir, q.refresh.unwrap_or(0) != 0).await {
+        Ok(c) => ([(header::CACHE_CONTROL, "no-store")], Json(c.as_ref().clone())).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
+    }
+}
+
+/// An account's balance (OpenRouter) or the model ids its endpoint offers (anything else).
+async fn account_remote(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let Some(account) = secrets::load(&st.data_dir).await.get(&id).cloned() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match crate::openrouter::catalog::remote(&account).await {
+        Ok(r) => ([(header::CACHE_CONTROL, "no-store")], Json(r)).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
     }
 }
 

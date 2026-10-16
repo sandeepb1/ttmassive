@@ -20,6 +20,7 @@ mod modes;
 mod notify;
 mod ops;
 mod orch;
+mod openrouter;
 mod placeholder;
 mod pty;
 mod question;
