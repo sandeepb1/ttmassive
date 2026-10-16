@@ -3,4 +3,6 @@
 
 pub mod client;
 pub mod mcp;
+pub mod render;
 pub mod tools;
+pub mod types;

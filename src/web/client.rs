@@ -6,6 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+use super::render;
+use super::types::{Crawl, Fetched, MapEntry, Page, SearchHit, SiteMap};
 use crate::secrets::Account;
 
 pub const DEFAULT_URL: &str = "https://api.firecrawl.dev";
@@ -82,33 +84,24 @@ impl Client {
         Ok(Balance { remaining: n("remainingCredits").context("no balance in the answer")?, plan: n("planCredits").unwrap_or(0) })
     }
 
-    pub async fn search(&self, query: &str, limit: u32) -> Result<Output> {
+    pub async fn search_hits(&self, query: &str, limit: u32) -> Result<Fetched<Vec<SearchHit>>> {
         let v = self.call(reqwest::Method::POST, "/v2/search", Some(json!({"query": query, "limit": limit.clamp(1, MAX_SEARCH)}))).await?;
-        Ok(Output { text: format_search(&v), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) })
+        Ok(Fetched { value: parse_search(&v), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) })
     }
 
-    pub async fn scrape(&self, url: &str) -> Result<Output> {
+    pub async fn scrape_page(&self, url: &str) -> Result<Fetched<Page>> {
         let v = self.call(reqwest::Method::POST, "/v2/scrape", Some(json!({"url": url, "formats": ["markdown"], "onlyMainContent": true}))).await?;
-        Ok(Output { text: format_page(&v["data"], MAX_PAGE), credits: v.pointer("/data/metadata/creditsUsed").and_then(Value::as_u64).unwrap_or(1) })
+        Ok(Fetched { value: parse_page(&v["data"]), credits: v.pointer("/data/metadata/creditsUsed").and_then(Value::as_u64).unwrap_or(1) })
     }
 
-    pub async fn map(&self, url: &str, limit: u32) -> Result<Output> {
+    pub async fn map_site(&self, url: &str, limit: u32) -> Result<Fetched<SiteMap>> {
         let v = self.call(reqwest::Method::POST, "/v2/map", Some(json!({"url": url, "limit": limit.clamp(1, MAX_MAP as u32)}))).await?;
         // The answer does not say what it cost; a map is one credit.
-        Ok(Output { text: format_map(&v), credits: 1 })
+        Ok(Fetched { value: parse_map(&v), credits: 1 })
     }
 
     /// Fetch up to `limit` pages starting at `url`, waiting for the crawl to finish (a bounded time).
-    pub async fn crawl(&self, url: &str, limit: u32) -> Result<Output> {
-        self.crawl_sized(url, limit, MAX_CRAWLED_PAGE, MAX_ANSWER).await
-    }
-
-    /// A crawl kept in full, for reading later in files rather than handing straight to a model.
-    pub async fn crawl_pages(&self, url: &str, limit: u32) -> Result<Output> {
-        self.crawl_sized(url, limit, MAX_DOC_PAGE, MAX_DOC_TOTAL).await
-    }
-
-    async fn crawl_sized(&self, url: &str, limit: u32, per_page: usize, total: usize) -> Result<Output> {
+    pub async fn crawl_site(&self, url: &str, limit: u32) -> Result<Fetched<Crawl>> {
         let limit = limit.clamp(1, MAX_CRAWL_PAGES);
         let started = self
             .call(reqwest::Method::POST, "/v2/crawl", Some(json!({"url": url, "limit": limit, "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": true}})))
@@ -118,17 +111,44 @@ impl Client {
         loop {
             tokio::time::sleep(self.poll).await;
             let v = self.call(reqwest::Method::GET, &format!("/v2/crawl/{id}"), None).await?;
+            let done = |v: &Value| Fetched { value: parse_crawl(v), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) };
             match v.get("status").and_then(Value::as_str) {
-                Some("completed") => return Ok(Output { text: format_crawl(&v, per_page, total), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) }),
+                Some("completed") => return Ok(done(&v)),
                 Some("failed" | "cancelled") => bail!("the crawl did not finish"),
                 _ if tokio::time::Instant::now() >= deadline => {
                     // What it has got so far is still worth having; the rest is paid for only if it is fetched.
                     let _ = self.call(reqwest::Method::DELETE, &format!("/v2/crawl/{id}"), None).await;
-                    return Ok(Output { text: format_crawl(&v, per_page, total), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) });
+                    return Ok(done(&v));
                 }
                 _ => {}
             }
         }
+    }
+
+    pub async fn search(&self, query: &str, limit: u32) -> Result<Output> {
+        let f = self.search_hits(query, limit).await?;
+        Ok(Output { text: render::search(&f.value), credits: f.credits })
+    }
+
+    pub async fn scrape(&self, url: &str) -> Result<Output> {
+        let f = self.scrape_page(url).await?;
+        Ok(Output { text: render::page(&f.value, MAX_PAGE), credits: f.credits })
+    }
+
+    pub async fn map(&self, url: &str, limit: u32) -> Result<Output> {
+        let f = self.map_site(url, limit).await?;
+        Ok(Output { text: render::map(&f.value), credits: f.credits })
+    }
+
+    pub async fn crawl(&self, url: &str, limit: u32) -> Result<Output> {
+        let f = self.crawl_site(url, limit).await?;
+        Ok(Output { text: render::crawl(&f.value, MAX_CRAWLED_PAGE, MAX_ANSWER), credits: f.credits })
+    }
+
+    /// A crawl kept in full, for reading later in files rather than handing straight to a model.
+    pub async fn crawl_pages(&self, url: &str, limit: u32) -> Result<Output> {
+        let f = self.crawl_site(url, limit).await?;
+        Ok(Output { text: render::crawl(&f.value, MAX_DOC_PAGE, MAX_DOC_TOTAL), credits: f.credits })
     }
 }
 
@@ -156,69 +176,40 @@ pub fn lenient_json(text: &str) -> Option<Value> {
     serde_json::from_str(&out).ok()
 }
 
-/// Cut `s` to `max` characters, saying so when it was.
-fn cut(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max {
-        return s.to_owned();
-    }
-    format!("{}\n\n[… {} more characters left out]", s.chars().take(max).collect::<String>(), n - max)
+fn text(r: &Value, k: &str) -> String {
+    r.get(k).and_then(Value::as_str).unwrap_or("").trim().replace('\n', " ")
 }
 
-fn format_search(v: &Value) -> String {
+fn parse_search(v: &Value) -> Vec<SearchHit> {
     let web = v.pointer("/data/web").or_else(|| v.get("data")).and_then(Value::as_array).cloned().unwrap_or_default();
-    if web.is_empty() {
-        return "No results.".into();
-    }
-    let s = |r: &Value, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").trim().replace('\n', " ");
-    web.iter()
-        .enumerate()
-        .map(|(i, r)| format!("{}. {} — {}\n   {}", i + 1, s(r, "title"), s(r, "url"), cut(&s(r, "description"), 300)))
-        .collect::<Vec<_>>()
-        .join("\n")
+    web.iter().map(|r| SearchHit { title: text(r, "title"), url: text(r, "url"), snippet: text(r, "description"), published: None, score: None }).collect()
 }
 
-fn format_page(d: &Value, max: usize) -> String {
-    let title = d.pointer("/metadata/title").and_then(Value::as_str).unwrap_or("").trim();
+fn parse_page(d: &Value) -> Page {
     let url = d.pointer("/metadata/sourceURL").or_else(|| d.pointer("/metadata/url")).and_then(Value::as_str).unwrap_or("");
-    let md = d.get("markdown").and_then(Value::as_str).unwrap_or("").trim();
-    if md.is_empty() {
-        return "The page had no readable text.".into();
+    Page {
+        url: url.to_owned(),
+        title: d.pointer("/metadata/title").and_then(Value::as_str).unwrap_or("").trim().to_owned(),
+        markdown: d.get("markdown").and_then(Value::as_str).unwrap_or("").trim().to_owned(),
     }
-    format!("# {title}\n{url}\n\n{}", cut(md, max))
 }
 
-fn format_map(v: &Value) -> String {
+fn parse_map(v: &Value) -> SiteMap {
     let links = v.get("links").and_then(Value::as_array).cloned().unwrap_or_default();
-    if links.is_empty() {
-        return "No pages found.".into();
-    }
-    links
+    let pages = links
         .iter()
         .take(MAX_MAP)
-        .map(|l| match (l.get("url").and_then(Value::as_str), l.get("title").and_then(Value::as_str)) {
-            (Some(u), Some(t)) if !t.trim().is_empty() => format!("{u} — {}", t.trim()),
-            (Some(u), _) => u.to_owned(),
-            _ => l.as_str().unwrap_or("").to_owned(),
+        .filter_map(|l| {
+            let url = l.get("url").and_then(Value::as_str).or_else(|| l.as_str())?.to_owned();
+            let title = l.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned);
+            Some(MapEntry { url, title })
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    SiteMap { pages }
 }
 
-fn format_crawl(v: &Value, per_page: usize, total: usize) -> String {
-    let pages = v.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
-    if pages.is_empty() {
-        return "The crawl found no pages.".into();
-    }
-    let mut out = format!("{} page(s):\n", pages.len());
-    for p in &pages {
-        out.push_str(&format!("\n---\n{}\n", format_page(p, per_page)));
-        if out.chars().count() > total {
-            out = cut(&out, total);
-            break;
-        }
-    }
-    out
+fn parse_crawl(v: &Value) -> Crawl {
+    Crawl { pages: v.get("data").and_then(Value::as_array).map(|a| a.iter().map(parse_page).collect()).unwrap_or_default() }
 }
 
 #[cfg(test)]
@@ -240,33 +231,17 @@ mod tests {
     }
 
     #[test]
-    fn answers_are_cut_and_say_so() {
-        assert_eq!(cut("short", 10), "short");
-        let c = cut(&"x".repeat(50), 10);
-        assert!(c.starts_with("xxxxxxxxxx\n\n[… 40 more characters left out]"), "{c}");
-    }
-
-    #[test]
-    fn search_results_read_as_a_numbered_list() {
-        let v = json!({"data": {"web": [{"url": "https://a.test", "title": "A", "description": "first\nline"}, {"url": "https://b.test", "title": "B", "description": ""}]}});
-        assert_eq!(format_search(&v), "1. A — https://a.test\n   first line\n2. B — https://b.test\n   ");
-        assert_eq!(format_search(&json!({"data": {"web": []}})), "No results.");
+    fn answers_are_read_into_the_shared_types() {
+        let v = json!({"data": {"web": [{"url": "https://a.test", "title": " A ", "description": "first\nline"}]}});
+        assert_eq!(parse_search(&v), vec![SearchHit { title: "A".into(), url: "https://a.test".into(), snippet: "first line".into(), published: None, score: None }]);
         // An older shape has the list directly under data.
-        assert!(format_search(&json!({"data": [{"url": "u", "title": "t", "description": "d"}]})).contains("1. t — u"));
-    }
-
-    #[test]
-    fn pages_map_and_crawls_are_formatted_for_an_agent() {
-        let page = json!({"markdown": "Hello world", "metadata": {"title": "Home", "sourceURL": "https://x.test/"}});
-        assert_eq!(format_page(&page, 100), "# Home\nhttps://x.test/\n\nHello world");
-        assert_eq!(format_page(&json!({"markdown": "  "}), 100), "The page had no readable text.");
-        assert_eq!(format_map(&json!({"links": [{"url": "https://x.test/a", "title": "A"}, {"url": "https://x.test/b"}]})), "https://x.test/a — A\nhttps://x.test/b");
-        let c = format_crawl(&json!({"data": [page.clone(), page]}), MAX_CRAWLED_PAGE, MAX_ANSWER);
-        assert!(c.starts_with("2 page(s):") && c.matches("# Home").count() == 2);
-        assert_eq!(format_crawl(&json!({"data": []}), 10, 10), "The crawl found no pages.");
-        let long = json!({"data": [{"markdown": "x".repeat(500), "metadata": {"title": "T"}}]});
-        assert!(format_crawl(&long, 100, 10_000).contains("400 more characters"), "a page is cut to its size");
-        assert!(format_crawl(&long, 10_000, 100).contains("more characters left out"), "and the whole to its");
+        assert_eq!(parse_search(&json!({"data": [{"url": "u", "title": "t", "description": "d"}]}))[0].title, "t");
+        assert!(parse_search(&json!({"data": {"web": []}})).is_empty());
+        let page = parse_page(&json!({"markdown": " Hello ", "metadata": {"title": "Home", "sourceURL": "https://x.test/"}}));
+        assert_eq!(page, Page { url: "https://x.test/".into(), title: "Home".into(), markdown: "Hello".into() });
+        let site = parse_map(&json!({"links": [{"url": "https://x.test/a", "title": "A"}, {"url": "https://x.test/b", "title": " "}, "https://x.test/c"]}));
+        assert_eq!(site.pages.iter().map(|e| (e.url.as_str(), e.title.as_deref())).collect::<Vec<_>>(), vec![("https://x.test/a", Some("A")), ("https://x.test/b", None), ("https://x.test/c", None)]);
+        assert_eq!(parse_crawl(&json!({"data": [{"markdown": "m", "metadata": {"title": "T"}}]})).pages.len(), 1);
     }
 
     // ---- against a stand-in Firecrawl ----
