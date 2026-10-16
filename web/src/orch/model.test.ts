@@ -706,14 +706,14 @@ test('a goal with a web address offers to read it', () => {
   assert.equal(hasLink('https://'), false);
 });
 
-test('an OpenRouter meter appears for each account the flow uses, with the run share and a warning near its dollar cap', () => {
+test('every OpenRouter account has a meter, and the run share shows only on the ones its agents use', () => {
   const key = (id: string, name: string, remaining: number | null) => ({ id, name, spent: 5, daily: 0.5, monthly: 3, limit: remaining === null ? null : 50, remaining, error: null, fetchedAt: 1 });
   const usage = { claude: {} as never, codex: {} as never, openrouter: [key('a1', 'Main', 40), key('z9', 'Spare', null)] };
   const flow = { ...emptyFlow('f', 'F'), nodes: [{ ...newNode(emptyFlow('f', 'F'), def('builder'), models, at), account: 'a1' }] };
   const g = orGauges(flow, null, usage, { ...DEFAULT_LIMITS });
-  assert.equal(g.length, 1, 'an account no agent uses has no meter');
-  assert.deepEqual([g[0]!.label, g[0]!.text, g[0]!.used, g[0]!.runUsd, g[0]!.tone], ['OpenRouter', '$40.00 left', 20, null, 'ok']);
-  assert.deepEqual(orGauges(emptyFlow('f', 'F'), null, usage, { ...DEFAULT_LIMITS }), [], 'a flow with no API agent shows none');
+  assert.equal(g.length, 2, 'an account no agent uses still has a meter');
+  assert.deepEqual([g[0]!.label, g[0]!.text, g[0]!.used, g[0]!.runUsd, g[0]!.tone], ['OpenRouter · Main', '$40.00 left', 20, null, 'ok']);
+  assert.equal(orGauges(emptyFlow('f', 'F'), null, usage, { ...DEFAULT_LIMITS }).length, 2, 'a flow with no API agent shows them too');
   assert.deepEqual(orGauges(flow, null, { claude: {} as never, codex: {} as never }, { ...DEFAULT_LIMITS }), [], 'an older server says nothing');
 });
 

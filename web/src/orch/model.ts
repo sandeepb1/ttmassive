@@ -657,10 +657,10 @@ export interface OrGauge {
   title: string;
 }
 
-/** The accounts the flow's agents run on (or, with no agent on one, none), as meters. */
+/** Every OpenRouter account with a key, as a meter; the run's spend is shown on the accounts its agents use. */
 export function orGauges(flow: Flow, run: Run | null, usage: UsageSnapshot | null, b: Budget): OrGauge[] {
   const used = new Set(flow.nodes.map((n) => n.account).filter((a): a is string => !!a));
-  const keys = (usage?.openrouter ?? []).filter((u) => used.has(u.id));
+  const keys = usage?.openrouter ?? [];
   const spent = run ? runCost(run) : 0;
   return keys.map((u) => {
     const pct = orUsedPct(u);
@@ -670,7 +670,7 @@ export function orGauges(flow: Flow, run: Run | null, usage: UsageSnapshot | nul
     else if (b.runUsd && spent >= b.runUsd * 0.8 && tone === 'ok') tone = 'warn';
     const lines = u.error ? [u.error] : orLines(u);
     if (b.runUsd) lines.push(`this run may spend ${usdLabel(b.runUsd)}`);
-    return { id: u.id, label: `OpenRouter${keys.length > 1 ? ` · ${u.name}` : ''}`, used: pct, text: strip.text, runUsd: run ? spent : null, tone, title: lines.join(' · ') };
+    return { id: u.id, label: `OpenRouter${keys.length > 1 ? ` · ${u.name}` : ''}`, used: pct, text: strip.text, runUsd: run && used.has(u.id) ? spent : null, tone, title: lines.join(' · ') };
   });
 }
 
