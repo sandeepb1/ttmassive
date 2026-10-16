@@ -106,7 +106,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::any(crate::openrouter::proxy::handle).layer(DefaultBodyLimit::max(crate::openrouter::proxy::MAX_BODY)),
         )
         // Agents reach the Firecrawl tools here, with a lease token.
-        .route("/mcp/web", axum::routing::any(crate::firecrawl::mcp::handle).layer(DefaultBodyLimit::max(1 << 20)))
+        .route("/mcp/web", axum::routing::any(crate::web::mcp::handle).layer(DefaultBodyLimit::max(1 << 20)))
         .merge(protected)
         .fallback(assets::serve)
         .with_state(state)
@@ -382,11 +382,11 @@ async fn chat_direct(State(st): State<Arc<AppState>>, Json(b): Json<DirectChat>)
         return (StatusCode::BAD_REQUEST, "that account has no key, or has no models").into_response();
     };
     let endpoint = chat::endpoint_for(account, &b.model);
-    let web = b.web.then(|| accounts.firecrawl().and_then(|a| crate::firecrawl::client::Client::new(a).ok())).flatten();
+    let web = b.web.then(|| accounts.firecrawl().and_then(|a| crate::web::client::Client::new(a).ok())).flatten();
     let run = async {
         Ok::<_, anyhow::Error>(match web {
             Some(client) => {
-                let r = chat::complete_with_tools(&endpoint, &messages, None, &crate::firecrawl::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::firecrawl::tools::Web(client)).await?;
+                let r = chat::complete_with_tools(&endpoint, &messages, None, &crate::web::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::web::tools::Web(client)).await?;
                 let tools: Vec<_> = r.events.iter().map(|e| serde_json::json!({"name": e.name, "arguments": e.arguments})).collect();
                 (r.reply, tools, r.credits)
             }

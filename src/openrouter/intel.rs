@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::firecrawl::client::Client;
+use crate::web::client::Client;
 use crate::secrets::Accounts;
 
 const FILE: &str = "model-intel.json";

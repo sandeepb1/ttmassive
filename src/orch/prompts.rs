@@ -526,8 +526,8 @@ pub(crate) async fn helper_call(via: Option<&Endpoint>, default: &str, system: &
 }
 
 /// A helper call that may search the web and read pages first (a few calls), when the user has chosen a direct model for it.
-async fn helper_call_web(via: &Endpoint, system: &str, prompt: &str, schema: Value, web: crate::firecrawl::client::Client) -> Result<(Value, Outcome)> {
-    let r = chat::complete_with_tools(via, &[Message::system(system), Message::user(prompt)], Some(&schema), &crate::firecrawl::tools::chat_tools(), 4, &crate::firecrawl::tools::Web(web)).await?;
+async fn helper_call_web(via: &Endpoint, system: &str, prompt: &str, schema: Value, web: crate::web::client::Client) -> Result<(Value, Outcome)> {
+    let r = chat::complete_with_tools(via, &[Message::system(system), Message::user(prompt)], Some(&schema), &crate::web::tools::chat_tools(), 4, &crate::web::tools::Web(web)).await?;
     let answer = r.reply.structured.clone().with_context(|| format!("{} did not answer in the required shape", via.model))?;
     Ok((answer, Outcome { structured: r.reply.structured, text: r.reply.text, tokens: r.reply.tokens, cost_usd: r.reply.cost_usd.unwrap_or(0.0), credits: r.credits, is_error: false, session: None }))
 }
@@ -915,7 +915,7 @@ pub async fn grill(
     round: u8,
     via: Option<&Endpoint>,
     pages: &[super::run::Reference],
-    research: Option<crate::firecrawl::client::Client>,
+    research: Option<crate::web::client::Client>,
     cwd: &Path,
 ) -> Result<(GrillStep, Outcome)> {
     let last = round >= MAX_ROUNDS;

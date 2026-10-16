@@ -214,7 +214,7 @@ pub async fn remote(account: &Account) -> Result<Remote> {
             Ok(Remote { usage: num("usage"), limit: num("limit"), remaining: num("limit_remaining"), free_tier: d.get("is_free_tier").and_then(Value::as_bool), usage_daily: num("usage_daily"), usage_monthly: num("usage_monthly"), models: Vec::new(), unit: None })
         }
         Kind::Firecrawl => {
-            let b = crate::firecrawl::client::Client::new(account)?.credits().await?;
+            let b = crate::web::client::Client::new(account)?.credits().await?;
             Ok(Remote { usage: Some(b.plan.saturating_sub(b.remaining) as f64), limit: Some(b.plan as f64), remaining: Some(b.remaining as f64), unit: Some("credits"), ..Default::default() })
         }
         Kind::OpenaiCompatible => {

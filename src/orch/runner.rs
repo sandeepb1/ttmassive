@@ -304,10 +304,10 @@ impl EngineRunner {
         history.push(Message::user(prompt));
         log(format!("→ asked {} directly", node.model));
         // With web access it may search and fetch pages (a few calls a turn, and nothing else: no files, no shell).
-        let web = if node.web { accounts.firecrawl().and_then(|a| crate::firecrawl::client::Client::new(a).ok()) } else { None };
+        let web = if node.web { accounts.firecrawl().and_then(|a| crate::web::client::Client::new(a).ok()) } else { None };
         let (reply, credits) = match web {
             Some(client) => {
-                let r = chat::complete_with_tools(&endpoint, &history, Some(&schema), &crate::firecrawl::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::firecrawl::tools::Web(client)).await?;
+                let r = chat::complete_with_tools(&endpoint, &history, Some(&schema), &crate::web::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::web::tools::Web(client)).await?;
                 for e in &r.events {
                     log(format!("→ used {}", e.name));
                     trace.push(Kind::Tool, e.name.clone(), &e.arguments);

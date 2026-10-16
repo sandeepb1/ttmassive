@@ -183,7 +183,7 @@ impl Accounts {
             Kind::Openrouter => OPENROUTER_URL.to_owned(),
             Kind::OpenaiCompatible => normalise_url(&input.base_url)?,
             // Blank means the hosted service; a self-hosted one is named by its address.
-            Kind::Firecrawl if input.base_url.trim().is_empty() => crate::firecrawl::client::DEFAULT_URL.to_owned(),
+            Kind::Firecrawl if input.base_url.trim().is_empty() => crate::web::client::DEFAULT_URL.to_owned(),
             Kind::Firecrawl => normalise_url(&input.base_url)?,
         };
         let models = if input.kind == Kind::Firecrawl { Vec::new() } else { check_models(input.models)? };
@@ -261,10 +261,10 @@ impl Accounts {
     /// Choose the pages the router reads about how models compare. Only addresses a stranger could reach, a few of them.
     pub fn set_intel(&mut self, urls: Vec<String>) -> Result<(), &'static str> {
         let urls: Vec<String> = urls.into_iter().map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()).collect();
-        if urls.len() > crate::firecrawl::tools::MAX_LINKS {
+        if urls.len() > crate::web::tools::MAX_LINKS {
             return Err("at most three pages");
         }
-        if urls.iter().any(|u| crate::firecrawl::tools::url_ok(u).is_err()) {
+        if urls.iter().any(|u| crate::web::tools::url_ok(u).is_err()) {
             return Err("an address is not one that can be fetched");
         }
         self.intel_urls = urls;
@@ -571,7 +571,7 @@ mod tests {
         i.models = vec![PinnedModel { id: "x/y".into(), ..Default::default() }];
         let id = a.upsert(None, i).unwrap();
         let acct = a.get(&id).unwrap();
-        assert_eq!(acct.base_url, crate::firecrawl::client::DEFAULT_URL);
+        assert_eq!(acct.base_url, crate::web::client::DEFAULT_URL);
         assert!(acct.models.is_empty(), "it has no models to pin");
         assert!(a.firecrawl().is_some());
         a.accounts[0].use_in_orchestrator = false;
