@@ -68,11 +68,12 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, onCreate
   recents: RecentDir[];
   busy: boolean;
   error: string | null;
-  onCreate: (goal: string, project: string, skipGrill: boolean, readLinks: boolean) => void;
+  onCreate: (goal: string, project: string, skipGrill: boolean, readLinks: boolean, docs: string[]) => void;
   onClose: () => void;
 }) {
   const [goal, setGoal] = useState('');
   const [readLinks, setReadLinks] = useState(true);
+  const [docs, setDocs] = useState('');
   const [project, setProject] = useState(remembered() || recents[0]?.path || '');
   const [skip, setSkip] = useState(false);
   const goalRef = useRef<HTMLTextAreaElement>(null);
@@ -115,7 +116,7 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, onCreate
     } catch {
       /* a private window: the choice is simply not remembered */
     }
-    onCreate(goal.trim(), project.trim(), skip, readLinks);
+    onCreate(goal.trim(), project.trim(), skip, readLinks, web && needsGit ? docs.split('\n').map((d) => d.trim()).filter(Boolean) : []);
   };
   const b = limits;
   return (
@@ -176,6 +177,11 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, onCreate
         </div>
       </Field>
       <Switch on={skip} onChange={setSkip} label="Skip the questions" hint="Use what you typed as the brief." />
+      {web && needsGit && (
+        <Field label="Documentation to read" hint="Optional. One address per line. Up to three sites are crawled (about ten pages each, a credit a page) into the builder’s folder, under docs/_ref, for it to read. They are never committed.">
+          <textarea className="mc-field mc-mono" rows={2} placeholder="https://docs.rs/serde/latest/serde/" value={docs} onChange={(e) => setDocs(e.target.value)} />
+        </Field>
+      )}
       {web && hasLink(goal) && (
         <Switch on={readLinks} onChange={setReadLinks} label="Read the links in it" hint="Fetches up to three pages through your Firecrawl account (about a credit each) and gives their text to every agent." />
       )}

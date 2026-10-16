@@ -175,6 +175,9 @@ struct CreateBody {
     /// Fetch the pages the goal links to, when there is a web account. On unless the user turns it off.
     #[serde(default = "yes")]
     read_links: bool,
+    /// Documentation sites to crawl into each builder's folder to read.
+    #[serde(default)]
+    docs: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -182,7 +185,7 @@ fn yes() -> bool {
 }
 
 async fn create_run(State(st): St, Json(b): Json<CreateBody>) -> Result<Response, Fail> {
-    let run = st.orch.create_run(&st, b.flow, b.goal, &b.project, b.skip_grill, b.read_links).await?;
+    let run = st.orch.create_run(&st, b.flow, b.goal, &b.project, b.skip_grill, b.read_links, b.docs).await?;
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 

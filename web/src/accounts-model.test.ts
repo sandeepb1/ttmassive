@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_PREFS,
   cleanVendor,
+  intelFromText,
+  withIntel,
   helperChoices,
   helperValue,
   parseHelperValue,
@@ -244,4 +246,12 @@ test('settings change one thing at a time and never in place', () => {
   assert.deepEqual(withDriver(d, 'google', null).drivers, {});
   assert.equal(withDriver(s, '///', 'codex'), s, 'a vendor that cleans to nothing is ignored');
   assert.equal(cleanVendor('Open AI!'), 'openai');
+});
+
+test('the router pages are one address a line', () => {
+  assert.deepEqual(intelFromText(' https://a.test/board \n\n  https://b.test\n'), ['https://a.test/board', 'https://b.test']);
+  assert.deepEqual(intelFromText(''), []);
+  const s: AccountSettings = { helpers: {}, drivers: {}, helperNames: [] };
+  assert.deepEqual(withIntel(s, 'https://a.test').intel, ['https://a.test']);
+  assert.equal(s.intel, undefined, 'the original is untouched');
 });

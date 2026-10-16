@@ -140,6 +140,8 @@ pub struct Accounts {
     pub helpers: BTreeMap<String, ModelRef>,
     /// Which CLI runs the OpenRouter models of a vendor (`anthropic` → claude), overriding the built-in rule.
     pub drivers: BTreeMap<String, crate::openrouter::launch::Driver>,
+    /// Pages (a leaderboard, a price comparison) read now and then to tell the router how models compare.
+    pub intel_urls: Vec<String>,
 }
 
 impl Account {
@@ -253,6 +255,19 @@ impl Accounts {
         }
         self.helpers = helpers;
         self.drivers = drivers;
+        Ok(())
+    }
+
+    /// Choose the pages the router reads about how models compare. Only addresses a stranger could reach, a few of them.
+    pub fn set_intel(&mut self, urls: Vec<String>) -> Result<(), &'static str> {
+        let urls: Vec<String> = urls.into_iter().map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()).collect();
+        if urls.len() > crate::firecrawl::tools::MAX_LINKS {
+            return Err("at most three pages");
+        }
+        if urls.iter().any(|u| crate::firecrawl::tools::url_ok(u).is_err()) {
+            return Err("an address is not one that can be fetched");
+        }
+        self.intel_urls = urls;
         Ok(())
     }
 
@@ -541,6 +556,16 @@ mod tests {
         own.base_url = "http://localhost:3002/".into();
         let id2 = a.upsert(None, own).unwrap();
         assert_eq!(a.get(&id2).unwrap().base_url, "http://localhost:3002");
+    }
+
+    #[test]
+    fn the_pages_the_router_reads_are_few_and_public() {
+        let mut a = Accounts::default();
+        assert_eq!(a.set_intel(vec!["  https://a.test/board ".into(), "".into()]), Ok(()));
+        assert_eq!(a.intel_urls, ["https://a.test/board"]);
+        assert!(a.set_intel(vec!["http://localhost/x".into()]).is_err());
+        assert!(a.set_intel(vec!["https://1.test".into(), "https://2.test".into(), "https://3.test".into(), "https://4.test".into()]).is_err());
+        assert_eq!(a.intel_urls, ["https://a.test/board"], "a refused change leaves it as it was");
     }
 
     #[test]

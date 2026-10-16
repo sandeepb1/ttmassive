@@ -15,6 +15,7 @@ import {
   helperChoices,
   helperValue,
   withDriver,
+  withIntel,
   withHelper,
   contextLabel,
   emptyInput,
@@ -111,14 +112,14 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'openai-compatible') }, 'Add OpenAI-compatible'),
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'firecrawl') }, 'Add Firecrawl'),
     );
-    root.replaceChildren(sheetLabel('Provider accounts'), list, add, ...(accounts.length ? [helpersBlock(), driversBlock()] : []));
+    root.replaceChildren(sheetLabel('Provider accounts'), list, add, ...(accounts.length ? [helpersBlock(), driversBlock(), intelBlock()] : []));
   };
 
   /** Save the settings, then redraw from what the server kept (it refuses a model whose account can no longer be used). */
   const save = async (next: AccountSettings, note: HTMLElement) => {
     const r = await callJson<unknown>(
       `${ACCOUNTS}/settings`,
-      { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ helpers: next.helpers, drivers: next.drivers }) },
+      { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ helpers: next.helpers, drivers: next.drivers, intel: next.intel }) },
       onUnauthorized,
     );
     // The server answers 204 with no body, which callJson reports as unreadable; the status says what happened.
@@ -146,6 +147,23 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
       sheetLabel('Models for ttm’s own jobs'),
       sheetHint('The calls ttm makes while you design and start flows. A cheap model is plenty for most. Only models on accounts allowed in flows are offered.'),
       ...rows,
+      note,
+    );
+  };
+
+  /** Pages the router reads about how models compare. */
+  const intelBlock = (): HTMLElement => {
+    const note = el('div', 'min-h-4 text-xs text-muted-foreground');
+    const box = el('textarea', 'w-full min-w-0 rounded-lg bg-secondary px-4 py-3 font-mono text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring');
+    box.rows = 3;
+    box.placeholder = 'https://…  one page per line';
+    box.setAttribute('aria-label', 'Pages about how models compare');
+    box.value = (settings.intel ?? []).join('\n');
+    box.addEventListener('change', () => void save(withIntel(settings, box.value), note));
+    return sheetBlock(
+      sheetLabel('How models compare'),
+      sheetHint('Up to three pages (a leaderboard, a price comparison). When an agent’s model is chosen by the router, it reads a trimmed copy, fetched with your Firecrawl account at most once a day.'),
+      box,
       note,
     );
   };

@@ -249,6 +249,12 @@ pub struct Run {
     /// Use outside the nodes: writing prompts and grilling.
     #[serde(default)]
     pub overhead: Tokens,
+    /// Firecrawl credits the questions before the run used on looking things up.
+    #[serde(default)]
+    pub research_credits: u64,
+    /// Documentation sites crawled for the run and written into each builder's worktree to read.
+    #[serde(default)]
+    pub docs: Vec<Reference>,
     /// Pages fetched from the links in the goal, shown to every agent after the brief.
     #[serde(default)]
     pub references: Vec<Reference>,
@@ -307,6 +313,8 @@ pub struct Reference {
 
 /// Longest page text kept per reference.
 pub const MAX_REFERENCE: usize = 8_000;
+/// Longest a crawled documentation set may be.
+pub const MAX_DOCS: usize = 200_000;
 
 /// Unix time in milliseconds.
 pub fn now_millis() -> i64 {
@@ -382,6 +390,8 @@ impl Run {
             baseline: Baseline::default(),
             overhead: Tokens::default(),
             overhead_usd: 0.0,
+            research_credits: 0,
+            docs: Vec::new(),
             references: Vec::new(),
             status: RunStatus::Running,
             nodes,
@@ -409,7 +419,7 @@ impl Run {
 
     /// Firecrawl credits the run's agents have used on web tools.
     pub fn credits(&self) -> u64 {
-        self.nodes.values().map(|n| n.credits).sum::<u64>() + self.references.iter().map(|r| r.credits).sum::<u64>()
+        self.nodes.values().map(|n| n.credits).sum::<u64>() + self.references.iter().chain(&self.docs).map(|r| r.credits).sum::<u64>() + self.research_credits
     }
 
     /// Add a line to the run's log.

@@ -295,6 +295,8 @@ export interface ModelRef {
 export interface AccountSettings {
   helpers: Record<string, ModelRef>;
   drivers: Record<string, Driver>;
+  /** Pages the router reads about how models compare. */
+  intel?: string[];
   helperNames: string[];
 }
 
@@ -335,3 +337,9 @@ export function withDriver(s: AccountSettings, vendor: string, driver: Driver | 
   else delete drivers[v];
   return { ...s, drivers };
 }
+
+/** The addresses typed into the box, one per line, blanks dropped. */
+export const intelFromText = (text: string): string[] => text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+/** The settings with the router's pages replaced. */
+export const withIntel = (s: AccountSettings, text: string): AccountSettings => ({ ...s, intel: intelFromText(text) });

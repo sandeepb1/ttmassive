@@ -478,14 +478,14 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const copyText = (t: string) => void navigator.clipboard?.writeText(t).then(() => say('Copied'), () => say('Could not copy'));
 
   // Running a flow saves it first, so every execution has a flow to live under.
-  const createRun = (goal: string, project: string, skipGrill: boolean, readLinks: boolean) =>
+  const createRun = (goal: string, project: string, skipGrill: boolean, readLinks: boolean, docs: string[]) =>
     void act(
       async () => {
         if (dirty || !isSaved) {
           const saved = await orch.saveFlow(flow);
           if (!saved.ok) return { ok: false as const, error: saved.error };
         }
-        return orch.createRun({ flow, goal, project, skipGrill, readLinks });
+        return orch.createRun({ flow, goal, project, skipGrill, readLinks, docs });
       },
       (r) => {
         setDialog(false);

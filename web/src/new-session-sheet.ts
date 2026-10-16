@@ -4,6 +4,7 @@
 
 import { DRIVER_LABEL, driverFor, orAccounts, shortModel, priceLine, type Account, type Driver } from './accounts-model';
 import { getJson } from './api-json';
+import { DirectChatSheet } from './direct-chat-sheet';
 import { el } from './dom';
 import {
   browseDirs, cachedNewSessionData, canSkip, launchGroup, launchSession, loadNewSessionData, mainAgents,
@@ -21,6 +22,8 @@ const OR_KEY = 'ttm.new.openrouter';
 const SHELL = '';
 /** The agent choice that runs Claude Code or Codex on an OpenRouter model. It cannot clash with a preset name. */
 const OR_CHOICE = '@openrouter';
+// A plain chat with a model on one of your accounts: opens its own sheet and starts nothing.
+const CHAT_CHOICE = '@chat';
 
 interface Folder {
   path: string;
@@ -100,6 +103,8 @@ export class NewSessionSheet extends Sheet {
   private orDriver: '' | Driver = '';
   private orCap = '';
   private orBox = el('div', 'flex flex-col gap-2');
+  /** There is an account with pinned models to chat with. */
+  private chatAccounts = false;
 
   constructor(host: HTMLElement, private signedOut: () => void, private hooks: NewSessionHooks) {
     super(host, '', 'New session', signedOut);
@@ -134,6 +139,7 @@ export class NewSessionSheet extends Sheet {
     const r = await getJson<Account[]>('/api/accounts', this.signedOut);
     if (this.gone) return;
     this.accounts = r.ok ? orAccounts(r.data) : [];
+    this.chatAccounts = r.ok && r.data.some((a) => a.kind !== 'firecrawl' && a.hasKey && a.models.length > 0);
     if (this.choice === OR_CHOICE && this.accounts.length === 0) this.choice = this.fallbackChoice();
     this.syncOrPick();
     this.syncAgents();
@@ -287,6 +293,7 @@ export class NewSessionSheet extends Sheet {
     if (claude) items.push(seg('Claude', claude.name));
     if (codex) items.push(seg('Codex', codex.name));
     if (this.accounts.length > 0) items.push(seg('OpenRouter', OR_CHOICE));
+    if (this.chatAccounts) items.push(seg('Chat', CHAT_CHOICE));
     items.push(seg('Shell', SHELL));
     const chosenMore = more.some((p) => p.name === this.choice);
     if (more.length > 0) {
@@ -315,6 +322,11 @@ export class NewSessionSheet extends Sheet {
   }
 
   private pick(name: string) {
+    if (name === CHAT_CHOICE) {
+      this.close();
+      void new DirectChatSheet(this.host, this.signedOut).open();
+      return;
+    }
     this.choice = name;
     remember(name);
     if (!this.preset(name)?.yolo) this.skip = false;

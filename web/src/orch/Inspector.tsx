@@ -460,7 +460,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
 
       <div className="mc-section">
         <Switch on={node.checkpoint} disabled={!editable} onChange={(v) => onNode(node.id, { checkpoint: v })} label="Ask me before it starts" hint={node.role === 'builder' ? 'It changes files, in its own copy of the project.' : undefined} />
-        {(models.web || node.web) && !node.direct && (
+        {(models.web || node.web) && (
           <Switch
             on={!!node.web}
             disabled={!editable}

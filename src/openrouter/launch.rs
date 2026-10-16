@@ -300,6 +300,7 @@ mod tests {
         let accounts = Accounts {
             helpers: Default::default(),
             drivers: Default::default(),
+            intel_urls: Default::default(),
             accounts: vec![
                 account("ok", Kind::Openrouter, "k", true, &["anthropic/claude-haiku-5.5", "openai/gpt-6-luna"]),
                 account("off", Kind::Openrouter, "k", false, &["x/hidden"]),
@@ -320,6 +321,7 @@ mod tests {
         let accounts = Accounts {
             helpers: Default::default(),
             drivers: Default::default(),
+            intel_urls: Default::default(),
             accounts: vec![
                 account("ok", Kind::Openrouter, "k", true, &[]),
                 account("off", Kind::Openrouter, "k", false, &[]),

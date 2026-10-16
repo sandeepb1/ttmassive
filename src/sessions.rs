@@ -29,6 +29,8 @@ const RECONCILE_EVERY: Duration = Duration::from_secs(2);
 const HEALTHY_AFTER: Duration = Duration::from_secs(300);
 /// Passed as the resume id when an agent was started but we never learned its conversation id.
 pub const RESUME_LAST: &str = "__last__";
+/// Prefix of a resume id that asks Codex to fork the conversation instead of resuming it.
+pub const FORK: &str = "fork:";
 
 /// Everything needed to start a session again.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -691,7 +693,9 @@ async fn register(st: &AppState, id: String, uid: String, spec: Spec, preset: Op
             group: group.map(str::to_owned),
             created: now_secs(),
             // So a later restore carries on the same conversation.
-            agent_session_id: resume.map(str::to_owned),
+            // A fork starts a new conversation; the original's id is only where it began, and a restore resumes the fork's own
+            // (learned from its first hook), never forks again.
+            agent_session_id: resume.map(|r| r.strip_prefix(FORK).unwrap_or(r).to_owned()),
             ..Default::default()
         },
     );

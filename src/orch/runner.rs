@@ -47,6 +47,8 @@ pub struct EngineRunner {
     waived: AtomicBool,
     /// Where the accounts are kept, for agents that call their model directly.
     data_dir: PathBuf,
+    /// Documentation crawled for the run, written into each builder's worktree.
+    docs: Vec<super::run::Reference>,
     /// What each direct agent has said and been told so far, so a send-back carries on the same conversation.
     direct: Mutex<HashMap<String, Vec<Message>>>,
     /// The record of each agent's last turn, until the executor takes it.
@@ -56,6 +58,10 @@ pub struct EngineRunner {
 /// Said to an agent that calls its model directly: what it does not have.
 const DIRECT_NOTE: &str = "# What you have\n\nYou have no tools: you cannot read files, search, browse or run anything. Work only from the brief above and what \
 the earlier agents handed to you. If the work needs something you cannot see, say so in your answer instead of guessing.";
+
+/// Said instead of that to a direct agent that has the web tools.
+const DIRECT_WEB_NOTE: &str = "# What you have\n\nYou can search the web and fetch pages with the tools you are given, a few times at most. You cannot read files or run \
+anything. Otherwise work from the brief above and what the earlier agents handed to you. If the work needs something you cannot see, say so.";
 
 /// One line of a transcript: the first line of `s`, cut short.
 fn preview(s: &str) -> String {
@@ -91,13 +97,14 @@ fn limits(node: &Node) -> Limits {
 
 /// Tells a node where it is and what it may do, so it does not wander off to a path in the brief or
 /// ask itself for something its tools cannot give. Goes after the variable part of the prompt.
-fn with_folder_note(prompt: &str, cwd: &std::path::Path, limits: Limits) -> String {
+fn with_folder_note(prompt: &str, cwd: &std::path::Path, limits: Limits, docs: bool) -> String {
     let mut p = format!(
         "{prompt}\n\n# Working folder\n\nYou are working in `{}`. \"The project root\" in the brief and the plan means \
          this folder. Use paths relative to it and do not read or write outside it.",
         cwd.display()
     );
     match limits {
+        Limits::Writes if docs => p.push_str(&format!(" Reference documentation for this task is in `{}`: read it when you need it. It is not part of the project, so do not change it or add it to your work.", worktree::REFERENCE_DIR)),
         Limits::Writes => {}
         Limits::Reads => p.push_str(
             " You can read files and search, but you cannot run commands or change anything. If something can \
@@ -140,8 +147,29 @@ impl EngineRunner {
             limits,
             waived: AtomicBool::new(waived),
             data_dir,
+            docs: Vec::new(),
             direct: Mutex::default(),
             meta: std::sync::Mutex::default(),
+        }
+    }
+
+    /// Give the runner the documentation crawled for its run.
+    pub fn with_docs(mut self, docs: Vec<super::run::Reference>) -> Self {
+        self.docs = docs;
+        self
+    }
+
+    /// Write the crawled documentation into a builder's worktree, where it can be read. Not committed (see `worktree`).
+    async fn write_docs(&self, dir: &std::path::Path) {
+        for (i, d) in self.docs.iter().enumerate().filter(|(_, d)| !d.failed) {
+            let path = dir.join(worktree::REFERENCE_DIR).join(format!("{}-{}.md", i + 1, docs_name(&d.url)));
+            if path.exists() {
+                continue;
+            }
+            if let Some(parent) = path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let _ = tokio::fs::write(&path, format!("<!-- Fetched from {} for this task. For reading only; it is not part of the project. -->\n\n{}\n", d.url, d.text)).await;
         }
     }
 
@@ -241,7 +269,9 @@ impl EngineRunner {
     async fn cwd(&self, node: &Node) -> Result<PathBuf> {
         if node.writes() {
             let _one_at_a_time = self.worktree_lock.lock().await;
-            return worktree::ensure(&self.project, &self.worktrees, &self.run_id, &node.id).await;
+            let dir = worktree::ensure(&self.project, &self.worktrees, &self.run_id, &node.id).await?;
+            self.write_docs(&dir).await;
+            return Ok(dir);
         }
         if let Some(writer) = self.flow.nearest_writer(&node.id) {
             let dir = worktree::path(&self.worktrees, &self.run_id, writer);
@@ -261,11 +291,28 @@ impl EngineRunner {
         let mut history = self.direct.lock().await.get(&node.id).cloned().unwrap_or_else(|| vec![Message::system(node.system_prompt.clone())]);
         history.push(Message::user(prompt));
         log(format!("→ asked {} directly", node.model));
-        let reply = chat::complete(&endpoint, &history, Some(&schema)).await?;
+        // With web access it may search and fetch pages (a few calls a turn, and nothing else: no files, no shell).
+        let web = if node.web { accounts.firecrawl().and_then(|a| crate::firecrawl::client::Client::new(a).ok()) } else { None };
+        let (reply, credits) = match web {
+            Some(client) => {
+                let r = chat::complete_with_tools(&endpoint, &history, Some(&schema), &crate::firecrawl::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::firecrawl::tools::Web(client)).await?;
+                for e in &r.events {
+                    log(format!("→ used {}", e.name));
+                    trace.push(Kind::Tool, e.name.clone(), &e.arguments);
+                    trace.push(Kind::Result, "result", &e.result);
+                }
+                history = r.messages;
+                (r.reply, r.credits)
+            }
+            None => {
+                let r = chat::complete(&endpoint, &history, Some(&schema)).await?;
+                history.push(Message::assistant(r.text.clone()));
+                (r, 0)
+            }
+        };
         trace.push(Kind::Say, node.model.clone(), &reply.text);
-        history.push(Message::assistant(reply.text.clone()));
         self.direct.lock().await.insert(node.id.clone(), history);
-        Ok(Outcome { structured: reply.structured, text: reply.text, tokens: reply.tokens, cost_usd: reply.cost_usd.unwrap_or(0.0), credits: 0, is_error: false, session: None })
+        Ok(Outcome { structured: reply.structured, text: reply.text, tokens: reply.tokens, cost_usd: reply.cost_usd.unwrap_or(0.0), credits, is_error: false, session: None })
     }
 
     async fn run_claude(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace) -> Result<Outcome> {
@@ -370,6 +417,14 @@ impl EngineRunner {
     }
 }
 
+/// A file name for a documentation address: `docs-rs-serde-latest`.
+pub fn docs_name(url: &str) -> String {
+    let bare = url.trim_start_matches("https://").trim_start_matches("http://");
+    let s: String = bare.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    let s = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    s.chars().take(60).collect::<String>().trim_end_matches('-').to_owned()
+}
+
 /// The lease tag of one agent of a run.
 pub fn lease_tag(run_id: &str, node_id: &str) -> String {
     format!("orch:{run_id}:{node_id}")
@@ -396,7 +451,7 @@ impl NodeRunner for EngineRunner {
                 Some((m.price_in?, m.price_out?))
             })
             .collect();
-        let prompt = route::classifier_prompt(node, &ask.role, &ask.brief, &ask.situation, ask.feedback.as_deref(), ask.spent_usd, ask.cap_usd, &prices);
+        let prompt = route::classifier_prompt(node, &ask.role, &ask.brief, &ask.situation, ask.feedback.as_deref(), ask.spent_usd, ask.cap_usd, &prices, crate::openrouter::intel::notes(&self.data_dir, &accounts).await.as_deref());
         let via = accounts.helper_endpoint("route");
         let scratch = self.data_dir.join("orch").join("scratch");
         let called = super::prompts::helper_call(via.as_ref(), "haiku", route::CLASSIFIER_SYSTEM, &prompt, route::classifier_schema(node.ladder.len()), &scratch).await;
@@ -418,12 +473,13 @@ impl EngineRunner {
     /// One turn of a node, recording what happened into `trace` (and the commit a builder's work was saved in) even if it fails.
     async fn run_turn(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace, commit: &mut Option<String>) -> Result<Outcome> {
         if node.direct {
-            let prompt = format!("{prompt}\n\n{DIRECT_NOTE}");
+            let has_web = node.web && crate::secrets::load(&self.data_dir).await.firecrawl().is_some();
+            let prompt = format!("{prompt}\n\n{}", if has_web { DIRECT_WEB_NOTE } else { DIRECT_NOTE });
             trace.push(Kind::Prompt, "prompt", &prompt);
             return self.run_direct(node, &prompt, log, trace).await;
         }
         let cwd = self.cwd(node).await?;
-        let prompt = with_folder_note(prompt, &cwd, limits(node));
+        let prompt = with_folder_note(prompt, &cwd, limits(node), node.writes() && self.docs.iter().any(|d| !d.failed));
         trace.push(Kind::Prompt, "prompt", &prompt);
         let folder = cwd.clone();
         let before = self.spent(node);
@@ -466,13 +522,16 @@ mod tests {
     #[test]
     fn the_folder_note_names_the_folder_and_the_limits() {
         let dir = std::path::Path::new("/work/wt/build");
-        let ro = with_folder_note("# Brief\n\nDo it.", dir, Limits::Reads);
+        let ro = with_folder_note("# Brief\n\nDo it.", dir, Limits::Reads, false);
         assert!(ro.starts_with("# Brief"), "the variable part stays first");
         assert!(ro.contains("`/work/wt/build`") && ro.contains("relative"));
         assert!(ro.contains("cannot run commands"));
-        let rw = with_folder_note("x", dir, Limits::Writes);
+        let rw = with_folder_note("x", dir, Limits::Writes, false);
         assert!(rw.contains("`/work/wt/build`") && !rw.contains("cannot run commands"));
-        let sh = with_folder_note("x", dir, Limits::Shell);
+        let sh = with_folder_note("x", dir, Limits::Shell, false);
+        let with_docs = with_folder_note("x", dir, Limits::Writes, true);
+        assert!(with_docs.contains("docs/_ref") && with_docs.contains("do not change it"), "{with_docs}");
+        assert!(!rw.contains("docs/_ref"), "only when there are docs");
         assert!(sh.contains("run commands") && sh.contains("sandboxed") && !sh.contains("cannot run commands"));
     }
 
@@ -534,6 +593,32 @@ mod tests {
         assert_eq!(roles(1), ["system", "user", "assistant", "user"], "the second turn carries the first");
         assert_eq!(calls[0]["messages"][0]["content"], "You plan.");
         assert!(calls[0]["messages"][1]["content"].as_str().unwrap().contains("You have no tools"), "told what it does not have");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn docs_get_readable_file_names() {
+        assert_eq!(docs_name("https://docs.rs/serde/latest/serde/"), "docs-rs-serde-latest-serde");
+        assert_eq!(docs_name("http://Example.com/A_B?x=1"), "example-com-a-b-x-1");
+        assert!(docs_name(&format!("https://x.test/{}", "a".repeat(200))).len() <= 60);
+    }
+
+    #[tokio::test]
+    async fn crawled_docs_are_written_once_into_a_builders_folder_and_failed_ones_are_skipped() {
+        let dir = std::env::temp_dir().join(format!("ttm-docs-{}", std::process::id()));
+        let (runner, _) = runner_with_account("http://127.0.0.1:1/v1", vec![]);
+        let runner = runner.with_docs(vec![
+            crate::orch::run::Reference { url: "https://a.test/docs".into(), text: "Doc body".into(), credits: 3, failed: false },
+            crate::orch::run::Reference { url: "https://b.test".into(), text: "failed".into(), credits: 0, failed: true },
+        ]);
+        runner.write_docs(&dir).await;
+        let f = dir.join("docs/_ref/1-a-test-docs.md");
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("Doc body") && text.contains("Fetched from https://a.test/docs") && text.contains("not part of the project"));
+        assert_eq!(std::fs::read_dir(dir.join("docs/_ref")).unwrap().count(), 1, "the failed one has no file");
+        std::fs::write(&f, "edited").unwrap();
+        runner.write_docs(&dir).await;
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "edited", "an existing file is not overwritten");
         std::fs::remove_dir_all(dir).ok();
     }
 

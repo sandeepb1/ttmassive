@@ -85,6 +85,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/accounts", get(list_accounts).post(create_account))
         .route("/api/accounts/{id}", axum::routing::put(update_account).delete(delete_account))
         .route("/api/accounts/settings", get(get_account_settings).put(put_account_settings))
+        .route("/api/chat-direct", post(chat_direct))
         .route("/api/accounts/{id}/remote", get(account_remote))
         .route("/api/openrouter/leases", get(list_leases))
         .route("/api/openrouter/leases/{tag}/model", post(set_lease_model))
@@ -323,6 +324,9 @@ struct AccountSettings {
     helpers: std::collections::BTreeMap<String, secrets::ModelRef>,
     #[serde(default)]
     drivers: std::collections::BTreeMap<String, crate::openrouter::launch::Driver>,
+    /// Pages the router reads about how models compare. Left out, they stay as they were.
+    #[serde(default)]
+    intel: Option<Vec<String>>,
 }
 
 /// Which model makes each of ttm's own calls, and which CLI runs each vendor's OpenRouter models.
@@ -330,18 +334,72 @@ async fn get_account_settings(State(st): State<Arc<AppState>>) -> impl IntoRespo
     let a = secrets::load(&st.data_dir).await;
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Json(serde_json::json!({ "helpers": a.helpers, "drivers": a.drivers, "helperNames": secrets::HELPERS })),
+        Json(serde_json::json!({ "helpers": a.helpers, "drivers": a.drivers, "intel": a.intel_urls, "helperNames": secrets::HELPERS })),
     )
 }
 
 async fn put_account_settings(State(st): State<Arc<AppState>>, Json(b): Json<AccountSettings>) -> Response {
-    match secrets::update(&st.data_dir, |a| a.set_settings(b.helpers, b.drivers)).await {
+    match secrets::update(&st.data_dir, |a| {
+        a.set_settings(b.helpers, b.drivers)?;
+        match b.intel {
+            Some(urls) => a.set_intel(urls),
+            None => Ok(()),
+        }
+    })
+    .await
+    {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
         Err(e) => {
             tracing::warn!("saving account settings: {e:#}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct DirectChat {
+    account: String,
+    model: String,
+    messages: Vec<crate::providers::chat::Turn>,
+    /// Let the model search the web and read pages, when there is a web account.
+    #[serde(default)]
+    web: bool,
+}
+
+/// One reply in a chat with a model on an account, with no agent CLI: the page keeps the conversation and sends it whole.
+async fn chat_direct(State(st): State<Arc<AppState>>, Json(b): Json<DirectChat>) -> Response {
+    use crate::providers::chat;
+    if !crate::openrouter::launch::valid_model(&b.model) {
+        return (StatusCode::BAD_REQUEST, "that is not a usable model id").into_response();
+    }
+    let messages = match chat::conversation(&b.messages) {
+        Ok(m) => m,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    let accounts = secrets::load(&st.data_dir).await;
+    let Some(account) = accounts.get(&b.account).filter(|a| a.kind != secrets::Kind::Firecrawl && !a.key.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, "that account has no key, or has no models").into_response();
+    };
+    let endpoint = chat::endpoint_for(account, &b.model);
+    let web = b.web.then(|| accounts.firecrawl().and_then(|a| crate::firecrawl::client::Client::new(a).ok())).flatten();
+    let run = async {
+        Ok::<_, anyhow::Error>(match web {
+            Some(client) => {
+                let r = chat::complete_with_tools(&endpoint, &messages, None, &crate::firecrawl::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::firecrawl::tools::Web(client)).await?;
+                let tools: Vec<_> = r.events.iter().map(|e| serde_json::json!({"name": e.name, "arguments": e.arguments})).collect();
+                (r.reply, tools, r.credits)
+            }
+            None => (chat::complete(&endpoint, &messages, None).await?, Vec::new(), 0),
+        })
+    };
+    match run.await {
+        Ok((reply, tools, credits)) => Json(serde_json::json!({
+            "text": reply.text, "tokensIn": reply.tokens.input + reply.tokens.cache_read + reply.tokens.cache_write, "tokensOut": reply.tokens.output,
+            "costUsd": reply.cost_usd, "tools": tools, "credits": credits,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
     }
 }
 

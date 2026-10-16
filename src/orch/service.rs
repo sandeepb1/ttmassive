@@ -135,6 +135,7 @@ impl Service {
             return Ok(l.clone());
         }
         let run = self.store.load_run(id).ok_or(Fail::NotFound)?;
+        let docs = run.docs.clone();
         let live = Arc::new(Live {
             runner: EngineRunner::new(
                 run.flow.clone(),
@@ -147,7 +148,8 @@ impl Service {
                 self.limits.clone(),
                 run.waived,
                 self.data_dir.clone(),
-            ),
+            )
+            .with_docs(docs),
             shared: Mutex::new(run),
             cancelled: AtomicBool::new(false),
             cancel: Notify::new(),
@@ -254,6 +256,23 @@ impl Service {
         out
     }
 
+    /// Crawl the documentation sites the user named, for the builders to read. Only addresses a stranger could reach are fetched.
+    async fn docs(&self, accounts: &crate::secrets::Accounts, urls: &[String]) -> Vec<super::run::Reference> {
+        let Some(account) = accounts.firecrawl().filter(|_| !urls.is_empty()) else { return Vec::new() };
+        let Ok(client) = crate::firecrawl::client::Client::new(account) else { return Vec::new() };
+        let mut out = Vec::new();
+        for url in urls.iter().map(|u| u.trim()).filter(|u| !u.is_empty()).take(crate::firecrawl::tools::MAX_LINKS) {
+            out.push(match crate::firecrawl::tools::url_ok(url) {
+                Err(why) => super::run::Reference { url: url.into(), text: why, credits: 0, failed: true },
+                Ok(()) => match client.crawl_pages(url, crate::firecrawl::client::DOCS_PAGES).await {
+                    Ok(page) => super::run::Reference { url: url.into(), text: crate::orch::trace::clip(&page.text, super::run::MAX_DOCS), credits: page.credits, failed: false },
+                    Err(e) => super::run::Reference { url: url.into(), text: format!("{e:#}"), credits: 0, failed: true },
+                },
+            });
+        }
+        out
+    }
+
     pub async fn create_run(
         &self,
         st: &Arc<AppState>,
@@ -262,6 +281,7 @@ impl Service {
         project: &str,
         skip_grill: bool,
         read_links: bool,
+        docs: Vec<String>,
     ) -> Result<Run, Fail> {
         flow.validate().map_err(Fail::Bad)?;
         // An agent on OpenRouter needs its account to be there and allowed, so say so now rather than mid-run.
@@ -284,10 +304,22 @@ impl Service {
                 "agents that change files need a git repository with at least one commit to work on copies of. Choose \"Set up git here\" in the run dialog, or run `git init` and make a first commit".into(),
             ));
         }
+        let flow_writes = flow.nodes.iter().any(|n| n.writes());
         let w = self.refresh_windows(st).await;
         let mut run = Run::new(new_id(), flow, goal.trim().to_string(), now());
         run.project = project.to_string_lossy().into_owned();
         run.baseline = w.baseline();
+        if flow_writes {
+            run.docs = self.docs(&accounts, &docs).await;
+            let notes: Vec<String> = run
+                .docs
+                .iter()
+                .map(|d| if d.failed { format!("Could not crawl {}: {}", d.url, d.text) } else { format!("Crawled {} into docs/_ref ({} credit{})", d.url, d.credits, if d.credits == 1 { "" } else { "s" }) })
+                .collect();
+            for what in notes {
+                run.note(None, super::run::LogKind::Event, what, None);
+            }
+        }
         if read_links {
             run.references = self.references(&accounts, goal.trim()).await;
             let notes: Vec<String> = run
@@ -321,7 +353,7 @@ impl Service {
     }
 
     async fn grill_inner(&self, live: &Live, answers: Vec<String>) -> Result<Run, Fail> {
-        let (goal, project, flow, mut history, round) = {
+        let (goal, project, flow, mut history, round, pages) = {
             let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
             if run.status != RunStatus::Grilling {
                 return Err(Fail::Conflict("this run is past the questions".into()));
@@ -335,11 +367,16 @@ impl Service {
                 g.history.push(Qa { question: q.text.clone(), answer: a.to_string() });
             }
             g.brief = None;
-            (goal, project, flow, g.history.clone(), g.round + 1)
+            let (history, round) = (g.history.clone(), g.round + 1);
+            (goal, project, flow, history, round, run.references.clone())
         };
-        let (step, outcome) = prompts::grill(&goal, &project, &flow, &history, round, self.via("grill").await.as_ref(), &self.scratch).await?;
+        let accounts = crate::secrets::load(&self.data_dir).await;
+        let research = accounts.firecrawl().and_then(|a| crate::firecrawl::client::Client::new(a).ok());
+        let (step, outcome) = prompts::grill(&goal, &project, &flow, &history, round, accounts.helper_endpoint("grill").as_ref(), &pages, research, &self.scratch).await?;
         let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
         run.overhead.add(&outcome.tokens);
+        run.overhead_usd += outcome.cost_usd;
+        run.research_credits += outcome.credits;
         let g = run.grill.get_or_insert_with(Grill::default);
         g.round = round;
         history.clear();
@@ -558,6 +595,9 @@ impl Service {
         if !dir.is_dir() {
             return Err(Fail::Conflict("its worktree is gone".into()));
         }
+        // Codex's headless server keeps a thread locked against being opened elsewhere, so a Codex builder is forked: the person
+        // gets a copy of its conversation to carry on with. Claude's conversation is resumed as it is.
+        let resume_id = if node.engine == super::graph::Engine::Codex { format!("{}{session}", crate::sessions::FORK) } else { session.clone() };
         // An agent that ran on OpenRouter carries on there, on the same model, not on your own login.
         if let Some(account) = node.account.as_deref() {
             live.runner.release(node_id).await;
@@ -566,7 +606,7 @@ impl Service {
                 super::graph::Engine::Claude => crate::openrouter::launch::Driver::Claude,
                 super::graph::Engine::Codex => crate::openrouter::launch::Driver::Codex,
             };
-            let req = crate::sessions::OrNew { account, model: &node.model, driver: Some(driver), cap_usd: None, name: Some(&name), dir: Some(dir), yolo: false, resume: Some(&session) };
+            let req = crate::sessions::OrNew { account, model: &node.model, driver: Some(driver), cap_usd: None, name: Some(&name), dir: Some(dir), yolo: false, resume: Some(&resume_id) };
             return crate::sessions::create_openrouter(st, req).await.map_err(Fail::Internal);
         }
         let wanted = match node.engine {
@@ -582,7 +622,7 @@ impl Service {
         live.runner.release(node_id).await;
         let name = format!("orch-{node_id}-{}", &run_id[..run_id.len().min(10)]);
         let req = crate::sessions::NewSession { preset: Some(&preset.name), name: Some(&name), group: None, exact: false, yolo: false, dir: Some(dir) };
-        crate::sessions::create_resuming(st, req, Some(&session)).await.map_err(Fail::Internal)
+        crate::sessions::create_resuming(st, req, Some(&resume_id)).await.map_err(Fail::Internal)
     }
 
     pub fn save_flow(&self, flow: &Flow) -> Result<(), Fail> {

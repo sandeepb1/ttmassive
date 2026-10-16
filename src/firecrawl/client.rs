@@ -17,6 +17,11 @@ const MAX_ANSWER: usize = 60_000;
 const MAX_CRAWLED_PAGE: usize = 6_000;
 /// Most pages one crawl call may fetch, whatever the agent asks for.
 pub const MAX_CRAWL_PAGES: u32 = 20;
+/// Pages crawled for a documentation snapshot.
+pub const DOCS_PAGES: u32 = 10;
+/// Longest text taken from each page of a documentation snapshot, and of the whole snapshot.
+const MAX_DOC_PAGE: usize = 20_000;
+const MAX_DOC_TOTAL: usize = 200_000;
 const MAX_SEARCH: u32 = 10;
 const MAX_MAP: usize = 100;
 const CRAWL_POLL: Duration = Duration::from_secs(2);
@@ -95,6 +100,15 @@ impl Client {
 
     /// Fetch up to `limit` pages starting at `url`, waiting for the crawl to finish (a bounded time).
     pub async fn crawl(&self, url: &str, limit: u32) -> Result<Output> {
+        self.crawl_sized(url, limit, MAX_CRAWLED_PAGE, MAX_ANSWER).await
+    }
+
+    /// A crawl kept in full, for reading later in files rather than handing straight to a model.
+    pub async fn crawl_pages(&self, url: &str, limit: u32) -> Result<Output> {
+        self.crawl_sized(url, limit, MAX_DOC_PAGE, MAX_DOC_TOTAL).await
+    }
+
+    async fn crawl_sized(&self, url: &str, limit: u32, per_page: usize, total: usize) -> Result<Output> {
         let limit = limit.clamp(1, MAX_CRAWL_PAGES);
         let started = self
             .call(reqwest::Method::POST, "/v2/crawl", Some(json!({"url": url, "limit": limit, "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": true}})))
@@ -105,12 +119,12 @@ impl Client {
             tokio::time::sleep(self.poll).await;
             let v = self.call(reqwest::Method::GET, &format!("/v2/crawl/{id}"), None).await?;
             match v.get("status").and_then(Value::as_str) {
-                Some("completed") => return Ok(Output { text: format_crawl(&v), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) }),
+                Some("completed") => return Ok(Output { text: format_crawl(&v, per_page, total), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) }),
                 Some("failed" | "cancelled") => bail!("the crawl did not finish"),
                 _ if tokio::time::Instant::now() >= deadline => {
                     // What it has got so far is still worth having; the rest is paid for only if it is fetched.
                     let _ = self.call(reqwest::Method::DELETE, &format!("/v2/crawl/{id}"), None).await;
-                    return Ok(Output { text: format_crawl(&v), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) });
+                    return Ok(Output { text: format_crawl(&v, per_page, total), credits: v.get("creditsUsed").and_then(Value::as_u64).unwrap_or(0) });
                 }
                 _ => {}
             }
@@ -191,16 +205,16 @@ fn format_map(v: &Value) -> String {
         .join("\n")
 }
 
-fn format_crawl(v: &Value) -> String {
+fn format_crawl(v: &Value, per_page: usize, total: usize) -> String {
     let pages = v.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
     if pages.is_empty() {
         return "The crawl found no pages.".into();
     }
     let mut out = format!("{} page(s):\n", pages.len());
     for p in &pages {
-        out.push_str(&format!("\n---\n{}\n", format_page(p, MAX_CRAWLED_PAGE)));
-        if out.chars().count() > MAX_ANSWER {
-            out = cut(&out, MAX_ANSWER);
+        out.push_str(&format!("\n---\n{}\n", format_page(p, per_page)));
+        if out.chars().count() > total {
+            out = cut(&out, total);
             break;
         }
     }
@@ -247,9 +261,12 @@ mod tests {
         assert_eq!(format_page(&page, 100), "# Home\nhttps://x.test/\n\nHello world");
         assert_eq!(format_page(&json!({"markdown": "  "}), 100), "The page had no readable text.");
         assert_eq!(format_map(&json!({"links": [{"url": "https://x.test/a", "title": "A"}, {"url": "https://x.test/b"}]})), "https://x.test/a — A\nhttps://x.test/b");
-        let c = format_crawl(&json!({"data": [page.clone(), page]}));
+        let c = format_crawl(&json!({"data": [page.clone(), page]}), MAX_CRAWLED_PAGE, MAX_ANSWER);
         assert!(c.starts_with("2 page(s):") && c.matches("# Home").count() == 2);
-        assert_eq!(format_crawl(&json!({"data": []})), "The crawl found no pages.");
+        assert_eq!(format_crawl(&json!({"data": []}), 10, 10), "The crawl found no pages.");
+        let long = json!({"data": [{"markdown": "x".repeat(500), "metadata": {"title": "T"}}]});
+        assert!(format_crawl(&long, 100, 10_000).contains("400 more characters"), "a page is cut to its size");
+        assert!(format_crawl(&long, 10_000, 100).contains("more characters left out"), "and the whole to its");
     }
 
     // ---- against a stand-in Firecrawl ----

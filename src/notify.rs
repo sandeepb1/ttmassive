@@ -332,7 +332,9 @@ fn shim_script(name: &str, extra: &str) -> String {
             r#"if [ "$r" = "__last__" ]; then set -- --continue "$@"; elif [ -n "$r" ]; then set -- --resume "$r" "$@"; fi"#
         }
         _ => {
-            r#"if [ "$r" = "__last__" ]; then set -- resume --last "$@"; elif [ -n "$r" ]; then set -- resume "$r" "$@"; fi"#
+            // `fork:<id>` starts a copy of the conversation. A Codex conversation that ttm's own headless server still holds
+            // cannot be resumed ("open in another app"), but it can be forked.
+            r#"if [ "$r" = "__last__" ]; then set -- resume --last "$@"; elif [ "${r#fork:}" != "$r" ]; then set -- fork "${r#fork:}" "$@"; elif [ -n "$r" ]; then set -- resume "$r" "$@"; fi"#
         }
     };
     format!(
@@ -567,6 +569,8 @@ mod tests {
         let c = run("codex", Some("thr-9"));
         assert!(c.contains("|resume|thr-9|go|") && c.ends_with("leak="), "{c}");
         assert!(run("codex", Some("__last__")).contains("|resume|--last|go|"));
+        let f = run("codex", Some("fork:thr-9"));
+        assert!(f.contains("|fork|thr-9|go|") && !f.contains("resume") && f.ends_with("leak="), "{f}");
         std::fs::remove_dir_all(root).ok();
     }
 

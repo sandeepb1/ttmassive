@@ -80,7 +80,8 @@ async fn identity(dir: &Path) -> Vec<&'static str> {
 /// page offers, and the user's own `git merge`, depend on it. `node_modules` is left out even when the project does
 /// not ignore it. Returns whether anything was committed.
 pub async fn commit_all(dir: &Path, message: &str) -> Result<bool> {
-    git(dir, &["add", "-A", "--", ".", ":(exclude,glob)**/node_modules/**"]).await?;
+    let skip_docs = format!(":(exclude){REFERENCE_DIR}");
+    git(dir, &["add", "-A", "--", ".", ":(exclude,glob)**/node_modules/**", &skip_docs]).await?;
     if git(dir, &["diff", "--cached", "--name-only"]).await?.is_empty() {
         return Ok(false);
     }
@@ -89,6 +90,9 @@ pub async fn commit_all(dir: &Path, message: &str) -> Result<bool> {
     git(dir, &args).await?;
     Ok(true)
 }
+
+/// Where reference documentation is put in a builder's worktree. It is for reading, and is never committed.
+pub const REFERENCE_DIR: &str = "docs/_ref";
 
 /// The short id of the commit `dir` is on, if it has one.
 pub async fn head(dir: &Path) -> Option<String> {
@@ -171,6 +175,21 @@ mod tests {
         assert!(commit_all(&dir, "Builder, second go").await.unwrap());
         git(&project, &["-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "ttm-orch/r-b"]).await.unwrap();
         assert!(project.join("app.ts").exists() && project.join("more.ts").exists());
+    }
+
+    #[tokio::test]
+    async fn reference_docs_in_the_worktree_are_never_committed_even_with_a_change_beside_them() {
+        let root = tmp("refdocs");
+        let (project, base) = (root.join("project"), root.join("wt"));
+        std::fs::create_dir_all(&project).unwrap();
+        repo(&project).await;
+        let dir = ensure(&project, &base, "r", "b").await.unwrap();
+        std::fs::create_dir_all(dir.join(REFERENCE_DIR)).unwrap();
+        std::fs::write(dir.join(REFERENCE_DIR).join("1-docs.md"), "the docs").unwrap();
+        assert!(!commit_all(&dir, "Builder").await.unwrap(), "docs alone are not a change");
+        std::fs::write(dir.join("app.ts"), "export {}").unwrap();
+        assert!(commit_all(&dir, "Builder").await.unwrap());
+        assert_eq!(git(&dir, &["ls-files"]).await.unwrap(), "app.ts");
     }
 
     #[tokio::test]

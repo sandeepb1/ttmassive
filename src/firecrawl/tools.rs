@@ -94,6 +94,32 @@ fn int_arg(args: &Value, key: &str, default: u32) -> u32 {
     args.get(key).and_then(Value::as_u64).map_or(default, |n| n.min(u32::MAX as u64) as u32)
 }
 
+/// The tools as a direct-call model is offered them.
+pub fn chat_tools() -> Vec<crate::providers::chat::ToolDef> {
+    definitions()
+        .into_iter()
+        .filter_map(|d| {
+            Some(crate::providers::chat::ToolDef {
+                name: d.get("name")?.as_str()?.to_owned(),
+                description: d.get("description")?.as_str()?.to_owned(),
+                parameters: d.get("inputSchema")?.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Lets a direct-call model use the web tools with an account's key. Failures come back as text the model can read.
+pub struct Web(pub Client);
+
+impl crate::providers::chat::ToolRunner for Web {
+    async fn call(&self, name: &str, args: &Value) -> (String, u64) {
+        match call(&self.0, name, args).await {
+            Ok(out) => (out.text, out.credits),
+            Err(e) => (format!("{e:#}"), 0),
+        }
+    }
+}
+
 /// Run one tool.
 pub async fn call(client: &Client, name: &str, args: &Value) -> Result<Output> {
     match name {
@@ -126,6 +152,13 @@ mod tests {
             assert!(d["description"].as_str().unwrap().contains("credit"), "the agent is told what it costs");
         }
         assert_eq!(defs[3]["inputSchema"]["properties"]["limit"]["maximum"], MAX_CRAWL_PAGES);
+    }
+
+    #[test]
+    fn a_direct_model_is_offered_the_same_four_tools() {
+        let t = chat_tools();
+        assert_eq!(t.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["web_search", "scrape", "map", "crawl"]);
+        assert!(t.iter().all(|t| t.parameters["type"] == "object" && !t.description.is_empty()));
     }
 
     #[test]
