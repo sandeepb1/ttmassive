@@ -16,6 +16,7 @@ use super::graph::{Engine, Node};
 use super::handoff::{self, Verdict};
 use super::graph::{Answerer, Edge, OnCap};
 use super::run::{Asked, FeedbackKind, LogKind, MAX_TURNS, NodeStatus, Pause, PendingQuestions, Run, RunStatus, SKILL_PREFIX, SUBAGENT_PREFIX, Turn, TurnDetail, now_millis, now_secs};
+use super::route::{self, Choice, Pick, Situation};
 use super::trace::TurnMeta;
 
 /// Whatever actually runs a node: the Claude or Codex driver in production, a script in tests.
@@ -23,10 +24,34 @@ pub trait NodeRunner {
     /// `log` receives short progress lines for the node's live transcript.
     async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> anyhow::Result<Outcome>;
 
+    /// A model's pick of rung for an agent whose routing is `auto`, with what asking it cost. `None` leaves the rules' choice.
+    async fn choose(&self, _node: &Node, _rules: &Choice, _ask: &Ask) -> Option<Answer> {
+        None
+    }
+
     /// What the node's last turn left besides its outcome: the record of what it did. Taken once.
     fn take_meta(&self, _node_id: &str) -> TurnMeta {
         TurnMeta::default()
     }
+}
+
+/// What a router is shown about the agent's situation.
+#[derive(Debug, Clone)]
+pub struct Ask {
+    pub role: String,
+    pub brief: String,
+    pub situation: Situation,
+    pub feedback: Option<String>,
+    pub spent_usd: f64,
+    pub cap_usd: Option<f64>,
+}
+
+/// A router's answer, and what it cost to get.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    pub pick: Pick,
+    pub tokens: super::usage::Tokens,
+    pub cost_usd: f64,
 }
 
 pub struct Control<'a> {
@@ -66,13 +91,38 @@ fn order(run: &Run) -> Vec<String> {
     run.flow.layers().unwrap_or_default().into_iter().flatten().collect()
 }
 
+/// An agent about to start: what it runs as, what it is sent, and, when a router is to choose its rung, what that needs.
+struct Start {
+    node: Node,
+    prompt: String,
+    route: Option<(Choice, Ask)>,
+}
+
 /// Everything that can start now: each agent whose inputs are all done, and that is not waiting on
 /// the user. Marks them running. Also says why starting should stop (a plan limit) and which agent,
 /// if any, is held back for approval.
 struct Ready {
-    starts: Vec<(Node, String)>,
+    starts: Vec<Start>,
     halt: Option<Pause>,
     waiting: Option<String>,
+}
+
+/// What the rules choose for an agent that is on a ladder, from how its run has gone.
+fn route_choice(run: &Run, node: &Node, pressure: &dyn Fn(&Run, Engine) -> f64) -> Option<(Choice, Situation)> {
+    if node.routing == super::graph::Routing::Pinned || node.ladder.is_empty() {
+        return None;
+    }
+    // Turns that finished and were not failures: each one the agent has already had a go. A failure is counted apart.
+    let mine: Vec<&Turn> = run.turns.iter().filter(|t| t.node == node.id).collect();
+    let done = mine.iter().filter(|t| t.failed.is_none()).count() as u32;
+    let plan = |e: Engine| if node.ladder.iter().any(|r| r.engine == e && r.account.is_none()) { pressure(run, e) } else { 0.0 };
+    let s = Situation {
+        dial: run.flow.dial,
+        attempt: done + 1,
+        last_failed: mine.last().is_some_and(|t| t.failed.is_some()),
+        pressure: plan(Engine::Claude).max(plan(Engine::Codex)),
+    };
+    route::decide(node, &s).map(|c| (c, s))
 }
 
 fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: &dyn Fn(&Run, Engine) -> f64) -> Ready {
@@ -93,16 +143,27 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: 
             out.halt = Some(Pause::Budget { message });
             break;
         }
-        // The model is decided when an agent first starts and then kept, so a send-back carries on in the same
-        // conversation with its cache warm instead of starting over on another model.
-        let model = match run.nodes[&id].model_used.clone() {
-            Some(m) => m,
-            None if run.flow.downshift && !node.keep_model => {
-                downshift::choose(node.engine, &node.model, pressure(run, node.engine)).unwrap_or_else(|| node.model.clone())
+        // An agent on a ladder has its rung chosen each time it starts. Any other keeps the model it first started on, so a
+        // send-back carries on in the same conversation with its cache warm instead of starting over on another model.
+        let routed_with = route_choice(run, &node, pressure);
+        let routed = routed_with.as_ref().map(|(c, _)| c.clone());
+        let (model, note) = match &routed {
+            Some(c) => {
+                route::apply(&mut node, c);
+                (node.model.clone(), None)
             }
-            None => node.model.clone(),
+            None => {
+                let model = match run.nodes[&id].model_used.clone() {
+                    Some(m) => m,
+                    None if run.flow.downshift && !node.keep_model => {
+                        downshift::choose(node.engine, &node.model, pressure(run, node.engine)).unwrap_or_else(|| node.model.clone())
+                    }
+                    None => node.model.clone(),
+                };
+                let note = (model != node.model).then(|| format!("Using {model} instead of {}: the plan is filling up", node.model));
+                (model, note)
+            }
         };
-        let note = (model != node.model).then(|| format!("Using {model} instead of {}: the plan is filling up", node.model));
         node.model = model;
         let prompt = handoff::build_prompt(run, &node);
         let inputs: Vec<String> = run.flow.inputs_of(&id).iter().map(|i| name_of(run, i)).collect();
@@ -116,6 +177,8 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: 
         let n = run.nodes.get_mut(&id).expect("every node has a state");
         let first_time = n.model_used.is_none();
         n.model_used = Some(node.model.clone());
+        n.effort_used = node.effort.clone();
+        n.route_reason = routed.as_ref().map(|c| c.reason.clone());
         n.status = NodeStatus::Running;
         n.attempts += 1;
         n.error = None;
@@ -130,8 +193,20 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: 
             (_, Engine::Codex) => "Codex",
         };
         run.note(Some(&id), LogKind::Decision, why, None);
-        run.note(Some(&id), LogKind::Request, format!("→ {} · attempt {attempt} · {engine} {}", node.name, node.model), Some(prompt.clone()));
-        out.starts.push((node, prompt));
+        if let Some(c) = &routed {
+            let effort = node.effort.as_deref().map_or(String::new(), |e| format!(" at {e} effort"));
+            run.note(Some(&id), LogKind::Decision, format!("{} runs on {}{effort}. {}", node.name, node.model, c.reason), None);
+        }
+        let effort_note = node.effort.as_deref().map_or(String::new(), |e| format!(" ({e} effort)"));
+        run.note(Some(&id), LogKind::Request, format!("→ {} · attempt {attempt} · {engine} {}{effort_note}", node.name, node.model), Some(prompt.clone()));
+        let route = match (&routed_with, node.routing) {
+            (Some((c, sit)), super::graph::Routing::Auto) => Some((
+                c.clone(),
+                Ask { role: node.role_label(), brief: run.brief.clone(), situation: *sit, feedback: run.feedback.get(&id).cloned(), spent_usd: run.cost_usd(), cap_usd: None },
+            )),
+            _ => None,
+        };
+        out.starts.push(Start { node, prompt, route });
     }
     if !out.starts.is_empty() {
         run.status = RunStatus::Running;
@@ -284,8 +359,8 @@ fn finish_turn(run: &mut Run, done: Finished) -> (Option<Pause>, TurnDetail) {
         failed: failed.clone(),
         decision: Some(decision).filter(|d| !d.is_empty()),
         commit: meta.commit,
-        effort: None,
-        reason: None,
+        effort: run.nodes.get(&node.id).and_then(|n| n.effort_used.clone()),
+        reason: run.nodes.get(&node.id).and_then(|n| n.route_reason.clone()),
     });
     // Normally one too many at most; a run saved with a longer list is trimmed all the way.
     let extra = run.turns.len().saturating_sub(MAX_TURNS);
@@ -467,8 +542,28 @@ struct Finished {
     meta: TurnMeta,
 }
 
-async fn run_node<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control<'_>, node: Node, prompt: String) -> Finished {
+async fn run_node<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control<'_>, start: Start) -> Finished {
+    let Start { mut node, prompt, route } = start;
     let started = now_millis();
+    // A router may choose a different rung than the rules did. It is asked outside the run's lock, and what asking cost is
+    // the run's, not the agent's.
+    if let Some((rules, ask)) = route {
+        if let Some(a) = runner.choose(&node, &rules, &ask).await {
+            let chosen = route::apply_pick(&node, rules, Some(a.pick));
+            route::apply(&mut node, &chosen);
+            edit(shared, ctl, |r| {
+                r.overhead.add(&a.tokens);
+                r.overhead_usd += a.cost_usd;
+                if let Some(n) = r.nodes.get_mut(&node.id) {
+                    n.model_used = Some(node.model.clone());
+                    n.effort_used = node.effort.clone();
+                    n.route_reason = Some(chosen.reason.clone());
+                }
+                let effort = node.effort.as_deref().map_or(String::new(), |e| format!(" at {e} effort"));
+                r.note(Some(&node.id), LogKind::Decision, format!("{} runs on {}{effort}. {}", node.name, node.model, chosen.reason), None);
+            });
+        }
+    }
     let result = runner
         .run(&node, &prompt, &mut |line| {
             edit(shared, ctl, |r| {
@@ -514,8 +609,8 @@ pub async fn drive<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control
             let ready = edit(shared, ctl, |r| start_ready(r, ctl.limit, ctl.pressure));
             halt = ready.halt;
             waiting = ready.waiting;
-            for (node, prompt) in ready.starts {
-                running.push(run_node(shared, runner, ctl, node, prompt));
+            for start in ready.starts {
+                running.push(run_node(shared, runner, ctl, start));
             }
         }
         if running.is_empty() {
@@ -560,6 +655,9 @@ mod tests {
             account: None,
             direct: false,
             web: false,
+            effort: None,
+            routing: crate::orch::graph::Routing::Pinned,
+            ladder: Vec::new(),
             x: 0.0,
             y: 0.0,
         }
@@ -589,6 +687,7 @@ mod tests {
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
+            dial: 2,
         }
     }
 
@@ -928,6 +1027,7 @@ mod tests {
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
+            dial: 2,
         }
     }
 
@@ -1248,6 +1348,7 @@ mod tests {
             max_retries: 6,
             budget: Budget::default(),
             downshift: false,
+            dial: 2,
         }
     }
 
@@ -1461,6 +1562,122 @@ mod tests {
         go_recording(&run, &Traced(Fake::with(vec![("grill", asks(&["Which database?"]))]))).await;
         let t = run.lock().unwrap().turns.iter().find(|t| t.node == "grill").cloned().unwrap();
         assert!(t.decision.unwrap().contains("asked 1 question"), "the pause that waits for the user is in the turn that caused it");
+    }
+
+    // ---- routing: the model and effort chosen each time an agent starts ----
+
+    use crate::orch::graph::{Routing, Rung};
+
+    fn on_ladder(f: &mut Flow, id: &str, routing: Routing) {
+        let n = f.nodes.iter_mut().find(|n| n.id == id).unwrap();
+        n.routing = routing;
+        n.ladder = vec![
+            Rung { engine: Engine::Claude, model: "haiku".into(), account: None, effort: Some("low".into()) },
+            Rung { engine: Engine::Claude, model: "sonnet".into(), account: None, effort: Some("medium".into()) },
+            Rung { engine: Engine::Claude, model: "opus".into(), account: None, effort: Some("high".into()) },
+        ];
+    }
+
+    #[tokio::test]
+    async fn an_agent_on_a_ladder_moves_up_each_time_work_is_sent_back_and_says_why() {
+        let mut f = flow();
+        f.dial = 0;
+        f.max_retries = 3;
+        on_ladder(&mut f, "build", Routing::Ladder);
+        let run = new_run(f);
+        let fake = Fake::with(vec![("judge", reject("no")), ("judge", reject("still no")), ("judge", approve())]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        assert_eq!((fake.model_of("build", 0), fake.model_of("build", 1), fake.model_of("build", 2)), ("haiku".into(), "sonnet".into(), "opus".into()));
+        let r = run.lock().unwrap();
+        let builds: Vec<&Turn> = r.turns.iter().filter(|t| t.node == "build").collect();
+        assert_eq!(builds.iter().map(|t| (t.model.as_str(), t.effort.as_deref())).collect::<Vec<_>>(), [("haiku", Some("low")), ("sonnet", Some("medium")), ("opus", Some("high"))]);
+        assert!(builds[1].reason.clone().unwrap().contains("sent back 1 time: 1 step up"), "{:?}", builds[1].reason);
+        assert!(builds[0].reason.clone().unwrap().starts_with("Rung 1 of 3"));
+        assert!(r.log.iter().any(|e| e.title.contains("build runs on sonnet at medium effort")), "the log says it too");
+        // An agent that is not on a ladder is untouched.
+        assert!(r.turns.iter().filter(|t| t.node == "judge").all(|t| t.reason.is_none() && t.effort.is_none()));
+    }
+
+    #[tokio::test]
+    async fn the_dial_decides_where_an_agent_starts_and_a_failed_try_moves_it_up() {
+        let mut f = flow();
+        f.dial = 4;
+        on_ladder(&mut f, "res", Routing::Ladder);
+        let run = new_run(f);
+        let fake = Fake::with(vec![("res", Err(anyhow::anyhow!("claude exited")))]);
+        go(&run, &fake).await;
+        assert_eq!(fake.model_of("res", 0), "opus", "the dial at the top starts on the strongest");
+        // Resumed after the failure, still the strongest: it cannot go past the end.
+        run.lock().unwrap().status = RunStatus::Running;
+        for n in run.lock().unwrap().nodes.values_mut().filter(|n| n.status == NodeStatus::Failed) {
+            n.status = NodeStatus::Pending;
+        }
+        go(&run, &fake).await;
+        assert_eq!(fake.model_of("res", 1), "opus");
+        assert!(run.lock().unwrap().turns.iter().filter(|t| t.node == "res").nth(1).unwrap().reason.clone().unwrap().contains("last try failed"));
+    }
+
+    /// A runner whose router answers with a fixed pick.
+    struct Routed {
+        inner: Fake,
+        pick: Option<Pick>,
+        asked: Mutex<Vec<(String, Ask)>>,
+    }
+
+    impl NodeRunner for Routed {
+        async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> anyhow::Result<Outcome> {
+            self.inner.run(node, prompt, log).await
+        }
+
+        async fn choose(&self, node: &Node, _rules: &Choice, ask: &Ask) -> Option<Answer> {
+            self.asked.lock().unwrap().push((node.id.clone(), ask.clone()));
+            self.pick.clone().map(|pick| Answer { pick, tokens: Tokens { input: 40, output: 5, cache_read: 0, cache_write: 0 }, cost_usd: 0.0007 })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_router_chooses_within_the_ladder_and_what_it_cost_is_the_runs_overhead() {
+        let mut f = flow();
+        f.dial = 4;
+        on_ladder(&mut f, "build", Routing::Auto);
+        on_ladder(&mut f, "res", Routing::Ladder);
+        let run = new_run(f);
+        let runner = Routed { inner: Fake::with(vec![("judge", approve())]), pick: Some(Pick { index: 0, reason: "a one-line change".into() }), asked: Mutex::default() };
+        go_with(&run, &runner).await;
+        assert_eq!(runner.inner.model_of("build", 0), "haiku", "the router beat the dial, which said opus");
+        assert_eq!(runner.inner.model_of("res", 0), "opus", "an agent on rules only is not asked");
+        let asked = runner.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "only the auto agent");
+        let (id, ask) = &asked[0];
+        assert_eq!((id.as_str(), ask.role.as_str(), ask.situation.attempt, ask.situation.dial), ("build", "Builder", 1, 4));
+        assert!(ask.brief.contains("Build a thing"));
+        let r = run.lock().unwrap();
+        let t = r.turns.iter().find(|t| t.node == "build").unwrap();
+        assert_eq!(t.reason.as_deref(), Some("Router: a one-line change"));
+        assert_eq!((t.model.as_str(), t.effort.as_deref()), ("haiku", Some("low")), "its effort goes with its rung");
+        assert_eq!(r.overhead.input, 40);
+        assert!((r.overhead_usd - 0.0007).abs() < 1e-12, "asking costs the run, not the agent");
+        assert!((r.cost_usd() - 0.0007).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn when_the_router_gives_no_usable_answer_the_rules_stand() {
+        for pick in [None, Some(Pick { index: 9, reason: "off the end".into() })] {
+            let mut f = flow();
+            f.dial = 2;
+            on_ladder(&mut f, "build", Routing::Auto);
+            let run = new_run(f);
+            let runner = Routed { inner: Fake::with(vec![("judge", approve())]), pick, asked: Mutex::default() };
+            go_with(&run, &runner).await;
+            assert_eq!(runner.inner.model_of("build", 0), "sonnet", "the dial's middle rung");
+            assert!(run.lock().unwrap().turns.iter().find(|t| t.node == "build").unwrap().reason.clone().unwrap().starts_with("Rung 2 of 3"));
+        }
+    }
+
+    async fn go_with<R: NodeRunner>(run: &Mutex<Run>, runner: &R) {
+        let cancelled = AtomicBool::new(false);
+        drive(run, runner, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure: &|_, _| 0.0, record: &|_, _| {} }).await;
     }
 
     #[tokio::test]

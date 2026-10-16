@@ -130,7 +130,7 @@ pub struct ModelRef {
 }
 
 /// The calls ttm makes for itself, each of which may be given a model of its own. Left out, it uses Claude.
-pub const HELPERS: [&str; 5] = ["suggest", "edit", "grill", "nodePrompt", "customRole"];
+pub const HELPERS: [&str; 6] = ["suggest", "edit", "grill", "nodePrompt", "customRole", "route"];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

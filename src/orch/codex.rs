@@ -99,12 +99,21 @@ pub fn thread_start_params(spec: &Spec, mcp_off: &[String]) -> Value {
     })
 }
 
-pub fn turn_start_params(thread_id: &str, prompt: &str, schema: &Value) -> Value {
-    json!({
+/// `model` and `effort` apply to this turn and the ones after it, so an agent can change either between turns and keep
+/// its conversation. Left out, the thread's own stay.
+pub fn turn_start_params(thread_id: &str, prompt: &str, schema: &Value, model: Option<&str>, effort: Option<&str>) -> Value {
+    let mut p = json!({
         "threadId": thread_id,
         "input": [{"type": "text", "text": prompt}],
         "outputSchema": schema,
-    })
+    });
+    if let Some(m) = model {
+        p["model"] = json!(m);
+    }
+    if let Some(e) = effort {
+        p["effort"] = json!(e);
+    }
+    p
 }
 
 /// Collects one turn's notifications into an outcome. Pure, so it is tested with recorded shapes.
@@ -291,12 +300,13 @@ impl Server {
         thread: &mut Thread,
         prompt: &str,
         schema: &Value,
+        change: (Option<&str>, Option<&str>),
         mut on_note: impl FnMut(&Value),
     ) -> Result<Outcome> {
         // Subscribe first, so nothing between sending the turn and listening is missed.
         let mut rx = self.notes.subscribe();
         let mut acc = TurnAcc::new(&thread.id, thread.total);
-        self.request("turn/start", turn_start_params(&thread.id, prompt, schema)).await?;
+        self.request("turn/start", turn_start_params(&thread.id, prompt, schema, change.0, change.1)).await?;
         loop {
             let note = match rx.recv().await {
                 Ok(n) => n,
@@ -599,7 +609,10 @@ mod tests {
         }
 
         let s = json!({"type": "object"});
-        let turn = turn_start_params("t1", "go", &s);
+        let turn = turn_start_params("t1", "go", &s, None, None);
+        assert!(turn.get("model").is_none() && turn.get("effort").is_none(), "nothing is overridden unless asked");
+        let tuned = turn_start_params("t1", "go", &s, Some("gpt-6-luna"), Some("high"));
+        assert_eq!((tuned["model"].as_str(), tuned["effort"].as_str()), (Some("gpt-6-luna"), Some("high")));
         assert_eq!(turn["input"][0], json!({"type": "text", "text": "go"}));
         assert_eq!(turn["outputSchema"], s);
         assert_eq!(initialize_params()["clientInfo"]["name"], "ttm-orch");
@@ -642,7 +655,7 @@ mod tests {
         });
         let mut seen = Vec::new();
         let out = server
-            .turn(&mut thread, "Answer with n = 7. Do not run any commands.", &schema, |n| {
+            .turn(&mut thread, "Answer with n = 7. Do not run any commands.", &schema, (None, None), |n| {
                 seen.push(n["method"].as_str().unwrap_or("").to_string())
             })
             .await
@@ -669,7 +682,7 @@ mod tests {
             let scratch = Scratch::new(if read_only { "net-ro" } else { "net-rw" });
             let spec = Spec { model: "gpt-6-luna".into(), system_prompt: "Do exactly what is asked.".into(), read_only, cwd: scratch.0.clone(), proxy: None, web: None };
             let mut thread = server.start_thread(&spec).await.unwrap();
-            let out = server.turn(&mut thread, ask, &schema, |_| {}).await.unwrap();
+            let out = server.turn(&mut thread, ask, &schema, (None, None), |_| {}).await.unwrap();
             codes.push(out.structured.unwrap()["code"].as_str().unwrap().to_string());
         }
         eprintln!("builder: {}, reader: {}", codes[0], codes[1]);

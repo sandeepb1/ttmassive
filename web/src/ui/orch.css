@@ -1982,3 +1982,24 @@ button.mc-tl-head:hover {
     max-height: 72%;
   }
 }
+
+/* ---- an agent's ladder of models ---- */
+.mc-rung {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) minmax(0, 7rem);
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0.375rem 0;
+}
+.mc-rung-n {
+  color: var(--mc-faint);
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+  text-align: center;
+}
+.mc-rung-tools {
+  grid-column: 2 / 4;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.125rem;
+}

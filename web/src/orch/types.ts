@@ -46,6 +46,12 @@ export interface FlowNode {
   account?: string | null;
   /** Called directly, with no CLI and so no tools. */
   direct?: boolean;
+  /** How hard it thinks, when set. */
+  effort?: string | null;
+  /** How its model is chosen each time it starts. */
+  routing?: Routing;
+  /** The models and efforts it may run on, cheapest and lightest first. */
+  ladder?: Rung[];
   /** Given web search and page fetching (Firecrawl), when there is an account for it. */
   web?: boolean;
   systemPrompt: string;
@@ -56,6 +62,20 @@ export interface FlowNode {
   x: number;
   y: number;
 }
+
+export type Routing = 'pinned' | 'ladder' | 'auto';
+
+/** One step of an agent's ladder: a model, where it runs, and how hard it thinks. */
+export interface Rung {
+  engine: Engine;
+  model: string;
+  /** The OpenRouter account it runs on, when it does. */
+  account?: string | null;
+  effort?: string | null;
+}
+
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const DEFAULT_DIAL = 2;
 
 export type OnCap = 'pause' | 'proceed' | 'fail';
 export type Answerer = 'user' | 'agent';
@@ -96,6 +116,8 @@ export interface Flow {
   budget: Budget;
   /** Give agents that have not started yet a cheaper model as the plan windows fill up. */
   downshift?: boolean;
+  /** Where agents with a ladder start: 0 the cheapest rung, 4 the strongest. */
+  dial?: number;
 }
 
 export interface Tokens {
@@ -122,6 +144,10 @@ export interface NodeRun {
   session?: string | null;
   /** The model it actually ran on: the flow's, or a cheaper one. */
   modelUsed?: string | null;
+  /** How hard it was set to think on its latest turn. */
+  effortUsed?: string | null;
+  /** Why its latest turn ran on the model and effort it did. */
+  routeReason?: string | null;
   /** Times a turn got far less from the prompt cache than the one before it. */
   cacheBreaks?: number;
 }
@@ -186,6 +212,8 @@ export interface Run {
   retriesUsed: number;
   /** Every turn the agents have taken, oldest first. */
   turns?: Turn[];
+  /** Dollars spent outside the agents, such as on choosing their models. */
+  overheadUsd?: number;
   /** How many entries the run's log has ever had; it holds only the latest. */
   logTotal?: number;
   /** How many times each send-back edge has been used, by edge id. */

@@ -89,6 +89,15 @@ pub struct Node {
     /// Give the agent web search and page fetching (Firecrawl), when a web account is set up. Each call costs credits.
     #[serde(default, skip_serializing_if = "is_false")]
     pub web: bool,
+    /// How hard it thinks (`low` to `max`), when set. Left out, the CLI's own default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// How its model is chosen each time it starts: as written above, from a ladder by rules, or by a small model.
+    #[serde(default, skip_serializing_if = "Routing::is_pinned")]
+    pub routing: Routing,
+    /// The models and efforts it may run on, cheapest and lightest first. Used when `routing` is not pinned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ladder: Vec<Rung>,
     /// Written by Sonnet and editable. Identical on every turn so the prompt cache holds.
     pub system_prompt: String,
     /// Stop and wait for approval before this node starts.
@@ -126,6 +135,42 @@ pub struct Edge {
     pub answered_by: Answerer,
 }
 
+/// How an agent's model and effort are chosen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Routing {
+    /// Always the model and effort the agent is set to.
+    #[default]
+    Pinned,
+    /// A rung of its ladder, picked by rules from the flow's dial, how many times work has been sent back, and how full the plan is.
+    Ladder,
+    /// A small model picks the rung each time, from the same ladder, and says why.
+    Auto,
+}
+
+impl Routing {
+    pub fn is_pinned(&self) -> bool {
+        *self == Routing::Pinned
+    }
+}
+
+/// One step of an agent's ladder: a model, where it runs, and how hard it thinks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Rung {
+    pub engine: Engine,
+    pub model: String,
+    /// The OpenRouter account it runs on, when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+/// The efforts both CLIs accept, lightest first.
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+/// Most rungs a ladder may have.
+pub const MAX_RUNGS: usize = 8;
+
 /// What to do when a send-back edge has been used up.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -162,6 +207,10 @@ impl Edge {
     pub fn new(id: impl Into<String>, from: impl Into<String>, to: impl Into<String>, kind: EdgeKind) -> Edge {
         Edge { id: id.into(), from: from.into(), to: to.into(), kind, max_iterations: DEFAULT_ITERATIONS, on_cap: OnCap::Pause, answered_by: Answerer::User }
     }
+}
+
+fn default_dial() -> u8 {
+    2
 }
 
 fn is_false(b: &bool) -> bool {
@@ -226,6 +275,9 @@ pub struct Flow {
     /// Give agents that have not started yet a cheaper model as the plan windows fill up. Never a dearer one.
     #[serde(default)]
     pub downshift: bool,
+    /// Where on the cost-to-quality scale agents with a ladder start: 0 is the cheapest rung, 4 the strongest.
+    #[serde(default = "default_dial")]
+    pub dial: u8,
 }
 
 fn default_retries() -> u8 {
@@ -305,6 +357,9 @@ impl Flow {
             return Err("budget percentages must be above 0 and at most 100".into());
         }
 
+        if self.dial > 4 {
+            return Err("the cost-to-quality dial goes from 0 to 4".into());
+        }
         let mut seen = HashSet::new();
         for n in &self.nodes {
             if !id_ok(&n.id) || !seen.insert(n.id.as_str()) {
@@ -334,6 +389,28 @@ impl Flow {
                     return Err(format!("node '{}' has a custom definition but is not a custom role", n.name));
                 }
                 _ => {}
+            }
+            if let Some(e) = n.effort.as_deref() {
+                if !EFFORTS.contains(&e) {
+                    return Err(format!("node '{}' has an effort that is not one of {}", n.name, EFFORTS.join(", ")));
+                }
+            }
+            if n.ladder.len() > MAX_RUNGS {
+                return Err(format!("node '{}' has more than {MAX_RUNGS} rungs on its ladder", n.name));
+            }
+            if n.routing != Routing::Pinned && n.ladder.is_empty() {
+                return Err(format!("node '{}' picks its model from a ladder but has none", n.name));
+            }
+            if n.routing != Routing::Pinned && n.direct {
+                return Err(format!("node '{}' calls its model directly, so it cannot move along a ladder", n.name));
+            }
+            for r in &n.ladder {
+                if r.model.trim().is_empty() || r.model.len() > 200 {
+                    return Err(format!("a rung of node '{}' has no model", n.name));
+                }
+                if r.effort.as_deref().is_some_and(|e| !EFFORTS.contains(&e)) {
+                    return Err(format!("a rung of node '{}' has an effort that is not one of {}", n.name, EFFORTS.join(", ")));
+                }
             }
             if n.direct {
                 if n.account.is_none() {
@@ -484,7 +561,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_asks_questions_may_send_work_back_but_only_one_way_and_a_few_times() {
-        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator), node("b", Role::Researcher), node("g", Role::Griller)], edges: vec![], max_retries: 2, budget: Budget::default(), downshift: false };
+        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator), node("b", Role::Researcher), node("g", Role::Griller)], edges: vec![], max_retries: 2, budget: Budget::default(), downshift: false, dial: 2 };
         f.edges = vec![edge("e1", "a", "b", EdgeKind::Forward), edge("e2", "b", "g", EdgeKind::Forward), edge("r1", "g", "a", EdgeKind::Retry)];
         assert_eq!(f.validate(), Ok(()), "a griller is allowed what a judge is");
         f.edges.push(edge("r2", "g", "b", EdgeKind::Retry));
@@ -511,7 +588,7 @@ mod tests {
 
     #[test]
     fn only_an_agent_that_needs_no_tools_may_call_its_model_directly() {
-        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator)], edges: vec![], max_retries: 1, budget: Budget::default(), downshift: false };
+        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator)], edges: vec![], max_retries: 1, budget: Budget::default(), downshift: false, dial: 2 };
         f.nodes[0].direct = true;
         assert!(f.validate().unwrap_err().contains("needs an account"));
         f.nodes[0].account = Some("acct".into());
@@ -539,6 +616,9 @@ mod tests {
             account: None,
             direct: false,
             web: false,
+            effort: None,
+            routing: crate::orch::graph::Routing::Pinned,
+            ladder: Vec::new(),
             x: 0.0,
             y: 0.0,
         }
@@ -567,6 +647,7 @@ mod tests {
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
+            dial: 2,
         }
     }
 

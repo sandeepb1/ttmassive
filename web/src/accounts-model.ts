@@ -284,6 +284,7 @@ export const HELPER_LABEL: Record<string, string> = {
   grill: 'Questions and brief before a run',
   nodePrompt: 'Write an agent’s instructions',
   customRole: 'Design a custom role',
+  route: 'Choose a model for an agent each turn',
 };
 
 export interface ModelRef {

@@ -4,7 +4,7 @@
 
 import { DEFAULT_ITERATIONS, DEFAULT_LIMITS } from './types.ts';
 import type {
-  Budget, Capability, CustomRole, EdgeKind, Flow, Turn, FlowEdge, FlowModel, OnCap, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
+  Budget, Capability, CustomRole, EdgeKind, Flow, Turn, Routing, Rung, FlowEdge, FlowModel, OnCap, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
 // ---------------------------------------------------------------------------- roles
@@ -691,3 +691,50 @@ export function turnFacts(t: Turn, nodeName: string): string[] {
 
 /** Turns of one agent only, or all of them. */
 export const turnsOf = (turns: Turn[], node: string | null): Turn[] => (node ? turns.filter((t) => t.node === node) : turns);
+
+// ---------------------------------------------------------------------------- choosing models per turn
+
+export const ROUTING_TEXT: Record<Routing, string> = {
+  pinned: 'Always the model above',
+  ladder: 'A rung of its ladder, by rules',
+  auto: 'A rung of its ladder, chosen by a small model',
+};
+
+export const DIAL_TEXT = ['Strongly prefer low cost', 'Lean toward low cost', 'Balance cost and quality', 'Lean toward quality', 'Strongly prefer quality'] as const;
+
+/** A rung's picker value: where the model comes from, and which it is. */
+export function rungKey(r: Pick<Rung, 'engine' | 'model' | 'account'>): string {
+  return r.account ? `or:${r.account}:${r.model}` : `${r.engine}:${r.model}`;
+}
+
+/** The rung a picker value stands for. The effort a rung had is kept when the model changes. */
+export function rungFromKey(key: string, models: Models, effort?: string | null): Rung {
+  if (key.startsWith('or:')) {
+    const { account, model } = parseModelKey(key);
+    const known = models.openrouter.find((m) => m.account === account && m.id === model);
+    return { engine: known?.driver ?? 'claude', model, account, effort: effort ?? null };
+  }
+  const at = key.indexOf(':');
+  return { engine: key.slice(0, at) === 'codex' ? 'codex' : 'claude', model: key.slice(at + 1), account: null, effort: effort ?? null };
+}
+
+/** A new rung to add below the last: the agent's own model, or the next one down the list when that is already there. */
+export function nextRung(node: Pick<FlowNode, 'engine' | 'model' | 'account' | 'ladder'>, models: Models): Rung {
+  const have = new Set((node.ladder ?? []).map(rungKey));
+  const own: Rung = { engine: node.engine, model: node.model, account: node.account ?? null, effort: null };
+  if (!have.has(rungKey(own))) return own;
+  const pool: Rung[] = [
+    ...models.claude.map((m) => ({ engine: 'claude' as const, model: m, account: null, effort: null })),
+    ...models.codex.map((m) => ({ engine: 'codex' as const, model: m, account: null, effort: null })),
+    ...models.openrouter.filter((m) => !m.direct).map((m) => ({ engine: m.driver, model: m.id, account: m.account, effort: null })),
+  ];
+  return pool.find((r) => !have.has(rungKey(r))) ?? own;
+}
+
+/** The node with its ladder changed; a node that goes back to fixed keeps the ladder, in case it comes back. */
+export const withRoutingChange = (node: FlowNode, routing: Routing, models: Models): Partial<FlowNode> =>
+  routing !== 'pinned' && !(node.ladder?.length) ? { routing, ladder: [nextRung(node, models)] } : { routing };
+
+/** The one line under a turn's model that says what the dial and ladder did, for an agent on a ladder. */
+export const ladderSummary = (n: Pick<FlowNode, 'routing' | 'ladder'>): string | null =>
+  n.routing && n.routing !== 'pinned' && n.ladder?.length ? `${n.ladder.length} rung${n.ladder.length === 1 ? '' : 's'}, ${n.routing === 'auto' ? 'router picks' : 'by rules'}` : null;

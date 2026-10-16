@@ -16,7 +16,8 @@ use crate::openrouter::proxy::Leases;
 use crate::providers::chat::{self, Message};
 use super::claude::{self, Access, Event};
 use super::codex;
-use super::exec::NodeRunner;
+use super::exec::{Answer, Ask, NodeRunner};
+use super::route::{self, Choice};
 use super::graph::{Engine, Flow, Node};
 use super::roles::Capability;
 use super::run::{SKILL_PREFIX, SUBAGENT_PREFIX};
@@ -30,7 +31,8 @@ pub struct EngineRunner {
     run_id: String,
     codex: Arc<codex::Hub>,
     claude: Mutex<HashMap<String, claude::Agent>>,
-    threads: Mutex<HashMap<String, codex::Thread>>,
+    /// A node's Codex thread, and the account it was started on: an agent that moves to another account needs a new one.
+    threads: Mutex<HashMap<String, (codex::Thread, Option<String>)>>,
     /// Codex threads that are in the middle of a turn, so a cancel can stop them.
     active: std::sync::Mutex<HashSet<String>>,
     /// Builders can start together, and `git worktree add` on one repository must not overlap itself.
@@ -268,28 +270,46 @@ impl EngineRunner {
 
     async fn run_claude(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace) -> Result<Outcome> {
         let taken = self.claude.lock().await.remove(&node.id);
+        let spec = |resume: Option<String>| claude::Spec {
+            model: node.model.clone(),
+            system_prompt: node.system_prompt.clone(),
+            schema: handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id)),
+            access: match limits(node) {
+                Limits::Writes => Access::Write,
+                _ if node.capability() == Capability::Inspect => Access::Inspect,
+                _ => Access::ReadOnly,
+            },
+            cwd: cwd.clone(),
+            // A worktree keeps its history in the main repository's .git; `git status` needs it.
+            read_also: vec![self.project.join(".git")],
+            proxy: self.proxy_for(node),
+            web: None,
+            effort: node.effort.clone(),
+            resume,
+            // An agent that may move between models keeps its conversation, so the next model can carry on from it.
+            persist: node.routing != super::graph::Routing::Pinned,
+        };
+        let want = claude::Identity { model: node.model.clone(), effort: node.effort.clone(), account: node.account.clone() };
+        let mut resumed = false;
         let mut agent = match taken {
-            Some(a) => a,
-            None => {
-                let spec = claude::Spec {
-                    model: node.model.clone(),
-                    system_prompt: node.system_prompt.clone(),
-                    schema: handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id)),
-                    access: match limits(node) {
-                        Limits::Writes => Access::Write,
-                        _ if node.capability() == Capability::Inspect => Access::Inspect,
-                        _ => Access::ReadOnly,
-                    },
-                    cwd,
-                    // A worktree keeps its history in the main repository's .git; `git status` needs it.
-                    read_also: vec![self.project.join(".git")],
-                    proxy: self.proxy_for(node),
-                    web: self.web_for(node).await,
-                };
-                claude::Agent::start(&spec).await?
+            Some(a) if *a.identity() == want => a,
+            // The model, effort or account changed: the process cannot change them, so a new one takes over the same conversation.
+            Some(old) if node.routing != super::graph::Routing::Pinned && old.session().is_some() => {
+                let session = old.session().map(String::from);
+                drop(old);
+                log(format!("→ carrying on the conversation on {}", node.model));
+                resumed = true;
+                let mut s = spec(session);
+                s.web = self.web_for(node).await;
+                claude::Agent::start_as(&s, want.clone()).await?
+            }
+            _ => {
+                let mut s = spec(None);
+                s.web = self.web_for(node).await;
+                claude::Agent::start_as(&s, want.clone()).await?
             }
         };
-        let outcome = agent
+        let mut outcome = agent
             .turn_traced(prompt, |ev| match ev {
                 Event::Said(t) => log(preview(t)),
                 Event::Tool(t) => log(format!("→ {t}")),
@@ -298,7 +318,17 @@ impl EngineRunner {
                 Event::Nested(t) => log(format!("    ↳ {}", preview(t))),
                 _ => {}
             }, trace)
-            .await?;
+            .await;
+        // A conversation that would not carry over to the new model (its reasoning is tied to the one that wrote it, say)
+        // starts again instead of failing: the prompt holds everything the agent needs to do its part.
+        if resumed && outcome.as_ref().map_or(true, |o| o.is_error) {
+            log("→ the conversation would not carry over: starting it again".into());
+            let mut s = spec(None);
+            s.web = self.web_for(node).await;
+            agent = claude::Agent::start_as(&s, want).await?;
+            outcome = agent.turn_traced(prompt, |_| {}, trace).await;
+        }
+        let outcome = outcome?;
         // Only a healthy agent is kept; after an error the next attempt starts a fresh one.
         self.claude.lock().await.insert(node.id.clone(), agent);
         Ok(outcome)
@@ -308,8 +338,10 @@ impl EngineRunner {
         let server = self.codex.get().await?;
         let taken = self.threads.lock().await.remove(&node.id);
         let mut thread = match taken {
-            Some(t) => t,
-            None => {
+            // The thread's model and effort are changed with the turn, so it keeps its conversation. Its account is part of how
+            // it was started, so an agent that moves to another one begins again.
+            Some((t, account)) if account == node.account => t,
+            _ => {
                 let spec = codex::Spec {
                     model: node.model.clone(),
                     system_prompt: node.system_prompt.clone(),
@@ -324,7 +356,7 @@ impl EngineRunner {
         let schema = handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id));
         self.active.lock().unwrap_or_else(|e| e.into_inner()).insert(thread.id.clone());
         let result = server
-            .turn(&mut thread, prompt, &schema, |note| {
+            .turn(&mut thread, prompt, &schema, (Some(node.model.as_str()), node.effort.as_deref()), |note| {
                 codex::trace_note(note, trace);
                 if let Some(line) = codex::describe(note) {
                     log(line);
@@ -333,7 +365,7 @@ impl EngineRunner {
             .await;
         self.active.lock().unwrap_or_else(|e| e.into_inner()).remove(&thread.id);
         let outcome = result?;
-        self.threads.lock().await.insert(node.id.clone(), thread);
+        self.threads.lock().await.insert(node.id.clone(), (thread, node.account.clone()));
         Ok(outcome)
     }
 }
@@ -350,6 +382,31 @@ impl NodeRunner for EngineRunner {
         let result = self.run_turn(node, prompt, log, &mut trace, &mut commit).await;
         self.meta.lock().unwrap_or_else(|e| e.into_inner()).insert(node.id.clone(), TurnMeta { trace: trace.into_entries(), commit });
         result
+    }
+
+    /// Ask a small model which rung of the agent's ladder fits this turn. Whatever it says is checked against the ladder by
+    /// the caller; if asking fails, the rules' choice stands.
+    async fn choose(&self, node: &Node, rules: &Choice, ask: &Ask) -> Option<Answer> {
+        let accounts = crate::secrets::load(&self.data_dir).await;
+        let prices: Vec<Option<(f64, f64)>> = node
+            .ladder
+            .iter()
+            .map(|r| {
+                let m = accounts.get(r.account.as_deref()?)?.models.iter().find(|m| m.id == r.model)?;
+                Some((m.price_in?, m.price_out?))
+            })
+            .collect();
+        let prompt = route::classifier_prompt(node, &ask.role, &ask.brief, &ask.situation, ask.feedback.as_deref(), ask.spent_usd, ask.cap_usd, &prices);
+        let via = accounts.helper_endpoint("route");
+        let scratch = self.data_dir.join("orch").join("scratch");
+        let called = super::prompts::helper_call(via.as_ref(), "haiku", route::CLASSIFIER_SYSTEM, &prompt, route::classifier_schema(node.ladder.len()), &scratch).await;
+        match called {
+            Ok((v, outcome)) => Some(Answer { pick: route::parse_pick(&v)?, tokens: outcome.tokens, cost_usd: if via.is_some() { outcome.cost_usd } else { 0.0 } }),
+            Err(e) => {
+                tracing::warn!("choosing a model for {}: {e:#}; using the rules' choice (rung {})", node.name, rules.index + 1);
+                None
+            }
+        }
     }
 
     fn take_meta(&self, node_id: &str) -> TurnMeta {
@@ -435,7 +492,7 @@ mod tests {
         };
         let accounts = crate::secrets::Accounts { accounts: vec![account], ..Default::default() };
         std::fs::write(dir.join("accounts.json"), serde_json::to_vec(&accounts).unwrap()).unwrap();
-        let flow = Flow { id: "f".into(), name: "f".into(), nodes, edges: vec![], max_retries: 1, budget: Default::default(), downshift: false };
+        let flow = Flow { id: "f".into(), name: "f".into(), nodes, edges: vec![], max_retries: 1, budget: Default::default(), downshift: false, dial: 2 };
         let limits = Arc::new(std::sync::Mutex::new(crate::orch::graph::Budget::default()));
         let r = EngineRunner::new(flow, dir.clone(), dir.join("wt"), "r1".into(), Arc::default(), Arc::new(Leases::new()), "http://127.0.0.1:1".into(), limits, false, dir.clone());
         (r, dir)
@@ -506,6 +563,9 @@ mod tests {
             account: None,
             direct: false,
             web: false,
+            effort: None,
+            routing: crate::orch::graph::Routing::Pinned,
+            ladder: Vec::new(),
             x: 0.0,
             y: 0.0,
         }

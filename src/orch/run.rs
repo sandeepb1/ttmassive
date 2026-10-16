@@ -185,6 +185,12 @@ pub struct NodeRun {
     /// The model this agent actually ran on: the flow's, or a cheaper one if the plan was filling up.
     #[serde(default)]
     pub model_used: Option<String>,
+    /// How hard it was set to think on its latest turn, when that was set.
+    #[serde(default)]
+    pub effort_used: Option<String>,
+    /// Why its latest turn ran on the model and effort it did, when the run chose them.
+    #[serde(default)]
+    pub route_reason: Option<String>,
     /// Share of the previous turn's input that came from the prompt cache.
     #[serde(default)]
     pub last_hit: Option<f64>,
@@ -207,6 +213,8 @@ impl NodeRun {
             transcript: Vec::new(),
             session: None,
             model_used: None,
+            effort_used: None,
+            route_reason: None,
             last_hit: None,
             cache_breaks: 0,
         }
@@ -241,6 +249,9 @@ pub struct Run {
     /// Use outside the nodes: writing prompts and grilling.
     #[serde(default)]
     pub overhead: Tokens,
+    /// Dollars spent outside the nodes, on paid models: choosing models for agents, mostly.
+    #[serde(default)]
+    pub overhead_usd: f64,
     pub status: RunStatus,
     pub nodes: HashMap<String, NodeRun>,
     /// Nodes the user has let start.
@@ -351,6 +362,7 @@ impl Run {
             grill: None,
             baseline: Baseline::default(),
             overhead: Tokens::default(),
+            overhead_usd: 0.0,
             status: RunStatus::Running,
             nodes,
             approved: HashSet::new(),
@@ -372,7 +384,7 @@ impl Run {
     /// Dollars the run has spent on OpenRouter agents. Estimates for agents on your plan are not counted:
     /// nothing was charged for them.
     pub fn cost_usd(&self) -> f64 {
-        self.flow.nodes.iter().filter(|n| !n.uses_plan()).filter_map(|n| self.nodes.get(&n.id)).map(|n| n.cost_usd).sum()
+        self.overhead_usd + self.flow.nodes.iter().filter(|n| !n.uses_plan()).filter_map(|n| self.nodes.get(&n.id)).map(|n| n.cost_usd).sum::<f64>()
     }
 
     /// Firecrawl credits the run's agents have used on web tools.
@@ -441,6 +453,9 @@ mod tests {
             account: None,
             direct: false,
             web: false,
+            effort: None,
+            routing: crate::orch::graph::Routing::Pinned,
+            ladder: Vec::new(),
             x: 0.0,
             y: 0.0,
         };
@@ -452,15 +467,16 @@ mod tests {
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
+            dial: 2,
         };
         Run::new("r1".into(), flow, "brief".into(), 100)
     }
 
     #[test]
     fn a_runs_cost_is_what_openrouter_charged_for_its_agents_on_it() {
-        let mut r = Run::new("r".into(), Flow { id: "f".into(), name: "f".into(), nodes: vec![], edges: vec![], max_retries: 1, budget: Default::default(), downshift: false }, "g".into(), 0);
+        let mut r = Run::new("r".into(), Flow { id: "f".into(), name: "f".into(), nodes: vec![], edges: vec![], max_retries: 1, budget: Default::default(), downshift: false, dial: 2 }, "g".into(), 0);
         assert_eq!(r.cost_usd(), 0.0);
-        let mk = |id: &str, account: Option<&str>| Node { id: id.into(), name: id.into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "m".into(), account: account.map(String::from), direct: false, web: false, system_prompt: String::new(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0 };
+        let mk = |id: &str, account: Option<&str>| Node { id: id.into(), name: id.into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "m".into(), account: account.map(String::from), direct: false, web: false, effort: None, routing: crate::orch::graph::Routing::Pinned, ladder: Vec::new(), system_prompt: String::new(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0 };
         r.flow.nodes = vec![mk("plan", None), mk("or1", Some("a")), mk("or2", Some("a"))];
         for (id, cost) in [("plan", 5.0), ("or1", 0.25), ("or2", 0.5)] {
             r.nodes.insert(id.into(), NodeRun { cost_usd: cost, ..NodeRun::new() });

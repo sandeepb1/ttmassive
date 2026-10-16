@@ -47,6 +47,12 @@ pub struct Spec {
     pub proxy: Option<Proxy>,
     /// Give the agent the web tools, through ttm's MCP endpoint with this lease.
     pub web: Option<Proxy>,
+    /// How hard it thinks, when set.
+    pub effort: Option<String>,
+    /// Carry on this conversation (an earlier turn of the same agent) instead of starting a new one.
+    pub resume: Option<String>,
+    /// Keep the conversation on disk so it can be resumed on another model. Otherwise nothing is left behind.
+    pub persist: bool,
 }
 
 /// The name the web tools go by in the agent: `mcp__ttm_web__web_search` and so on.
@@ -91,13 +97,19 @@ pub fn args(spec: &Spec) -> Vec<String> {
     .map(String::from)
     .to_vec();
     a.extend(["--model".into(), spec.model.clone()]);
+    if let Some(e) = &spec.effort {
+        a.extend(["--effort".into(), e.clone()]);
+    }
+    if let Some(r) = &spec.resume {
+        a.extend(["--resume".into(), r.clone()]);
+    }
     if !spec.system_prompt.trim().is_empty() {
         a.extend(["--append-system-prompt".into(), spec.system_prompt.clone()]);
     }
     a.extend(["--json-schema".into(), spec.schema.to_string()]);
-    // Only a builder's conversation is kept on disk, so a person can open it in a live session later.
-    // Everyone else leaves nothing behind in the user's own history.
-    if spec.access != Access::Write {
+    // Only a builder's conversation is kept on disk, so a person can open it in a live session later, and one that may
+    // be resumed on another model. Everyone else leaves nothing behind in the user's own history.
+    if spec.access != Access::Write && !spec.persist && spec.resume.is_none() {
         a.push("--no-session-persistence".into());
     }
     match spec.access {
@@ -259,12 +271,28 @@ pub fn user_line(prompt: &str) -> String {
     json!({"type": "user", "message": {"role": "user", "content": prompt}}).to_string()
 }
 
+/// What makes one running agent unable to serve a turn that wants another: its model, how hard it thinks, and where it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub model: String,
+    pub effort: Option<String>,
+    pub account: Option<String>,
+}
+
+impl Identity {
+    pub fn of(spec: &Spec, account: Option<&str>) -> Identity {
+        Identity { model: spec.model.clone(), effort: spec.effort.clone(), account: account.map(String::from) }
+    }
+}
+
 /// A running agent.
 pub struct Agent {
     session: Option<String>,
     child: Child,
     stdin: ChildStdin,
     lines: tokio::io::Lines<BufReader<ChildStdout>>,
+    /// What it was started as, to tell whether the next turn needs a different agent.
+    identity: Identity,
     /// `total_cost_usd` as of the last finished turn. Claude reports it for the whole conversation, so a
     /// turn's own cost is the difference.
     cost_seen: f64,
@@ -272,6 +300,11 @@ pub struct Agent {
 
 impl Agent {
     pub async fn start(spec: &Spec) -> Result<Agent> {
+        Self::start_as(spec, Identity::of(spec, None)).await
+    }
+
+    /// Start an agent that knows what it is, so the runner can tell later whether it still fits.
+    pub async fn start_as(spec: &Spec, identity: Identity) -> Result<Agent> {
         let mut cmd = Command::new("claude");
         cmd.args(args(spec)).current_dir(&spec.cwd);
         if spec.access == Access::Inspect {
@@ -295,7 +328,7 @@ impl Agent {
             .context("could not start claude")?;
         let stdin = child.stdin.take().context("no stdin")?;
         let stdout = child.stdout.take().context("no stdout")?;
-        Ok(Agent { session: None, child, stdin, lines: BufReader::new(stdout).lines(), cost_seen: 0.0 })
+        Ok(Agent { session: spec.resume.clone(), child, stdin, lines: BufReader::new(stdout).lines(), cost_seen: 0.0, identity })
     }
 
     /// Send one prompt and read events until the turn is done. `on_event` sees every event, so the
@@ -325,6 +358,15 @@ impl Agent {
             }
         }
         bail!("claude exited before it answered")
+    }
+
+    pub fn identity(&self) -> &Identity {
+        &self.identity
+    }
+
+    /// The conversation's id, once the agent has told us (or from the one it was resumed on).
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
     }
 
     /// End the current turn cleanly. SIGINT, not SIGTERM, which would leave the turn unrecorded.
@@ -357,6 +399,9 @@ mod tests {
             read_also: vec![],
             proxy: None,
             web: None,
+            effort: None,
+            resume: None,
+            persist: false,
         }
     }
 
@@ -423,6 +468,29 @@ mod tests {
                 (Kind::Note, "thinking".into(), "hmm".into()),
             ]
         );
+    }
+
+    #[test]
+    fn effort_resume_and_persistence_become_flags() {
+        let plain = args(&spec(Access::ReadOnly));
+        assert!(!has(&plain, "--effort") && !has(&plain, "--resume") && has(&plain, "--no-session-persistence"));
+        let routed = args(&Spec { effort: Some("high".into()), persist: true, ..spec(Access::ReadOnly) });
+        assert_eq!(after(&routed, "--effort"), Some("high"));
+        assert!(!has(&routed, "--no-session-persistence"), "a routed agent's conversation is kept so it can be resumed");
+        let resumed = args(&Spec { resume: Some("abc-123".into()), model: "opus".into(), ..spec(Access::Inspect) });
+        assert_eq!((after(&resumed, "--resume"), after(&resumed, "--model")), (Some("abc-123"), Some("opus")));
+        assert!(!has(&resumed, "--no-session-persistence"), "a resumed conversation must be saved again, or the next resume finds nothing");
+        // A builder's conversation was always kept.
+        assert!(!has(&args(&spec(Access::Write)), "--no-session-persistence"));
+    }
+
+    #[test]
+    fn two_agents_are_the_same_only_when_model_effort_and_account_all_match() {
+        let k = |m: &str, e: Option<&str>, a: Option<&str>| Identity { model: m.into(), effort: e.map(String::from), account: a.map(String::from) };
+        assert_eq!(k("sonnet", Some("low"), None), Identity::of(&Spec { effort: Some("low".into()), ..spec(Access::Write) }, None));
+        assert_ne!(k("sonnet", Some("low"), None), k("sonnet", Some("high"), None));
+        assert_ne!(k("sonnet", None, None), k("opus", None, None));
+        assert_ne!(k("a/b", None, Some("x")), k("a/b", None, Some("y")));
     }
 
     #[test]

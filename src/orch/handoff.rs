@@ -166,6 +166,9 @@ mod tests {
             account: None,
             direct: false,
             web: false,
+            effort: None,
+            routing: crate::orch::graph::Routing::Pinned,
+            ladder: Vec::new(),
             x: 0.0,
             y: 0.0,
         }
@@ -180,6 +183,7 @@ mod tests {
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
+            dial: 2,
         };
         Run::new("run1".into(), flow, "Add a login page".into(), 0)
     }

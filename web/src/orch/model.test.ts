@@ -6,9 +6,9 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
-import type { Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
+import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
 const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'], openrouter: [] };
 const at = { x: 0, y: 0 };
@@ -658,4 +658,42 @@ test('the timeline can be narrowed to one agent', () => {
   const ts = [turn({ n: 1, node: 'a' }), turn({ n: 2, node: 'b' }), turn({ n: 3, node: 'a' })];
   assert.deepEqual(turnsOf(ts, 'a').map((t) => t.n), [1, 3]);
   assert.equal(turnsOf(ts, null).length, 3);
+});
+
+const rungModels: Models = {
+  claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6-luna'], web: false,
+  openrouter: [
+    { account: 'a1', accountName: 'Main', id: 'anthropic/claude-haiku-5.5', driver: 'claude', priceIn: 1, priceOut: 5, tools: true, direct: false },
+    { account: 'a1', accountName: 'Main', id: 'openai/gpt-6-luna', driver: 'codex', priceIn: 0.2, priceOut: 1.2, tools: true, direct: false },
+    { account: 'z9', accountName: 'Plain', id: 'vendor/think', driver: 'codex', priceIn: 1, priceOut: 2, tools: false, direct: true },
+  ],
+};
+
+test('a rung is picked from the same list as a model, and its CLI follows its model', () => {
+  assert.equal(rungKey({ engine: 'codex', model: 'gpt-6-luna', account: null }), 'codex:gpt-6-luna');
+  assert.equal(rungKey({ engine: 'claude', model: 'a/b:free', account: 'a1' }), 'or:a1:a/b:free');
+  assert.deepEqual(rungFromKey('claude:opus', rungModels), { engine: 'claude', model: 'opus', account: null, effort: null });
+  assert.deepEqual(rungFromKey('codex:gpt-6-luna', rungModels, 'high'), { engine: 'codex', model: 'gpt-6-luna', account: null, effort: 'high' }, 'the effort stays when the model changes');
+  assert.deepEqual(rungFromKey('or:a1:openai/gpt-6-luna', rungModels), { engine: 'codex', model: 'openai/gpt-6-luna', account: 'a1', effort: null });
+  assert.equal(rungFromKey('or:a1:anthropic/claude-haiku-5.5', rungModels).engine, 'claude');
+});
+
+test('a ladder starts with the agents own model and grows by the next one not already on it', () => {
+  const node = { engine: 'claude' as const, model: 'sonnet', account: null, ladder: [] as Rung[] };
+  assert.deepEqual(nextRung(node, rungModels), { engine: 'claude', model: 'sonnet', account: null, effort: null });
+  const one = { ...node, ladder: [nextRung(node, rungModels)] };
+  assert.deepEqual(nextRung(one, rungModels), { engine: 'claude', model: 'opus', account: null, effort: null }, 'the first model not yet there');
+  const all = { ...node, ladder: [...rungModels.claude.map((m) => ({ engine: 'claude' as const, model: m, account: null, effort: null })), ...rungModels.codex.map((m) => ({ engine: 'codex' as const, model: m, account: null, effort: null }))] };
+  assert.equal(nextRung(all, rungModels).account, 'a1', 'then the OpenRouter ones, never a direct-call model');
+  assert.ok(![...Array(3)].some((_, i) => nextRung({ ...all, ladder: [...all.ladder, ...rungModels.openrouter.slice(0, i).map((m) => ({ engine: m.driver, model: m.id, account: m.account, effort: null }))] }, rungModels).model === 'vendor/think'));
+});
+
+test('turning routing on gives an agent a ladder to start with, and turning it off keeps the ladder', () => {
+  const base = { ...newNode(emptyFlow('f', 'F'), def('builder'), models, at), engine: 'claude' as const, model: 'sonnet' };
+  assert.deepEqual(withRoutingChange(base, 'ladder', rungModels), { routing: 'ladder', ladder: [{ engine: 'claude', model: 'sonnet', account: null, effort: null }] });
+  assert.deepEqual(withRoutingChange({ ...base, ladder: [{ engine: 'claude', model: 'haiku', account: null, effort: null }] }, 'auto', rungModels), { routing: 'auto' }, 'an existing ladder is kept');
+  assert.deepEqual(withRoutingChange(base, 'pinned', rungModels), { routing: 'pinned' });
+  assert.equal(ladderSummary({ routing: 'auto', ladder: [{ engine: 'claude', model: 'a', account: null, effort: null }] }), '1 rung, router picks');
+  assert.equal(ladderSummary({ routing: 'ladder', ladder: [] }), null);
+  assert.equal(ladderSummary({ routing: 'pinned', ladder: [{ engine: 'claude', model: 'a', account: null, effort: null }] }), null);
 });

@@ -22,6 +22,9 @@ fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: us
         account: None,
         direct: false,
         web: super::roles::web_default(role),
+        effort: None,
+        routing: crate::orch::graph::Routing::Pinned,
+        ladder: Vec::new(),
         x: layer as f64 * 280.0,
         y: row as f64 * 180.0,
     }
@@ -50,6 +53,7 @@ fn flow(id: &str, name: &str, specs: &[Spec], edges: &[(&str, &str, EdgeKind)], 
         max_retries,
         budget,
         downshift: false,
+        dial: 2,
     }
 }
 

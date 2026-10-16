@@ -3,7 +3,7 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Icon, iconFor } from './bits';
-import { asks, cacheHit, decides, fmtTokens, modelShown, roleLabel, totalTokens } from './model';
+import { asks, cacheHit, decides, fmtTokens, ladderSummary, modelShown, roleLabel, totalTokens } from './model';
 import type { FlowNode, NodeRun } from './types';
 
 export interface CardData extends Record<string, unknown> {
@@ -45,9 +45,16 @@ export function CardBody({ node, run, waiting }: Pick<CardData, 'node' | 'run' |
         </span>
       </div>
       <div className="mc-card-meta">
-        <span className="mc-model" title={model.cheaper ? 'Switched to a cheaper model because your plan is filling up' : undefined}>
-          {model.label}
-        </span>
+        {ladderSummary(node) && !run?.modelUsed ? (
+          <span className="mc-model" title="Its model is chosen each time it starts">
+            {ladderSummary(node)}
+          </span>
+        ) : (
+          <span className="mc-model" title={model.cheaper ? 'Switched to a cheaper model because your plan is filling up' : undefined}>
+            {model.label}
+            {run?.effortUsed ? ` · ${run.effortUsed}` : ''}
+          </span>
+        )}
         {model.cheaper && <span className="mc-flag mc-flag-cool">cheaper</span>}
         {node.checkpoint && (
           <span className="mc-flag" title="Waits for your approval before it starts">

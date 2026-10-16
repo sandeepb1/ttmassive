@@ -3,8 +3,8 @@
 
 import { useState } from 'react';
 import { Icon, iconFor, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, ON_CAP_TEXT, OUTPUT_TEXT, asks, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
-import { DEFAULT_ITERATIONS, type Answerer, type Budget, type Capability, type Engine, type Flow, type FlowEdge, type FlowNode, type Models, type NodeRun, type OnCap, type Output, type Run } from './types';
+import { CAPABILITY_SHORT, DIAL_TEXT, ON_CAP_TEXT, OUTPUT_TEXT, ROUTING_TEXT, nextRung, rungFromKey, rungKey, withRoutingChange, asks, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
+import { DEFAULT_DIAL, DEFAULT_ITERATIONS, EFFORTS, type Answerer, type Budget, type Capability, type Engine, type Flow, type FlowEdge, type FlowNode, type Models, type NodeRun, type OnCap, type Output, type Routing, type Rung, type Run } from './types';
 
 interface Props {
   flow: Flow;
@@ -97,6 +97,12 @@ function FlowPanel({ flow, run, editable, limits, onLimits, onFlow }: Props) {
         <Field label="Times a judge may send work back" hint="After this many, the run pauses and asks you.">
           <input className="mc-field mc-mono" type="number" min={0} max={5} disabled={!editable} value={flow.maxRetries} onChange={(e) => onFlow({ maxRetries: Math.min(5, Math.max(0, Math.round(Number(e.target.value) || 0))) })} />
         </Field>
+        {flow.nodes.some((n) => (n.routing ?? 'pinned') !== 'pinned') && (
+          <Field label="Cost or quality" hint="Where agents on a ladder start: toward the cheapest rung, or the strongest. They still move up when work is sent back.">
+            <input type="range" min={0} max={4} step={1} disabled={!editable} value={flow.dial ?? DEFAULT_DIAL} aria-label="Cost or quality" onChange={(e) => onFlow({ dial: Number(e.target.value) })} />
+            <div className="mc-hint">{DIAL_TEXT[flow.dial ?? DEFAULT_DIAL]}</div>
+          </Field>
+        )}
         <div className="mc-section">
           <Switch
             on={!!flow.downshift}
@@ -163,6 +169,126 @@ function EdgePanel({ flow, edge, run, editable, onEdge }: Props & { edge: FlowEd
         </p>
       )}
       {!editable && <p className="mc-hint">These were fixed when the run started. Go back to the design to change them.</p>}
+    </>
+  );
+}
+
+/** Every model an agent on a ladder may use, in the groups the model picker has. */
+function RungModelOptions({ models, current }: { models: Models; current: string }) {
+  const known = new Set([...models.claude.map((m) => `claude:${m}`), ...models.codex.map((m) => `codex:${m}`), ...models.openrouter.filter((m) => !m.direct).map((m) => `or:${m.account}:${m.id}`)]);
+  return (
+    <>
+      {!known.has(current) && <option value={current}>{current.replace(/^[a-z]+:/, '')} (not on offer)</option>}
+      <optgroup label="Your Claude plan">
+        {models.claude.map((m) => (
+          <option key={m} value={`claude:${m}`}>
+            {m}
+          </option>
+        ))}
+      </optgroup>
+      {models.codex.length > 0 && (
+        <optgroup label="Your Codex plan">
+          {models.codex.map((m) => (
+            <option key={m} value={`codex:${m}`}>
+              {m}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {models.openrouter.some((m) => !m.direct) && (
+        <optgroup label="OpenRouter">
+          {models.openrouter
+            .filter((m) => !m.direct)
+            .map((m) => (
+              <option key={`${m.account}:${m.id}`} value={`or:${m.account}:${m.id}`}>
+                {m.id}
+              </option>
+            ))}
+        </optgroup>
+      )}
+    </>
+  );
+}
+
+/** How an agent's model is chosen each turn, and the ladder it moves along. */
+function RoutingEditor({ node, models, editable, onNode }: { node: FlowNode; models: Models; editable: boolean; onNode: (id: string, patch: Partial<FlowNode>) => void }) {
+  const routing: Routing = node.routing ?? 'pinned';
+  const ladder = node.ladder ?? [];
+  const setLadder = (next: Rung[]) => onNode(node.id, { ladder: next });
+  const setRung = (i: number, patch: Partial<Rung>) => setLadder(ladder.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const move = (i: number, to: number) => {
+    if (to < 0 || to >= ladder.length) return;
+    const next = [...ladder];
+    next.splice(to, 0, next.splice(i, 1)[0]!);
+    setLadder(next);
+  };
+  return (
+    <>
+      <Field label="Which model it uses" hint={routing === 'pinned' ? 'It can instead move up and down a ladder of models as the run goes: higher after work is sent back, lower as your plan fills up.' : undefined}>
+        <select className="mc-field" disabled={!editable || !!node.direct} value={routing} onChange={(e) => onNode(node.id, withRoutingChange(node, e.target.value as Routing, models))}>
+          {(Object.keys(ROUTING_TEXT) as Routing[]).map((r) => (
+            <option key={r} value={r}>
+              {ROUTING_TEXT[r]}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {routing === 'pinned' ? (
+        <Field label="Effort" hint="How hard it thinks. Left alone, the agent’s own default.">
+          <select className="mc-field" disabled={!editable} value={node.effort ?? ''} onChange={(e) => onNode(node.id, { effort: e.target.value || null })}>
+            <option value="">Default</option>
+            {EFFORTS.map((x) => (
+              <option key={x} value={x}>
+                {x}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : (
+        <div className="mc-section">
+          <label className="mc-label">Ladder, cheapest and lightest first</label>
+          {ladder.map((r, i) => (
+            <div key={i} className="mc-rung">
+              <span className="mc-rung-n">{i + 1}</span>
+              <select className="mc-field mc-mono" disabled={!editable} value={rungKey(r)} aria-label={`Model for rung ${i + 1}`} onChange={(e) => setRung(i, rungFromKey(e.target.value, models, r.effort))}>
+                <RungModelOptions models={models} current={rungKey(r)} />
+              </select>
+              <select className="mc-field" disabled={!editable} value={r.effort ?? ''} aria-label={`Effort for rung ${i + 1}`} onChange={(e) => setRung(i, { effort: e.target.value || null })}>
+                <option value="">default effort</option>
+                {EFFORTS.map((x) => (
+                  <option key={x} value={x}>
+                    {x}
+                  </option>
+                ))}
+              </select>
+              {editable && (
+                <span className="mc-rung-tools">
+                  <button type="button" className="mc-btn mc-btn-quiet mc-btn-sm" aria-label={`Move rung ${i + 1} up`} disabled={i === 0} onClick={() => move(i, i - 1)}>
+                    <Icon name="chevron-up" />
+                  </button>
+                  <button type="button" className="mc-btn mc-btn-quiet mc-btn-sm" aria-label={`Move rung ${i + 1} down`} disabled={i === ladder.length - 1} onClick={() => move(i, i + 1)}>
+                    <Icon name="chevron-down" />
+                  </button>
+                  <button type="button" className="mc-btn mc-btn-quiet mc-btn-sm" aria-label={`Remove rung ${i + 1}`} disabled={ladder.length <= 1} onClick={() => setLadder(ladder.filter((_, j) => j !== i))}>
+                    <Icon name="close" />
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
+          {editable && ladder.length < 8 && (
+            <button type="button" className="mc-btn mc-btn-sm" onClick={() => setLadder([...ladder, nextRung({ ...node, ladder }, models)])}>
+              <Icon name="plus" /> Add a rung
+            </button>
+          )}
+          <p className="mc-hint">
+            {routing === 'auto'
+              ? 'A small model picks a rung each time the agent starts, and says why. If it cannot, the rules choose. The flow’s cost-to-quality dial is part of what it is told.'
+              : 'The flow’s dial sets where it starts. Each time its work is sent back, or its last try failed, it moves up a rung; as your plan fills up it moves down.'}{' '}
+            Moving to another model costs the new one a fresh prompt cache for that turn.
+          </p>
+        </div>
+      )}
     </>
   );
 }
@@ -309,6 +435,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
           </select>
         </Field>
       </div>
+      <RoutingEditor node={node} models={models} editable={editable} onNode={onNode} />
       {node.account && node.direct && (
         <p className="mc-hint">
           Called directly: no tools and no files, so it works only from the brief and what earlier agents hand on. {chosen ? `${priceNote(chosen)}. ` : ''}
@@ -370,7 +497,7 @@ function RunDetail({ nr, node, feedback }: { nr: NodeRun; node: FlowNode; feedba
         <dt>Turns</dt>
         <dd>{nr.attempts}</dd>
         <dt>Model</dt>
-        <dd>{modelShown(node, nr).label}</dd>
+        <dd>{modelShown(node, nr).label}{nr.effortUsed ? ` · ${nr.effortUsed} effort` : ''}</dd>
         <dt>Fresh input</dt>
         <dd>{fmtTokens(t.input + t.cacheWrite)}</dd>
         <dt>Output</dt>
@@ -406,6 +533,7 @@ function RunDetail({ nr, node, feedback }: { nr: NodeRun; node: FlowNode; feedba
           </>
         )}
       </dl>
+      {nr.routeReason && <p className="mc-hint">{nr.routeReason}</p>}
       {nr.error && <p className="mc-error">{nr.error}</p>}
       {feedback && (
         <>

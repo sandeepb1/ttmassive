@@ -243,6 +243,9 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
             account: pick.map(|m| m.account.clone()),
             direct: false,
             web: super::roles::web_default(role),
+            effort: None,
+            routing: crate::orch::graph::Routing::Pinned,
+            ladder: Vec::new(),
             x: 0.0,
             y: 0.0,
         });
@@ -266,6 +269,7 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
         max_retries: 2,
         budget: Budget::default(),
         downshift: false,
+        dial: 2,
     };
     flow.validate().map_err(anyhow::Error::msg).context("the suggested flow is not valid")?;
     lay_out(&mut flow);
@@ -380,6 +384,9 @@ async fn one_shot(model: &str, system: &str, prompt: &str, schema: Value, cwd: &
         read_also: vec![],
         proxy: None,
         web: None,
+        effort: None,
+        resume: None,
+        persist: false,
     };
     let mut agent = claude::Agent::start(&spec).await?;
     let outcome = agent.turn(prompt, |_| {}).await;
@@ -393,7 +400,7 @@ async fn one_shot(model: &str, system: &str, prompt: &str, schema: Value, cwd: &
 }
 
 /// One call for a helper: on the model the user chose for it when there is one, otherwise on Claude with `default`.
-async fn helper_call(via: Option<&Endpoint>, default: &str, system: &str, prompt: &str, schema: Value, cwd: &Path) -> Result<(Value, Outcome)> {
+pub(crate) async fn helper_call(via: Option<&Endpoint>, default: &str, system: &str, prompt: &str, schema: Value, cwd: &Path) -> Result<(Value, Outcome)> {
     let Some(e) = via else { return one_shot(default, system, prompt, schema, cwd).await };
     let r = chat::complete(e, &[Message::system(system), Message::user(prompt)], Some(&schema)).await?;
     let answer = r.structured.clone().with_context(|| format!("{} did not answer in the required shape", e.model))?;
@@ -532,6 +539,9 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
                     account: None,
                     direct: false,
                     web: super::roles::web_default(role),
+                    effort: None,
+                    routing: crate::orch::graph::Routing::Pinned,
+                    ladder: Vec::new(),
                     x: 0.0,
                     y: 0.0,
                 };
@@ -591,6 +601,7 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
         max_retries: base.max_retries,
         budget: base.budget,
         downshift: base.downshift,
+        dial: base.dial,
     };
     flow.validate().map_err(anyhow::Error::msg).context("the changed flow is not valid")?;
     place_new(&mut flow, &added);
@@ -662,7 +673,7 @@ async fn one_shot_codex(hub: &super::codex::Hub, model: &str, system: &str, prom
     let server = hub.get().await?;
     let spec = super::codex::Spec { model: model.into(), system_prompt: system.into(), read_only: true, cwd: cwd.to_path_buf(), proxy: None, web: None };
     let mut thread = server.start_thread(&spec).await?;
-    let outcome = server.turn(&mut thread, prompt, schema, |_| {}).await?;
+    let outcome = server.turn(&mut thread, prompt, schema, (None, None), |_| {}).await?;
     let answer = outcome.structured.clone().context("codex did not answer in the required shape")?;
     Ok((answer, outcome))
 }
@@ -812,6 +823,9 @@ mod tests {
             account: None,
             direct: false,
             web: false,
+            effort: None,
+            routing: crate::orch::graph::Routing::Pinned,
+            ladder: Vec::new(),
             x: 900.0,
             y: 0.0,
         });

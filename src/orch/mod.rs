@@ -10,6 +10,7 @@ pub mod graph;
 pub mod handoff;
 pub mod prompts;
 pub mod roles;
+pub mod route;
 pub mod run;
 pub mod runner;
 pub mod service;
