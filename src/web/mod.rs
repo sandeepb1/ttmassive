@@ -6,6 +6,9 @@ pub mod error;
 pub mod mcp;
 pub mod pool;
 pub mod render;
+pub mod serper;
 pub mod tavily;
+#[cfg(test)]
+mod testutil;
 pub mod tools;
 pub mod types;

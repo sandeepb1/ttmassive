@@ -100,6 +100,7 @@ pub struct Fetched<T> {
 pub enum Provider {
     Firecrawl,
     Tavily,
+    Serper,
 }
 
 impl Provider {
@@ -107,12 +108,15 @@ impl Provider {
         match self {
             Provider::Firecrawl => "Firecrawl",
             Provider::Tavily => "Tavily",
+            Provider::Serper => "Serper",
         }
     }
 
-    pub fn can(self, _tool: Tool) -> bool {
+    pub fn can(self, tool: Tool) -> bool {
         match self {
             Provider::Firecrawl | Provider::Tavily => true,
+            // Serper searches; fetching pages is other services' work.
+            Provider::Serper => tool == Tool::Search,
         }
     }
 }
@@ -139,7 +143,7 @@ impl Tool {
     /// Which service to ask first, unless the order is set by hand.
     pub fn default_order(self) -> &'static [Provider] {
         match self {
-            Tool::Search => &[Provider::Tavily, Provider::Firecrawl],
+            Tool::Search => &[Provider::Serper, Provider::Tavily, Provider::Firecrawl],
             Tool::Scrape | Tool::Map | Tool::Crawl => &[Provider::Firecrawl, Provider::Tavily],
         }
     }

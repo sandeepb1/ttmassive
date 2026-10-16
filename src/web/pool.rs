@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 
 use super::client::Client;
+use super::error::Kind;
+use super::serper;
 use super::tavily;
 use super::error::ProviderError;
 use super::types::{Call, Crawl, Fetched, Page, Provider, SearchHit, SearchOpts, SiteMap, Tool};
@@ -16,6 +18,7 @@ use super::types::{Call, Crawl, Fetched, Page, Provider, SearchHit, SearchOpts, 
 enum Backend {
     Firecrawl(Client),
     Tavily(tavily::Client),
+    Serper(serper::Client),
 }
 
 /// One account in the pool.
@@ -36,10 +39,15 @@ impl Member {
         Member { id: id.into(), usd_per_credit, backend: Backend::Tavily(client) }
     }
 
+    pub fn serper(id: &str, usd_per_credit: f64, client: serper::Client) -> Member {
+        Member { id: id.into(), usd_per_credit, backend: Backend::Serper(client) }
+    }
+
     pub fn provider(&self) -> Provider {
         match self.backend {
             Backend::Firecrawl(_) => Provider::Firecrawl,
             Backend::Tavily(_) => Provider::Tavily,
+            Backend::Serper(_) => Provider::Serper,
         }
     }
 
@@ -47,6 +55,7 @@ impl Member {
         match &self.backend {
             Backend::Firecrawl(c) => c.search_hits(query, limit, opts).await,
             Backend::Tavily(c) => c.search_hits(query, limit, opts).await,
+            Backend::Serper(c) => c.search_hits(query, limit, opts).await,
         }
     }
 
@@ -54,6 +63,7 @@ impl Member {
         match &self.backend {
             Backend::Firecrawl(c) => c.scrape_page(url).await,
             Backend::Tavily(c) => c.scrape_page(url).await,
+            Backend::Serper(_) => Err(only_searches()),
         }
     }
 
@@ -61,6 +71,7 @@ impl Member {
         match &self.backend {
             Backend::Firecrawl(c) => c.map_site(url, limit).await,
             Backend::Tavily(c) => c.map_site(url, limit).await,
+            Backend::Serper(_) => Err(only_searches()),
         }
     }
 
@@ -68,8 +79,13 @@ impl Member {
         match &self.backend {
             Backend::Firecrawl(c) => c.crawl_site(url, limit).await,
             Backend::Tavily(c) => c.crawl_site(url, limit).await,
+            Backend::Serper(_) => Err(only_searches()),
         }
     }
+}
+
+fn only_searches() -> anyhow::Error {
+    ProviderError::new(Kind::Unsupported, "Serper only searches").into()
 }
 
 /// Accounts that are being left alone, and why. Shared, so a rest outlasts the pool built for one call.
@@ -389,6 +405,32 @@ mod tests {
         // Scrape is Firecrawl's first, then Tavily's: with Firecrawl out of credits Tavily is asked.
         let page = p.scrape("https://x.test", None).await.unwrap();
         assert_eq!((page.source, page.value.markdown.as_str(), page.notes), (Some(Provider::Tavily), "from tavily", vec!["Firecrawl is out of credits".to_string()]));
+    }
+
+    #[test]
+    fn serper_is_asked_to_search_first_and_never_to_fetch() {
+        let (p, _) = pool(vec![
+            member("fc", "http://x.test", 0.01),
+            Member::tavily("tv", 0.008, tavily::Client::with("http://y.test", "k")),
+            Member::serper("sv", 0.001, serper::Client::with("http://z.test", "k")),
+        ]);
+        let ids = |t| p.candidates(t).iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(Tool::Search), ["sv", "tv", "fc"]);
+        assert_eq!(ids(Tool::Scrape), ["fc", "tv"]);
+        assert_eq!(ids(Tool::Map), ["fc", "tv"]);
+        let (only, _) = pool(vec![Member::serper("sv", 0.001, serper::Client::with("http://z.test", "k"))]);
+        assert!(only.offers(Tool::Search) && !only.offers(Tool::Scrape) && !only.offers(Tool::Map) && !only.offers(Tool::Crawl));
+    }
+
+    #[tokio::test]
+    async fn a_search_falls_from_serper_to_the_next_account_when_serper_has_no_credits() {
+        use crate::web::testutil::serve;
+        let (sv, _) = serve(vec![("/search", 400, vec![], serde_json::json!({"message": "Not enough credits"}))]).await;
+        let (fc, _) = mock(200, FOUND).await;
+        let (p, cool) = pool(vec![member("fc", &fc, 0.01), Member::serper("sv", 0.001, serper::Client::with(&sv, "k"))]);
+        let call = p.search("x", 5, SearchOpts::default(), None).await.unwrap();
+        assert_eq!((call.source, call.notes), (Some(Provider::Firecrawl), vec!["Serper is out of credits".to_string()]));
+        assert_eq!(cool.resting("sv"), Some("is out of credits"));
     }
 
     #[test]

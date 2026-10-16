@@ -154,44 +154,7 @@ fn page(r: &Value) -> Page {
 mod tests {
     use super::*;
     use crate::web::types::Recency;
-    use axum::{Router, extract::State, http::{HeaderMap, StatusCode}, routing::post};
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Default)]
-    struct Seen {
-        auth: Mutex<Vec<String>>,
-        bodies: Mutex<Vec<(String, Value)>>,
-    }
-
-    /// A stand-in Tavily answering each path with the given status, headers and body, and noting what it was sent.
-    async fn serve(routes: Vec<(&'static str, u16, Vec<(&'static str, &'static str)>, Value)>) -> (String, Arc<Seen>) {
-        let seen = Arc::new(Seen::default());
-        let mut app = Router::new();
-        for (path, status, headers, body) in routes {
-            let handler = move |State(s): State<Arc<Seen>>, h: HeaderMap, req: Option<axum::Json<Value>>| {
-                let (headers, body) = (headers.clone(), body.clone());
-                async move {
-                    s.auth.lock().unwrap().push(h.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_owned());
-                    s.bodies.lock().unwrap().push((path.to_owned(), req.map(|r| r.0).unwrap_or(Value::Null)));
-                    let mut map = HeaderMap::new();
-                    for (k, v) in headers {
-                        map.insert(k, v.parse().unwrap());
-                    }
-                    (StatusCode::from_u16(status).unwrap(), map, axum::Json(body))
-                }
-            };
-            app = app.route(path, post(handler.clone()).get(handler));
-        }
-        let app = app.with_state(seen.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (base, seen)
-    }
-
-    fn ok(path: &'static str, body: Value) -> (&'static str, u16, Vec<(&'static str, &'static str)>, Value) {
-        (path, 200, vec![], body)
-    }
+    use crate::web::testutil::{ok, serve};
 
     #[tokio::test]
     async fn a_search_sends_the_key_and_options_and_reads_hits_and_cost() {
