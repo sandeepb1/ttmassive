@@ -392,7 +392,7 @@ const MAX_OPTION: usize = 140;
 /// The options the model offered, made fit to show: trimmed, no blanks or repeats, a sensible length, at most four,
 /// and always containing the recommended answer (added first if the model left it out). Fewer than two is not a
 /// choice, so those questions get none and the page asks for text.
-fn clean_options(raw: Option<&Value>, recommended: &str) -> Vec<String> {
+pub(crate) fn clean_options(raw: Option<&Value>, recommended: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |s: &str| {
         let s: String = s.trim().chars().take(MAX_OPTION).collect();

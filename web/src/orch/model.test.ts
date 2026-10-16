@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -731,4 +731,16 @@ test('an agent can be moved between your plan and each account, and lands on tha
   assert.equal(providerOf(gone), 'or:dead');
   assert.equal(providersFor(gone, rungModels).at(-1)!.label, 'An account that is no longer available', 'an agent on a removed account still shows where it is');
   assert.deepEqual(providersFor(node, { ...rungModels, openrouter: [] }).map((p) => p.key), ['plan'], 'with no accounts there is only the plan');
+});
+
+test('the questions a run waits on come with their choices, without a number in front, and old ones are plain text', () => {
+  assert.equal(unnumbered('1. Which database?'), 'Which database?');
+  assert.equal(unnumbered('  12) Twelve'), 'Twelve');
+  assert.equal(unnumbered('2024 plans?'), '2024 plans?', 'a year is not a number');
+  const withChoices = { questions: ['1. A?', 'B?'], details: [{ text: '1. A?', recommended: 'x', options: ['x', 'y'], multiple: false }, { text: 'B?', recommended: '', options: [], multiple: false }] };
+  const q = waitingQuestions(withChoices);
+  assert.deepEqual(q.map((x) => [x.text, x.options?.length]), [['A?', 2], ['B?', 0]]);
+  const old = waitingQuestions({ questions: ['3. Old one?'] });
+  assert.deepEqual(old, [{ text: 'Old one?', recommended: '', options: [], multiple: false }], 'a pause from before there were choices is a text box');
+  assert.equal(waitingQuestions({ questions: ['A?'], details: [] }).length, 1, 'details that do not match are ignored');
 });

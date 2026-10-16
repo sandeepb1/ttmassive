@@ -107,6 +107,9 @@ pub struct PendingQuestions {
     /// The send-back edge it goes along.
     pub edge: String,
     pub questions: Vec<String>,
+    /// The same questions with the choices and suggested answer the agent gave. Empty for ones asked before there were any.
+    #[serde(default)]
+    pub details: Vec<Question>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

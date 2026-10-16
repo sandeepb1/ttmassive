@@ -1,10 +1,10 @@
 // The two dialogs: starting a run, and the questions the orchestrator asks first.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
 import { orch } from './api';
 import { Icon, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
 import type { Budget, Capability, Flow, Output, Question, RepoState, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
@@ -506,8 +506,9 @@ export function QuestionsDialog({ run, busy, error, onAnswer, onClose }: {
   onClose: () => void;
 }) {
   const pending = run.pending;
-  const [answers, setAnswers] = useState<string[]>([]);
-  useEffect(() => setAnswers((pending?.questions ?? []).map(() => '')), [pending?.questions.join('\n')]);
+  const questions = useMemo(() => (pending ? waitingQuestions(pending) : []), [pending]);
+  const [picks, setPicks] = useState<Record<number, Answer>>({});
+  useEffect(() => setPicks({}), [pending?.questions.join('\n')]);
   if (!pending) return null;
   const who = run.flow.nodes.find((n) => n.id === pending.node)?.name ?? 'An agent';
   const to = run.flow.nodes.find((n) => n.id === pending.target)?.name ?? 'the agent it goes back to';
@@ -521,25 +522,17 @@ export function QuestionsDialog({ run, busy, error, onAnswer, onClose }: {
           <button type="button" className="mc-btn" onClick={onClose}>
             Later
           </button>
-          <button type="button" className="mc-btn mc-btn-primary" disabled={busy} onClick={() => onAnswer(answers)}>
+          <button type="button" className="mc-btn mc-btn-primary" disabled={busy} onClick={() => onAnswer(answersFor(questions, picks))}>
             <Icon name="play" /> {busy ? 'Sending…' : `Send to ${to}`}
           </button>
         </>
       }
     >
       <p className="mc-hint" style={{ margin: '0 0 1rem' }}>
-        Your answers go to {to}, which revises its work with them; {who} then looks again. Leave one empty to say it is up to them.
+        Your answers go to {to}, which revises its work with them; {who} then looks again. The suggested answer is picked for each; change any you disagree with.
       </p>
-      {pending.questions.map((q, i) => (
-        <Field key={`${i}-${q}`} label={`${i + 1}. ${q}`}>
-          <textarea
-            className="mc-field"
-            rows={2}
-            value={answers[i] ?? ''}
-            placeholder="Your answer"
-            onChange={(e) => setAnswers((cur) => cur.map((a, j) => (j === i ? e.target.value : a)))}
-          />
-        </Field>
+      {questions.map((q, i) => (
+        <Ask key={`${i}-${q.text}`} q={q} answer={picks[i] ?? startingAnswer(q)} onChange={(a) => setPicks((cur) => ({ ...cur, [i]: a }))} />
       ))}
       {before.length > 0 && (
         <details className="mc-hint">

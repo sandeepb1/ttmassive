@@ -382,18 +382,19 @@ fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pau
 /// An agent that asks questions has answered: either it has none and the flow carries on, or the work goes back
 /// along its send-back edge and the questions go with it.
 fn questioned(run: &mut Run, asker: &Node, output: &serde_json::Value) -> Option<Pause> {
-    let questions = handoff::open_questions(output);
+    let questions = handoff::asked_questions(output);
     if questions.is_empty() {
         run.note(Some(&asker.id), LogKind::Decision, format!("{} has no questions left: carrying on", asker.name), None);
         return None;
     }
-    send_back(run, asker, questions.join("\n"), None, Why::Asked(questions))
+    let text = questions.iter().map(|q| q.text.as_str()).collect::<Vec<_>>().join("\n");
+    send_back(run, asker, text, None, Why::Asked(questions))
 }
 
 /// Why work is being sent back.
 enum Why {
     Rejected,
-    Asked(Vec<String>),
+    Asked(Vec<super::run::Question>),
 }
 
 /// Send work back from `from` along its send-back edge, or say why not. Each edge may be used only so many times, and
@@ -440,11 +441,12 @@ fn send_back(run: &mut Run, from: &Node, feedback: String, send_back_to: Option<
             apply_loop(run, from, &target, feedback, FeedbackKind::Judge);
             None
         }
-        Why::Asked(questions) => {
+        Why::Asked(details) => {
+            let questions: Vec<String> = details.iter().map(|q| q.text.clone()).collect();
             run.asked.entry(from.id.clone()).or_default().extend(questions.iter().map(|q| Asked { question: q.clone(), answer: None }));
             if edge.answered_by == Answerer::User {
                 run.note(Some(&from.id), LogKind::Decision, format!("{} asked {} question{}; waiting for your answers", from.name, questions.len(), if questions.len() == 1 { "" } else { "s" }), Some(feedback));
-                run.pending = Some(PendingQuestions { node: from.id.clone(), target, edge: edge.id, questions });
+                run.pending = Some(PendingQuestions { node: from.id.clone(), target, edge: edge.id, questions, details });
                 Some(Pause::Questions { node: from.id.clone() })
             } else {
                 let pairs: Vec<_> = questions.iter().map(|q| (q.clone(), None)).collect();
@@ -1381,6 +1383,7 @@ mod tests {
             let r = run.lock().unwrap();
             let p = r.pending.clone().expect("waiting for answers");
             assert_eq!((p.node.as_str(), p.target.as_str(), p.questions.len()), ("grill", "plan", 2));
+            assert_eq!(p.details.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["Which database?", "Who logs in?"], "the choices travel with the pause");
             assert_eq!(r.nodes["plan"].status, NodeStatus::Done, "nothing is redone until the user has answered");
         }
         let mut r = run.lock().unwrap();

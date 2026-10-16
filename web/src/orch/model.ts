@@ -552,6 +552,17 @@ export function writeInstead(q: Question, pick: Answer): Answer {
   return { ...pick, other: true, chosen: q.multiple ? pick.chosen : [] };
 }
 
+/** A question without a number in front of it: the dialog numbers them itself, and a model sometimes writes one too. */
+export function unnumbered(q: string): string {
+  return q.replace(/^\s*\d{1,2}[.):]\s+/, '').trim();
+}
+
+/** The questions a run is waiting on, as the grill shows them: with choices when the agent gave some, else plain text. */
+export function waitingQuestions(p: { questions: string[]; details?: Question[] }): Question[] {
+  if (p.details && p.details.length === p.questions.length) return p.details.map((q) => ({ ...q, text: unnumbered(q.text) }));
+  return p.questions.map((text) => ({ text: unnumbered(text), recommended: '', options: [], multiple: false }));
+}
+
 /** The words to send for one question. */
 export function answerFor(q: Question, pick: Answer): string {
   const typed = pick.text.trim();

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::graph::Node;
 use super::roles::Output;
-use super::run::{FeedbackKind, NodeStatus, Run};
+use super::run::{FeedbackKind, NodeStatus, Question, Run};
 
 /// JSON Schema for the answer an agent must give, by what it hands back. Both CLIs enforce it. A verdict from an
 /// agent that can send work back to more than one place must also say which: `send_back_to` is one of `targets`, or
@@ -32,7 +32,10 @@ pub fn schema_for(output: Output, targets: &[&str]) -> Value {
             json!({"verdict": {"type": "string", "enum": ["approve", "reject"]}, "feedback": text}),
             &["verdict", "feedback"],
         ),
-        Output::Questions => obj(json!({"questions": list, "resolved": {"type": "boolean"}}), &["questions", "resolved"]),
+        Output::Questions => {
+            let question = obj(json!({"text": text, "options": list, "recommended": text, "multiple": {"type": "boolean"}}), &["text", "options", "recommended", "multiple"]);
+            obj(json!({"questions": {"type": "array", "items": question}, "resolved": {"type": "boolean"}}), &["questions", "resolved"])
+        }
         Output::Change => obj(
             json!({"summary": text, "files_changed": list, "notes": text}),
             &["summary", "files_changed", "notes"],
@@ -63,17 +66,48 @@ pub fn verdict(output: &Value) -> Verdict {
     }
 }
 
-/// The questions an agent asked, or none when it said it was satisfied. A claim that it is satisfied wins over
-/// questions left in the list, and so does an empty list over a claim that it is not.
-pub fn open_questions(output: &Value) -> Vec<String> {
+/// A question's words without the number a model sometimes writes in front of it ("1. ", "2)"): the page numbers them itself.
+fn unnumbered(q: &str) -> String {
+    let q = q.trim();
+    let digits = q.chars().take_while(char::is_ascii_digit).count();
+    match q[digits..].chars().next() {
+        Some('.' | ')' | ':') if digits > 0 && digits <= 2 => q[digits + 1..].trim_start().to_string(),
+        _ => q.to_string(),
+    }
+}
+
+/// The questions an agent asked, with the choices and the answer it would suggest when it gave them; none when it said it
+/// was satisfied. A claim that it is satisfied wins over questions left in the list, and so does an empty list over a
+/// claim that it is not. A plain string is a question with no choices.
+pub fn asked_questions(output: &Value) -> Vec<Question> {
     if output.get("resolved").and_then(Value::as_bool) == Some(true) {
         return Vec::new();
     }
     output
         .get("questions")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(|q| q.trim().to_string()).filter(|q| !q.is_empty()).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|q| {
+                    let (text, rest) = match q {
+                        Value::String(s) => (s.as_str(), None),
+                        Value::Object(o) => (o.get("text")?.as_str()?, Some(q)),
+                        _ => return None,
+                    };
+                    let text = unnumbered(text);
+                    let recommended = rest.and_then(|o| o.get("recommended")).and_then(Value::as_str).unwrap_or("").trim().to_string();
+                    let options = super::prompts::clean_options(rest.and_then(|o| o.get("options")), &recommended);
+                    let multiple = options.len() >= 2 && rest.and_then(|o| o.get("multiple")).and_then(Value::as_bool).unwrap_or(false);
+                    (!text.is_empty()).then_some(Question { text, recommended, options, multiple })
+                })
+                .collect()
+        })
         .unwrap_or_default()
+}
+
+/// Just the words of the questions an agent asked.
+pub fn open_questions(output: &Value) -> Vec<String> {
+    asked_questions(output).into_iter().map(|q| q.text).collect()
 }
 
 /// Questions and answers as plain text, for a prompt or a log line.
@@ -155,6 +189,29 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_griller_may_give_choices_and_a_suggestion_and_plain_or_numbered_questions_still_work() {
+        let out = json!({"resolved": false, "questions": [
+            {"text": "1. Which database?", "options": ["Postgres", "SQLite", "Postgres"], "recommended": "Postgres", "multiple": false},
+            {"text": "Who may log in?", "options": ["Staff"], "recommended": "Staff", "multiple": true},
+            "2) A plain question?",
+            {"text": "  ", "options": [], "recommended": "", "multiple": false},
+            7
+        ]});
+        let q = asked_questions(&out);
+        assert_eq!(q.len(), 3, "an empty text and a non-question are dropped");
+        assert_eq!((q[0].text.as_str(), q[0].options.clone(), q[0].recommended.as_str(), q[0].multiple), ("Which database?", vec!["Postgres".to_string(), "SQLite".to_string()], "Postgres", false), "the number is dropped and the repeat is not offered twice");
+        assert!(q[1].options.is_empty() && !q[1].multiple, "one option is not a choice");
+        assert_eq!((q[2].text.as_str(), q[2].options.len()), ("A plain question?", 0));
+        assert_eq!(open_questions(&out), ["Which database?", "Who may log in?", "A plain question?"]);
+        assert!(asked_questions(&json!({"resolved": true, "questions": ["still here"]})).is_empty(), "satisfied wins");
+        assert_eq!(unnumbered("2024 plans?"), "2024 plans?", "a year is not a number in front");
+        assert_eq!(unnumbered("12. Twelve"), "Twelve");
+        let schema = schema_for(Output::Questions, &[]);
+        let item = &schema["properties"]["questions"]["items"];
+        assert_eq!(item["required"], json!(["text", "options", "recommended", "multiple"]), "every question can carry choices");
+    }
+
     use super::*;
     use crate::orch::graph::{Budget, Edge, EdgeKind, Engine, Flow, Role};
 

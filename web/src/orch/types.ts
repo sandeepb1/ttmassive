@@ -224,7 +224,7 @@ export interface Run {
   /** What agents that ask questions have asked, with the answers, by node id. */
   asked?: Record<string, { question: string; answer: string | null }[]>;
   /** Questions the run is waiting for the user to answer. */
-  pending?: { node: string; target: string; edge: string; questions: string[] } | null;
+  pending?: { node: string; target: string; edge: string; questions: string[]; details?: Question[] } | null;
   created: number;
   /** When it reached done or cancelled, in Unix seconds. */
   finished?: number | null;

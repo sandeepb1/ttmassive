@@ -379,7 +379,9 @@ async fn write(data_dir: &Path, a: &Accounts) -> Result<()> {
 /// Write a file only its owner can read, through a temp file so a crash never leaves half of it.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let tmp = path.with_extension("json.tmp");
+    // Its own temporary file each time: two writers sharing one name make the second rename fail, or mix their bytes.
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!("json.{}.{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -387,13 +389,38 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut f = opts.open(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;
-    std::fs::rename(&tmp, path)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn many_writers_at_once_all_succeed_and_leave_one_whole_file_and_no_litter() {
+        let dir = std::env::temp_dir().join(format!("ttm-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.json");
+        let threads: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || (0..40).map(|j| write_private(&path, format!("{{\"w\":{i},\"n\":{j},\"pad\":\"{}\"}}", "x".repeat(4000)).as_bytes())).collect::<Vec<_>>())
+            })
+            .collect();
+        for t in threads {
+            assert!(t.join().unwrap().iter().all(|r| r.is_ok()), "a writer lost the race");
+        }
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).expect("the file is one whole write");
+        assert!(v["w"].is_number());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary files are left behind");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o777, 0o600);
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     fn input(name: &str, kind: Kind) -> AccountInput {
         AccountInput {
