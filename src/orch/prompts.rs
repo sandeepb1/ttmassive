@@ -20,6 +20,8 @@ const MAX_SUGGESTED_NODES: usize = 10;
 const MAX_QUESTIONS: usize = 6;
 pub const MAX_ROUNDS: u8 = 3;
 
+use crate::openrouter::launch::{Driver, FlowModel};
+
 fn role_id(r: Role) -> String {
     format!("{r:?}").to_lowercase()
 }
@@ -49,15 +51,66 @@ fn role_lines() -> String {
 
 /// Rules from docs/research/multi-agent-roles.md: few agents, one writer, a checker that can run things, and a
 /// cap on how many roles a task needs.
-fn suggest_system() -> String {
+fn suggest_system(or: bool) -> String {
     format!(
         "You design small teams of AI agents. Given a goal, return a flow: the agents (nodes), which agent's output \
 goes to which (edges), and a system prompt for each agent.\n\
 Roles:\n{}\n\
 Engines: claude (models opus, sonnet, haiku) or codex (models are given with the goal).\n\
-{DESIGN_RULES}",
-        role_lines()
+{DESIGN_RULES}{}",
+        role_lines(),
+        if or { OPENROUTER_RULES } else { NO_OPENROUTER }
     )
+}
+
+/// How the designer may use the user's OpenRouter models. They are paid per token, unlike the user's own plan, so
+/// they are for where they are clearly the better buy.
+const OPENROUTER_RULES: &str = "\nOpenRouter: the user has also pinned some OpenRouter models, listed with the goal with their prices per \
+million tokens. They cost real money per token, while claude and codex models come from the user's plan, so give an agent \
+an OpenRouter model only when it is cheaper than the plan model you would have used and good enough for that role, or when \
+the user asks for it. To do that set openrouter to true, set model to the exact id from the list, set engine to the one the list \
+says runs it, and put one short sentence in model_reason saying why (the price or the fit). For every other agent set \
+openrouter to false and model_reason to an empty string. Never use an OpenRouter model that is not in the list.";
+
+/// Said when there are no OpenRouter models, so the model does not invent any.
+const NO_OPENROUTER: &str = "\nThe user has no OpenRouter models: set openrouter to false and model_reason to an empty string on every agent.";
+
+/// The user's pinned OpenRouter models, one per line, for the designer.
+fn or_lines(models: &[FlowModel]) -> String {
+    let price = |p: Option<f64>| p.map_or("?".to_string(), |p| if p == 0.0 { "free".into() } else { format!("${p}") });
+    models
+        .iter()
+        .take(MAX_OR_LISTED)
+        .map(|m| {
+            let engine = match m.driver { Driver::Claude => "claude", Driver::Codex => "codex" };
+            format!("- {} (engine {engine}; {} in, {} out{})", m.id, price(m.price_in), price(m.price_out), if m.tools { "" } else { "; no tool use" })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The most OpenRouter models listed to the designer; a long list costs tokens and distracts.
+const MAX_OR_LISTED: usize = 40;
+
+fn engine_of(d: Driver) -> Engine {
+    match d {
+        Driver::Claude => Engine::Claude,
+        Driver::Codex => Engine::Codex,
+    }
+}
+
+/// The pinned model the designer chose for this agent, when it asked for an OpenRouter one that exists.
+fn or_pick<'a>(n: &Value, model: &str, models: &'a [FlowModel]) -> Option<&'a FlowModel> {
+    if n.get("openrouter").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    models.iter().find(|m| m.id == model)
+}
+
+/// One line saying why an agent was given an OpenRouter model.
+fn or_note(name: &str, m: &FlowModel, reason: &str) -> String {
+    let reason = reason.trim();
+    if reason.is_empty() { format!("{name} runs on {} through OpenRouter.", m.id) } else { format!("{name} runs on {} through OpenRouter: {reason}", m.id) }
 }
 
 /// How a good team is built, from the research. Shared by the designer and the editor.
@@ -100,9 +153,10 @@ fn suggest_schema() -> Value {
             "name": text(),
             "nodes": {"type": "array", "items": {
                 "type": "object", "additionalProperties": false,
-                "required": ["id", "name", "role", "engine", "model", "system_prompt", "checkpoint"],
+                "required": ["id", "name", "role", "engine", "model", "system_prompt", "checkpoint", "openrouter", "model_reason"],
                 "properties": {"id": text(), "name": text(), "role": role, "engine": engine, "model": text(),
-                               "system_prompt": text(), "checkpoint": {"type": "boolean"}}}},
+                               "system_prompt": text(), "checkpoint": {"type": "boolean"},
+                               "openrouter": {"type": "boolean"}, "model_reason": text()}}},
             "edges": {"type": "array", "items": {
                 "type": "object", "additionalProperties": false, "required": ["from", "to", "retry"],
                 "properties": {"from": text(), "to": text(), "retry": {"type": "boolean"}}}},
@@ -124,13 +178,24 @@ fn grill_schema() -> Value {
     })
 }
 
-pub fn suggest_prompt(goal: &str, codex_models: &[String]) -> String {
-    format!("# Goal\n\n{}\n\n# Codex models available\n\n{}\n", goal.trim(), codex_models.join(", "))
+pub fn suggest_prompt(goal: &str, codex_models: &[String], or_models: &[FlowModel]) -> String {
+    let mut p = format!("# Goal\n\n{}\n\n# Codex models available\n\n{}\n", goal.trim(), codex_models.join(", "));
+    if !or_models.is_empty() {
+        p.push_str(&format!("\n# OpenRouter models available\n\n{}\n", or_lines(or_models)));
+    }
+    p
 }
 
 /// Turn Sonnet's suggestion into a flow we can run. Ids are renumbered so nothing odd from the model
 /// reaches a file name, models it invented are replaced, and the result must pass `Flow::validate`.
 pub fn flow_from_suggestion(v: &Value, flow_id: &str, codex_models: &[String]) -> Result<Flow> {
+    Ok(flow_from_suggestion_with(v, flow_id, codex_models, &[])?.0)
+}
+
+/// Like `flow_from_suggestion`, and also honours an agent given one of `or_models`. The second value is a line for each
+/// agent that was, saying why.
+pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[String], or_models: &[FlowModel]) -> Result<(Flow, Vec<String>)> {
+    let mut notes: Vec<String> = Vec::new();
     let arr = |k: &str| v.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
     let raw_nodes = arr("nodes");
     if raw_nodes.is_empty() || raw_nodes.len() > MAX_SUGGESTED_NODES {
@@ -141,13 +206,17 @@ pub fn flow_from_suggestion(v: &Value, flow_id: &str, codex_models: &[String]) -
     for (i, n) in raw_nodes.iter().enumerate() {
         let s = |k: &str| n.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
         let role: Role = serde_json::from_value(n.get("role").cloned().unwrap_or_default()).context("unknown role")?;
-        let engine: Engine = serde_json::from_value(n.get("engine").cloned().unwrap_or_default()).context("unknown engine")?;
+        let mut engine: Engine = serde_json::from_value(n.get("engine").cloned().unwrap_or_default()).context("unknown engine")?;
         let mut model = s("model");
+        let pick = or_pick(n, &model, or_models);
         let known = match engine {
             Engine::Claude => CLAUDE_MODELS.iter().any(|m| *m == model),
             Engine::Codex => codex_models.contains(&model),
         };
-        if !known {
+        if let Some(m) = pick {
+            // An OpenRouter model runs in the CLI the list names, whatever engine the designer wrote.
+            engine = engine_of(m.driver);
+        } else if !known {
             model = match engine {
                 Engine::Claude => "sonnet".into(),
                 Engine::Codex => codex_models.first().cloned().context("no Codex model to fall back to")?,
@@ -167,10 +236,13 @@ pub fn flow_from_suggestion(v: &Value, flow_id: &str, codex_models: &[String]) -
             checkpoint: n.get("checkpoint").and_then(Value::as_bool).unwrap_or(false),
             token_cap: None,
             keep_model: false,
-            account: None,
+            account: pick.map(|m| m.account.clone()),
             x: 0.0,
             y: 0.0,
         });
+        if let Some(m) = pick {
+            notes.push(or_note(&nodes.last().expect("just pushed").name, m, &s("model_reason")));
+        }
     }
     let mut edges = Vec::new();
     for e in arr("edges") {
@@ -191,7 +263,7 @@ pub fn flow_from_suggestion(v: &Value, flow_id: &str, codex_models: &[String]) -
     };
     flow.validate().map_err(anyhow::Error::msg).context("the suggested flow is not valid")?;
     lay_out(&mut flow);
-    Ok(flow)
+    Ok((flow, notes))
 }
 
 /// Left to right by when each agent can start, top to bottom within a column.
@@ -314,14 +386,15 @@ async fn one_shot(model: &str, system: &str, prompt: &str, schema: Value, cwd: &
 }
 
 /// Sonnet designs a flow for a goal.
-pub async fn suggest_flow(goal: &str, flow_id: &str, codex_models: &[String], cwd: &Path) -> Result<(Flow, Outcome)> {
-    let (v, outcome) = one_shot("sonnet", &suggest_system(), &suggest_prompt(goal, codex_models), suggest_schema(), cwd).await?;
-    Ok((flow_from_suggestion(&v, flow_id, codex_models)?, outcome))
+pub async fn suggest_flow(goal: &str, flow_id: &str, codex_models: &[String], or_models: &[FlowModel], cwd: &Path) -> Result<(Flow, Vec<String>, Outcome)> {
+    let (v, outcome) = one_shot("sonnet", &suggest_system(!or_models.is_empty()), &suggest_prompt(goal, codex_models, or_models), suggest_schema(), cwd).await?;
+    let (flow, notes) = flow_from_suggestion_with(&v, flow_id, codex_models, or_models)?;
+    Ok((flow, notes, outcome))
 }
 
 // ---------------------------------------------------------------------------- editing a flow from a request
 
-fn edit_system() -> String {
+fn edit_system(or: bool) -> String {
     format!(
         "You change a team of AI agents to match what the user asks. You are given the team as it is now (agents and \
 the edges between them) and the user's request. Return the whole team as it should be afterwards, and a summary.\n\
@@ -334,8 +407,9 @@ when the change cannot work without it. When you add or remove an agent, rewire 
 sense (a new agent in the middle is joined to what comes before and after it). summary is one or two plain sentences \
 saying what you changed and why, as you would tell the user. If the request cannot be done or is not about the team, \
 return the team unchanged and say so in summary.\n\
-When you add or change an agent, follow these rules for a good team.\n{DESIGN_RULES}",
-        role_lines()
+When you add or change an agent, follow these rules for a good team.\n{DESIGN_RULES}{}",
+        role_lines(),
+        if or { OPENROUTER_RULES } else { NO_OPENROUTER }
     )
 }
 
@@ -358,14 +432,16 @@ fn edit_view(flow: &Flow) -> Value {
             "id": n.id, "name": n.name, "role": role_id(n.role),
             "engine": match n.engine { Engine::Claude => "claude", Engine::Codex => "codex" },
             "model": n.model, "system_prompt": n.system_prompt, "checkpoint": n.checkpoint,
+            "openrouter": n.account.is_some(), "model_reason": "",
         })).collect::<Vec<_>>(),
         "edges": flow.edges.iter().map(|e| json!({"from": e.from, "to": e.to, "retry": e.kind == EdgeKind::Retry})).collect::<Vec<_>>(),
     })
 }
 
-pub fn edit_prompt(flow: &Flow, request: &str, codex_models: &[String]) -> String {
+pub fn edit_prompt(flow: &Flow, request: &str, codex_models: &[String], or_models: &[FlowModel]) -> String {
+    let or = if or_models.is_empty() { String::new() } else { format!("# OpenRouter models available\n\n{}\n\n", or_lines(or_models)) };
     format!(
-        "# The team now\n\n```json\n{}\n```\n\n# Codex models available\n\n{}\n\n# The user's request\n\n{}\n",
+        "# The team now\n\n```json\n{}\n```\n\n# Codex models available\n\n{}\n\n{or}# The user's request\n\n{}\n",
         serde_json::to_string_pretty(&edit_view(flow)).unwrap_or_default(),
         codex_models.join(", "),
         request.trim()
@@ -376,6 +452,12 @@ pub fn edit_prompt(flow: &Flow, request: &str, codex_models: &[String]) -> Strin
 /// a custom role are theirs, not the model's to change); new ones get ids of ours and a free spot on the canvas.
 /// Edges are rebuilt. The result must be a valid flow, or nothing changes.
 pub fn flow_from_edit(base: &Flow, v: &Value, codex_models: &[String]) -> Result<(Flow, String)> {
+    flow_from_edit_with(base, v, codex_models, &[])
+}
+
+/// Like `flow_from_edit`, and also honours an agent given one of `or_models`; the summary then says why.
+pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_models: &[FlowModel]) -> Result<(Flow, String)> {
+    let mut notes: Vec<String> = Vec::new();
     let raw: Vec<Value> = v.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default();
     if raw.is_empty() {
         bail!("the change would leave the flow with no agents");
@@ -394,13 +476,16 @@ pub fn flow_from_edit(base: &Flow, v: &Value, codex_models: &[String]) -> Result
             bail!("two agents were given the same id, so the edges cannot be told apart");
         }
         let existing = base.nodes.iter().find(|b| b.id == said);
-        let engine: Engine = serde_json::from_value(n.get("engine").cloned().unwrap_or_default()).context("unknown engine")?;
+        let mut engine: Engine = serde_json::from_value(n.get("engine").cloned().unwrap_or_default()).context("unknown engine")?;
         let mut model = s("model");
+        let pick = or_pick(n, &model, or_models);
         let known = match engine {
             Engine::Claude => CLAUDE_MODELS.iter().any(|m| *m == model),
             Engine::Codex => codex_models.contains(&model),
         };
-        if !known {
+        if let Some(m) = pick {
+            engine = engine_of(m.driver);
+        } else if !known {
             // An agent that already has a model keeps it when the editor invents one; a new one gets a sensible default.
             model = match (existing, engine) {
                 (Some(e), _) if e.engine == engine => e.model.clone(),
@@ -442,8 +527,14 @@ pub fn flow_from_edit(base: &Flow, v: &Value, codex_models: &[String]) -> Result
             node.role = role;
         }
         node.engine = engine;
-        // An OpenRouter account goes with its model: a different model is one of the built-in ones, which that account cannot serve.
-        if existing.is_none_or(|e| e.model != model) {
+        if let Some(m) = pick {
+            // Only an agent that was not already on this model, on this account, is news worth a line.
+            if existing.is_none_or(|e| e.model != model || e.account.as_deref() != Some(m.account.as_str())) {
+                notes.push(or_note(&if s("name").is_empty() { node.name.clone() } else { s("name") }, m, &s("model_reason")));
+            }
+            node.account = Some(m.account.clone());
+        } else if existing.is_none_or(|e| e.model != model) {
+            // An OpenRouter account goes with its model: a different model is one of the built-in ones, which that account cannot serve.
             node.account = None;
         }
         node.model = model;
@@ -480,7 +571,12 @@ pub fn flow_from_edit(base: &Flow, v: &Value, codex_models: &[String]) -> Result
     flow.validate().map_err(anyhow::Error::msg).context("the changed flow is not valid")?;
     place_new(&mut flow, &added);
     let summary = v.get("summary").and_then(Value::as_str).unwrap_or("").trim();
-    Ok((flow, if summary.is_empty() { "Changed the flow.".into() } else { summary.chars().take(600).collect() }))
+    let mut summary: String = if summary.is_empty() { "Changed the flow.".into() } else { summary.chars().take(600).collect() };
+    for note in notes {
+        summary.push(' ');
+        summary.push_str(&note);
+    }
+    Ok((flow, summary))
 }
 
 /// `n1`, `n2`, ... the first one no agent has.
@@ -516,10 +612,11 @@ pub async fn edit_flow(
     request: &str,
     engine: Engine,
     codex_models: &[String],
+    or_models: &[FlowModel],
     hub: &super::codex::Hub,
     cwd: &Path,
 ) -> Result<(Flow, String, Outcome)> {
-    let (system, prompt, schema) = (edit_system(), edit_prompt(base, request, codex_models), edit_schema());
+    let (system, prompt, schema) = (edit_system(!or_models.is_empty()), edit_prompt(base, request, codex_models, or_models), edit_schema());
     let (v, outcome) = match engine {
         Engine::Claude => one_shot("sonnet", &system, &prompt, schema, cwd).await?,
         Engine::Codex => {
@@ -528,7 +625,7 @@ pub async fn edit_flow(
             one_shot_codex(hub, model, &system, &prompt, &schema, cwd).await?
         }
     };
-    let (flow, summary) = flow_from_edit(base, &v, codex_models)?;
+    let (flow, summary) = flow_from_edit_with(base, &v, codex_models, or_models)?;
     Ok((flow, summary, outcome))
 }
 
@@ -709,7 +806,7 @@ mod tests {
         let cwd = std::env::temp_dir().join(format!("ttm-orch-edit-{}", std::process::id()));
         let b = base();
         for engine in [Engine::Claude, Engine::Codex] {
-            let (f, summary, _) = edit_flow(&b, "Add a reporter at the end that writes up what was done.", engine, &models, &hub, &cwd).await.unwrap();
+            let (f, summary, _) = edit_flow(&b, "Add a reporter at the end that writes up what was done.", engine, &models, &[], &hub, &cwd).await.unwrap();
             eprintln!("{engine:?}: {} agents -> {}; summary: {summary}", b.nodes.len(), f.nodes.len());
             assert!(f.nodes.iter().any(|n| n.role == Role::Reporter), "{engine:?} added no reporter");
             for old in &b.nodes {
@@ -870,13 +967,97 @@ mod tests {
 
     #[test]
     fn the_editor_is_shown_the_flow_and_the_request_and_may_use_custom_roles_in_its_answer() {
-        let p = edit_prompt(&base(), "  add a docs writer  ", &models());
+        let p = edit_prompt(&base(), "  add a docs writer  ", &models(), &[]);
         assert!(p.contains("\"id\": \"n9\"") && p.contains("add a docs writer") && p.contains("gpt-6-luna"));
         assert!(!p.contains("\"x\""), "positions are not the model's business");
         let roles = edit_schema()["properties"]["nodes"]["items"]["properties"]["role"]["enum"].clone();
         assert!(roles.as_array().unwrap().contains(&json!("custom")));
         assert!(edit_schema()["required"].as_array().unwrap().contains(&json!("summary")));
         assert!(!suggest_schema()["properties"]["nodes"]["items"]["properties"]["role"]["enum"].as_array().unwrap().contains(&json!("custom")));
+    }
+
+    fn pinned() -> Vec<FlowModel> {
+        let m = |id: &str, driver: Driver, pin: f64, pout: f64| FlowModel { account: "acct".into(), account_name: "Main".into(), id: id.into(), driver, price_in: Some(pin), price_out: Some(pout), tools: true };
+        vec![m("anthropic/claude-haiku-5.5", Driver::Claude, 1.0, 5.0), m("openai/gpt-6-luna", Driver::Codex, 0.2, 1.2)]
+    }
+
+    #[test]
+    fn the_designer_is_told_about_the_users_openrouter_models_only_when_there_are_some() {
+        let with = suggest_prompt("Do a thing", &models(), &pinned());
+        assert!(with.contains("# OpenRouter models available"));
+        assert!(with.contains("- openai/gpt-6-luna (engine codex; $0.2 in, $1.2 out)"), "{with}");
+        assert!(with.contains("- anthropic/claude-haiku-5.5 (engine claude;"));
+        assert!(!suggest_prompt("Do a thing", &models(), &[]).contains("OpenRouter"));
+        assert!(suggest_system(true).contains("cheaper than the plan model") && suggest_system(true).contains("model_reason"));
+        assert!(suggest_system(false).contains("no OpenRouter models"), "so it does not invent any");
+        let p = edit_prompt(&base(), "x", &models(), &pinned());
+        assert!(p.contains("# OpenRouter models available") && p.find("# OpenRouter").unwrap() < p.find("# The user's request").unwrap());
+        // Every agent answers the two new fields, on both engines' strict schemas.
+        for schema in [suggest_schema(), edit_schema()] {
+            let req = schema["properties"]["nodes"]["items"]["required"].as_array().unwrap().clone();
+            assert!(req.contains(&json!("openrouter")) && req.contains(&json!("model_reason")));
+        }
+        assert_eq!(edit_view(&base())["nodes"][0]["openrouter"], false);
+    }
+
+    #[test]
+    fn a_designer_that_picks_a_pinned_openrouter_model_gets_it_with_the_cli_that_runs_it() {
+        let mut v = suggestion();
+        // It names the wrong engine for the model: the list decides.
+        v["nodes"][1]["engine"] = json!("claude");
+        v["nodes"][1]["model"] = json!("openai/gpt-6-luna");
+        v["nodes"][1]["openrouter"] = json!(true);
+        v["nodes"][1]["model_reason"] = json!("a fifth of the price, fine for this job");
+        let (f, notes) = flow_from_suggestion_with(&v, "f", &models(), &pinned()).unwrap();
+        let n = &f.nodes[1];
+        assert_eq!((n.account.as_deref(), n.model.as_str(), n.engine), (Some("acct"), "openai/gpt-6-luna", Engine::Codex));
+        assert_eq!(notes, vec!["Builder runs on openai/gpt-6-luna through OpenRouter: a fifth of the price, fine for this job".to_string()]);
+        assert!(f.nodes.iter().filter(|n| n.account.is_some()).count() == 1, "only the one it asked for");
+    }
+
+    #[test]
+    fn a_model_the_user_did_not_pin_is_not_used_and_an_unflagged_one_is_not_trusted() {
+        let mut v = suggestion();
+        v["nodes"][1]["model"] = json!("meta/llama-9-giant");
+        v["nodes"][1]["openrouter"] = json!(true);
+        let (f, notes) = flow_from_suggestion_with(&v, "f", &models(), &pinned()).unwrap();
+        assert_eq!((f.nodes[1].account.clone(), f.nodes[1].model.as_str()), (None, "gpt-6.1-sol"), "back to a model that exists");
+        assert!(notes.is_empty());
+        // Naming a pinned id without saying it is OpenRouter is the same as inventing a model.
+        let mut v = suggestion();
+        v["nodes"][1]["model"] = json!("openai/gpt-6-luna");
+        let (f, notes) = flow_from_suggestion_with(&v, "f", &models(), &pinned()).unwrap();
+        assert_eq!((f.nodes[1].account.clone(), f.nodes[1].model.as_str()), (None, "gpt-6.1-sol"));
+        assert!(notes.is_empty());
+        // And with no OpenRouter models at all, nothing can be picked.
+        let mut v = suggestion();
+        v["nodes"][1]["model"] = json!("openai/gpt-6-luna");
+        v["nodes"][1]["openrouter"] = json!(true);
+        assert_eq!(flow_from_suggestion_with(&v, "f", &models(), &[]).unwrap().0.nodes[1].account, None);
+    }
+
+    #[test]
+    fn an_edit_that_moves_an_agent_to_openrouter_says_so_and_one_left_alone_stays_quiet() {
+        let b = base();
+        let (f, summary) = flow_from_edit_with(&b, &edit_answer(|v| {
+            v["nodes"][1]["model"] = json!("anthropic/claude-haiku-5.5");
+            v["nodes"][1]["engine"] = json!("codex");
+            v["nodes"][1]["openrouter"] = json!(true);
+            v["nodes"][1]["model_reason"] = json!("cheaper");
+        }), &models(), &pinned())
+        .unwrap();
+        let n = f.nodes.iter().find(|n| n.id == "n2").unwrap();
+        assert_eq!((n.account.as_deref(), n.model.as_str(), n.engine), (Some("acct"), "anthropic/claude-haiku-5.5", Engine::Claude));
+        assert!(summary.starts_with("Did it.") && summary.ends_with("Builder runs on anthropic/claude-haiku-5.5 through OpenRouter: cheaper"), "{summary}");
+        // The same flow edited again with that agent untouched: no news, and it keeps its account.
+        let (again, summary) = flow_from_edit_with(&f, &{
+            let mut v = edit_view(&f);
+            v["summary"] = json!("Nothing.");
+            v
+        }, &models(), &pinned())
+        .unwrap();
+        assert_eq!(summary, "Nothing.");
+        assert_eq!(again.nodes.iter().find(|n| n.id == "n2").unwrap().account.as_deref(), Some("acct"));
     }
 
     fn suggestion() -> Value {
@@ -982,7 +1163,7 @@ mod tests {
 
     #[test]
     fn the_model_is_told_the_codex_models_it_may_use() {
-        let p = suggest_prompt("Do a thing", &models());
+        let p = suggest_prompt("Do a thing", &models(), &[]);
         assert!(p.contains("Do a thing") && p.contains("gpt-6.1-sol, gpt-6-luna"));
     }
 
@@ -1063,7 +1244,7 @@ mod tests {
 
     #[test]
     fn the_suggest_prompt_offers_every_catalog_role_and_the_researched_rules() {
-        let p = suggest_system();
+        let p = suggest_system(false);
         for d in crate::orch::roles::catalog() {
             assert!(p.contains(&format!("- {} (", role_id(d.id))), "{:?} is missing from the prompt", d.id);
         }

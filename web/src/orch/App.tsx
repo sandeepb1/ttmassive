@@ -415,12 +415,13 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const suggest = (goal: string) =>
     void act(
       () => orch.suggest(goal),
-      (f) => {
+      ({ notes, ...f }) => {
         edit(f, true);
         edited.current = true;
         setSuggesting(false);
         setSideOpen(false);
-        say('Here is a flow for it. Change anything, then run it.');
+        // Which agents run on OpenRouter, and why, so a paid model is never a surprise.
+        say(['Here is a flow for it. Change anything, then run it.', ...(notes ?? [])].join(' '));
       },
     );
   const designRole = async (description: string) => {

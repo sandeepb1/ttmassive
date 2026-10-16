@@ -81,7 +81,11 @@ struct GoalBody {
 }
 
 async fn suggest(State(st): St, Json(b): Json<GoalBody>) -> Result<Response, Fail> {
-    Ok(json_nocache(st.orch.suggest_flow(&st, &b.goal).await?))
+    let (flow, notes) = st.orch.suggest_flow(&st, &b.goal).await?;
+    // The flow as it always was, plus why each agent on OpenRouter is there.
+    let mut v = serde_json::to_value(&flow).map_err(|e| Fail::Internal(e.into()))?;
+    v["notes"] = json!(notes);
+    Ok(json_nocache(v))
 }
 
 #[derive(Deserialize)]
@@ -94,7 +98,7 @@ struct EditBody {
 /// Change a flow from a plain request, with Claude or Codex. The flow is not saved: the page shows it and the user
 /// can undo.
 async fn edit_flow(State(st): St, Json(b): Json<EditBody>) -> Result<Response, Fail> {
-    let (flow, summary) = st.orch.edit_flow(b.flow, &b.request, b.engine).await?;
+    let (flow, summary) = st.orch.edit_flow(&st, b.flow, &b.request, b.engine).await?;
     Ok(json_nocache(json!({ "flow": flow, "summary": summary })))
 }
 

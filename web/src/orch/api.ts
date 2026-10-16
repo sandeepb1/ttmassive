@@ -64,7 +64,7 @@ export const orch = {
   cancel: (id: string) => send<Run>('POST', `${run(id)}/cancel`),
   /** Change a flow as asked, with Claude or Codex. Nothing is saved. */
   editFlow: (flow: Flow, request: string, engine: 'claude' | 'codex') => send<{ flow: Flow; summary: string }>('POST', `${base}/flows/edit`, { flow, request, engine }),
-  suggest: (goal: string) => send<Flow>('POST', `${base}/flows/suggest`, { goal }),
+  suggest: (goal: string) => send<Flow & { notes?: string[] }>('POST', `${base}/flows/suggest`, { goal }),
   popOut: (id: string, node: string) => send<{ session: string }>('POST', `${run(id)}/popout`, { node }),
   usage: () => send<UsageSnapshot>('GET', '/api/usage'),
   recentDirs: (): Promise<RecentDir[]> => fetchRecentDirs(),

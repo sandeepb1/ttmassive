@@ -174,19 +174,24 @@ impl Service {
         if codex.is_empty() { FALLBACK_CODEX.iter().map(|s| s.to_string()).collect() } else { codex }
     }
 
-    pub async fn suggest_flow(&self, st: &Arc<AppState>, goal: &str) -> Result<Flow, Fail> {
-        let _ = st;
+    /// The OpenRouter models a designer may give agents: the user's pinned ones on accounts allowed in flows.
+    async fn or_models(&self, st: &AppState) -> Vec<crate::openrouter::launch::FlowModel> {
+        crate::openrouter::launch::flow_models(&crate::secrets::load(&st.data_dir).await)
+    }
+
+    /// A flow for a goal, and a line for each agent that was given an OpenRouter model, saying why.
+    pub async fn suggest_flow(&self, st: &Arc<AppState>, goal: &str) -> Result<(Flow, Vec<String>), Fail> {
         if goal.trim().is_empty() {
             return Err(Fail::Bad("say what you want done".into()));
         }
         let models = self.codex_models().await;
         let id = format!("f{}", new_id());
-        let (flow, _) = prompts::suggest_flow(goal, &id, &models, &self.scratch).await?;
-        Ok(flow)
+        let (flow, notes, _) = prompts::suggest_flow(goal, &id, &models, &self.or_models(st).await, &self.scratch).await?;
+        Ok((flow, notes))
     }
 
     /// Change a flow as the user asks. Returns the changed flow and what was done; nothing is saved.
-    pub async fn edit_flow(&self, flow: Flow, request: &str, engine: super::graph::Engine) -> Result<(Flow, String), Fail> {
+    pub async fn edit_flow(&self, st: &Arc<AppState>, flow: Flow, request: &str, engine: super::graph::Engine) -> Result<(Flow, String), Fail> {
         if request.trim().is_empty() {
             return Err(Fail::Bad("say what to change".into()));
         }
@@ -197,7 +202,7 @@ impl Service {
         if engine == super::graph::Engine::Codex && models.is_empty() {
             return Err(Fail::Bad("Codex has no model available right now".into()));
         }
-        let (flow, summary, _) = prompts::edit_flow(&flow, request, engine, &models, &self.codex, &self.scratch).await?;
+        let (flow, summary, _) = prompts::edit_flow(&flow, request, engine, &models, &self.or_models(st).await, &self.codex, &self.scratch).await?;
         Ok((flow, summary))
     }
 
