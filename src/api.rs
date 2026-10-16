@@ -12,7 +12,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::Deserialize;
 
 use crate::{
-    AppState, assets, auth::COOKIE_NAME, chat, config::{Agent, RestartPolicy}, files, layouts, memory, modelmenu, modes, notify, ops, resume, search, sessions, suggest, teamclaude, tmux, turns, uploads, usage,
+    AppState, assets, auth::COOKIE_NAME, chat, config::{Agent, RestartPolicy}, files, layouts, memory, modelmenu, modes, notify, ops, resume, search, secrets, sessions, suggest, teamclaude, tmux, turns, uploads, usage,
 };
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -82,6 +82,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/browse", get(browse_dirs))
         .route("/api/groups", get(list_groups))
         .route("/api/layouts", get(get_layouts).put(put_layouts))
+        .route("/api/accounts", get(list_accounts).post(create_account))
+        .route("/api/accounts/{id}", axum::routing::put(update_account).delete(delete_account))
         .route("/api/groups/{name}/start", post(start_group))
         .merge(crate::orch::api::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -245,6 +247,47 @@ async fn put_layouts(State(st): State<Arc<AppState>>, Json(l): Json<layouts::Lay
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             tracing::warn!("saving layouts: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn list_accounts(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    ([(header::CACHE_CONTROL, "no-store")], Json(secrets::load(&st.data_dir).await.views()))
+}
+
+/// Add (`id` None) or change an account and answer with it, minus the key.
+async fn store_account(st: &AppState, id: Option<&str>, input: secrets::AccountInput) -> Response {
+    let saved = secrets::update(&st.data_dir, |a| {
+        let id = a.upsert(id, input)?;
+        Ok(a.get(&id).map(secrets::Account::view))
+    })
+    .await;
+    match saved {
+        Ok(Ok(Some(view))) => Json(view).into_response(),
+        Ok(Ok(None)) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Err(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
+        Err(e) => {
+            tracing::warn!("saving accounts: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn create_account(State(st): State<Arc<AppState>>, Json(input): Json<secrets::AccountInput>) -> Response {
+    store_account(&st, None, input).await
+}
+
+async fn update_account(State(st): State<Arc<AppState>>, Path(id): Path<String>, Json(input): Json<secrets::AccountInput>) -> Response {
+    store_account(&st, Some(&id), input).await
+}
+
+async fn delete_account(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match secrets::update(&st.data_dir, |a| if a.remove(&id) { Ok(()) } else { Err("no such account") }).await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(_)) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::warn!("saving accounts: {e:#}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

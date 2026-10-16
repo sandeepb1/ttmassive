@@ -23,6 +23,7 @@ mod orch;
 mod placeholder;
 mod pty;
 mod question;
+mod secrets;
 mod resume;
 mod screen;
 mod scrollback;
