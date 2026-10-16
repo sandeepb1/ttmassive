@@ -50,7 +50,7 @@ export const orch = {
     send<{ label: string; capability: Capability; output: Output; instructions: string }>('POST', `${base}/custom-role`, { description }),
   runs: () => send<RunSummary[]>('GET', `${base}/runs`),
   getRun: (id: string) => send<Run>('GET', run(id)),
-  createRun: (req: { flow: Flow; goal: string; project: string; skipGrill: boolean }) => send<Run>('POST', `${base}/runs`, req),
+  createRun: (req: { flow: Flow; goal: string; project: string; skipGrill: boolean; readLinks?: boolean }) => send<Run>('POST', `${base}/runs`, req),
   grill: (id: string, answers: string[]) => send<Run>('POST', `${run(id)}/grill`, { answers }),
   start: (id: string, brief?: string) => send<Run>('POST', `${run(id)}/start`, { brief }),
   /** The full record of one turn: what the agent was asked, said, ran, and handed on. */

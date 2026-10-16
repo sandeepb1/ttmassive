@@ -172,10 +172,17 @@ struct CreateBody {
     project: String,
     #[serde(default)]
     skip_grill: bool,
+    /// Fetch the pages the goal links to, when there is a web account. On unless the user turns it off.
+    #[serde(default = "yes")]
+    read_links: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 async fn create_run(State(st): St, Json(b): Json<CreateBody>) -> Result<Response, Fail> {
-    let run = st.orch.create_run(&st, b.flow, b.goal, &b.project, b.skip_grill).await?;
+    let run = st.orch.create_run(&st, b.flow, b.goal, &b.project, b.skip_grill, b.read_links).await?;
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 

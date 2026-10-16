@@ -50,6 +50,39 @@ pub fn url_ok(url: &str) -> Result<(), String> {
     if private { Err("that address is on this machine or its own network".into()) } else { Ok(()) }
 }
 
+/// Most addresses taken from one piece of text.
+pub const MAX_LINKS: usize = 3;
+
+/// The web addresses in `text`, in order, each once: what a person pasted into a goal. Punctuation that ends a sentence is
+/// not part of the address, and addresses on this machine or its network are left out.
+pub fn links_in(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split(|c: char| c.is_whitespace() || "<>\"'`".contains(c)) {
+        let Some(at) = word.find("http://").or_else(|| word.find("https://")) else { continue };
+        let mut url = &word[at..];
+        // A link in brackets or at the end of a sentence: take the trailing marks off, but keep a closing bracket that has its opener inside.
+        while let Some(last) = url.chars().last() {
+            let open = match last {
+                ')' => Some('('),
+                ']' => Some('['),
+                _ => None,
+            };
+            if ".,;:!?".contains(last) || open.is_some_and(|o| url.matches(o).count() < url.matches(last).count()) {
+                url = &url[..url.len() - last.len_utf8()];
+            } else {
+                break;
+            }
+        }
+        if url_ok(url).is_ok() && !out.iter().any(|u| u == url) {
+            out.push(url.to_owned());
+            if out.len() == MAX_LINKS {
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
     match args.get(key).and_then(Value::as_str).map(str::trim) {
         Some(s) if !s.is_empty() => Ok(s),
@@ -107,6 +140,17 @@ mod tests {
         ] {
             assert!(url_ok(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn links_are_found_in_a_goal_without_the_punctuation_around_them() {
+        let goal = "Build it like https://example.com/docs, and see (https://docs.rs/serde/latest/serde/). Also <https://a.test/x?y=1>. Not http://localhost:3000 or ftp://x.test or https://example.com/docs again.";
+        assert_eq!(links_in(goal), ["https://example.com/docs", "https://docs.rs/serde/latest/serde/", "https://a.test/x?y=1"]);
+        assert_eq!(links_in("a bracket inside stays: https://en.wikipedia.org/wiki/Rust_(programming_language)."), ["https://en.wikipedia.org/wiki/Rust_(programming_language)"]);
+        assert!(links_in("no links, only the word http and example.com").is_empty());
+        let many: String = (0..9).map(|i| format!("https://s{i}.test/ ")).collect();
+        assert_eq!(links_in(&many).len(), MAX_LINKS, "never more than a few");
+        assert!(links_in("http://192.168.0.1/admin https://10.0.0.5/").is_empty(), "this machine's network is not fetched for a stranger's text");
     }
 
     #[tokio::test]

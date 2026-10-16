@@ -249,6 +249,9 @@ pub struct Run {
     /// Use outside the nodes: writing prompts and grilling.
     #[serde(default)]
     pub overhead: Tokens,
+    /// Pages fetched from the links in the goal, shown to every agent after the brief.
+    #[serde(default)]
+    pub references: Vec<Reference>,
     /// Dollars spent outside the nodes, on paid models: choosing models for agents, mostly.
     #[serde(default)]
     pub overhead_usd: f64,
@@ -288,6 +291,22 @@ pub struct Run {
     #[serde(default)]
     pub turns: Vec<Turn>,
 }
+
+/// A web page fetched for a run, given to every agent as reference material.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reference {
+    pub url: String,
+    /// The page's text, or why it could not be read.
+    pub text: String,
+    /// Firecrawl credits it cost.
+    pub credits: u64,
+    /// The page could not be fetched.
+    #[serde(default)]
+    pub failed: bool,
+}
+
+/// Longest page text kept per reference.
+pub const MAX_REFERENCE: usize = 8_000;
 
 /// Unix time in milliseconds.
 pub fn now_millis() -> i64 {
@@ -363,6 +382,7 @@ impl Run {
             baseline: Baseline::default(),
             overhead: Tokens::default(),
             overhead_usd: 0.0,
+            references: Vec::new(),
             status: RunStatus::Running,
             nodes,
             approved: HashSet::new(),
@@ -389,7 +409,7 @@ impl Run {
 
     /// Firecrawl credits the run's agents have used on web tools.
     pub fn credits(&self) -> u64 {
-        self.nodes.values().map(|n| n.credits).sum()
+        self.nodes.values().map(|n| n.credits).sum::<u64>() + self.references.iter().map(|r| r.credits).sum::<u64>()
     }
 
     /// Add a line to the run's log.

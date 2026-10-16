@@ -738,3 +738,6 @@ export const withRoutingChange = (node: FlowNode, routing: Routing, models: Mode
 /** The one line under a turn's model that says what the dial and ladder did, for an agent on a ladder. */
 export const ladderSummary = (n: Pick<FlowNode, 'routing' | 'ladder'>): string | null =>
   n.routing && n.routing !== 'pinned' && n.ladder?.length ? `${n.ladder.length} rung${n.ladder.length === 1 ? '' : 's'}, ${n.routing === 'auto' ? 'router picks' : 'by rules'}` : null;
+
+/** Whether a goal contains a web address, which a web account can read for the agents. */
+export const hasLink = (text: string): boolean => /https?:\/\/[^\s<>"'`]{4,}/.test(text);

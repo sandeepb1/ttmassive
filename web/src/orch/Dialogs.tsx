@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
 import { orch } from './api';
 import { Icon, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
 import type { Budget, Capability, Flow, Output, Question, RepoState, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
@@ -60,16 +60,19 @@ function remembered(): string {
   }
 }
 
-export function NewRunDialog({ flow, limits, recents, busy, error, onCreate, onClose }: {
+export function NewRunDialog({ flow, limits, recents, busy, error, web, onCreate, onClose }: {
   flow: Flow;
+  /** There is a web account, so the links in the goal can be read for the agents. */
+  web: boolean;
   limits: Budget;
   recents: RecentDir[];
   busy: boolean;
   error: string | null;
-  onCreate: (goal: string, project: string, skipGrill: boolean) => void;
+  onCreate: (goal: string, project: string, skipGrill: boolean, readLinks: boolean) => void;
   onClose: () => void;
 }) {
   const [goal, setGoal] = useState('');
+  const [readLinks, setReadLinks] = useState(true);
   const [project, setProject] = useState(remembered() || recents[0]?.path || '');
   const [skip, setSkip] = useState(false);
   const goalRef = useRef<HTMLTextAreaElement>(null);
@@ -112,7 +115,7 @@ export function NewRunDialog({ flow, limits, recents, busy, error, onCreate, onC
     } catch {
       /* a private window: the choice is simply not remembered */
     }
-    onCreate(goal.trim(), project.trim(), skip);
+    onCreate(goal.trim(), project.trim(), skip, readLinks);
   };
   const b = limits;
   return (
@@ -173,6 +176,9 @@ export function NewRunDialog({ flow, limits, recents, busy, error, onCreate, onC
         </div>
       </Field>
       <Switch on={skip} onChange={setSkip} label="Skip the questions" hint="Use what you typed as the brief." />
+      {web && hasLink(goal) && (
+        <Switch on={readLinks} onChange={setReadLinks} label="Read the links in it" hint="Fetches up to three pages through your Firecrawl account (about a credit each) and gives their text to every agent." />
+      )}
       <p className="mc-hint">
         Stops at {b.stopWindowPct}% of any plan window, or when the run has used {b.claudePct}% of Claude’s or {b.codexPct}% of Codex’s 5-hour window. Change them any time in Settings.
       </p>

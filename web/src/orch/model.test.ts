@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
@@ -696,4 +696,11 @@ test('turning routing on gives an agent a ladder to start with, and turning it o
   assert.equal(ladderSummary({ routing: 'auto', ladder: [{ engine: 'claude', model: 'a', account: null, effort: null }] }), '1 rung, router picks');
   assert.equal(ladderSummary({ routing: 'ladder', ladder: [] }), null);
   assert.equal(ladderSummary({ routing: 'pinned', ladder: [{ engine: 'claude', model: 'a', account: null, effort: null }] }), null);
+});
+
+test('a goal with a web address offers to read it', () => {
+  assert.equal(hasLink('Build it like https://example.com/docs please'), true);
+  assert.equal(hasLink('see http://a.test'), true);
+  assert.equal(hasLink('no link, only example.com and the word http'), false);
+  assert.equal(hasLink('https://'), false);
 });

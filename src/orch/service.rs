@@ -238,6 +238,22 @@ impl Service {
         Ok(prompts::custom_role(description, self.via("customRole").await.as_ref(), &self.scratch).await?.0)
     }
 
+    /// Fetch the pages the goal links to, for every agent to read. A page that cannot be fetched is noted and the run goes on
+    /// without it; so does a run with no web account.
+    async fn references(&self, accounts: &crate::secrets::Accounts, goal: &str) -> Vec<super::run::Reference> {
+        let links = crate::firecrawl::tools::links_in(goal);
+        let Some(account) = accounts.firecrawl().filter(|_| !links.is_empty()) else { return Vec::new() };
+        let Ok(client) = crate::firecrawl::client::Client::new(account) else { return Vec::new() };
+        let mut out = Vec::new();
+        for url in links {
+            out.push(match client.scrape(&url).await {
+                Ok(page) => super::run::Reference { url, text: crate::orch::trace::clip(&page.text, super::run::MAX_REFERENCE), credits: page.credits, failed: false },
+                Err(e) => super::run::Reference { url, text: format!("{e:#}"), credits: 0, failed: true },
+            });
+        }
+        out
+    }
+
     pub async fn create_run(
         &self,
         st: &Arc<AppState>,
@@ -245,6 +261,7 @@ impl Service {
         goal: String,
         project: &str,
         skip_grill: bool,
+        read_links: bool,
     ) -> Result<Run, Fail> {
         flow.validate().map_err(Fail::Bad)?;
         // An agent on OpenRouter needs its account to be there and allowed, so say so now rather than mid-run.
@@ -271,6 +288,17 @@ impl Service {
         let mut run = Run::new(new_id(), flow, goal.trim().to_string(), now());
         run.project = project.to_string_lossy().into_owned();
         run.baseline = w.baseline();
+        if read_links {
+            run.references = self.references(&accounts, goal.trim()).await;
+            let notes: Vec<String> = run
+                .references
+                .iter()
+                .map(|r| if r.failed { format!("Could not read {}: {}", r.url, r.text) } else { format!("Read {} ({} credit{})", r.url, r.credits, if r.credits == 1 { "" } else { "s" }) })
+                .collect();
+            for what in notes {
+                run.note(None, super::run::LogKind::Event, what, None);
+            }
+        }
         run.status = RunStatus::Grilling;
         run.grill = Some(Grill {
             brief: skip_grill.then(|| goal.trim().to_string()),

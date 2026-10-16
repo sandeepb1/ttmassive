@@ -478,14 +478,14 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const copyText = (t: string) => void navigator.clipboard?.writeText(t).then(() => say('Copied'), () => say('Could not copy'));
 
   // Running a flow saves it first, so every execution has a flow to live under.
-  const createRun = (goal: string, project: string, skipGrill: boolean) =>
+  const createRun = (goal: string, project: string, skipGrill: boolean, readLinks: boolean) =>
     void act(
       async () => {
         if (dirty || !isSaved) {
           const saved = await orch.saveFlow(flow);
           if (!saved.ok) return { ok: false as const, error: saved.error };
         }
-        return orch.createRun({ flow, goal, project, skipGrill });
+        return orch.createRun({ flow, goal, project, skipGrill, readLinks });
       },
       (r) => {
         setDialog(false);
@@ -739,7 +739,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           )}
           {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
           {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
-          {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
+          {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
           {run?.status.state === 'grilling' && (
             <GrillDialog
               run={run}
