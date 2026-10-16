@@ -1,5 +1,5 @@
-//! A client for Firecrawl's v2 API, and the shape its answers are given to an agent in: compact text, cut to a size
-//! that does not flood a model's context, with the credits each call cost taken from the answer itself.
+//! A client for Firecrawl's v2 API, giving its answers in the shared shapes, with the credits each call cost taken from
+//! the answer itself.
 
 use std::time::Duration;
 
@@ -7,24 +7,12 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::error::{self, Kind, ProviderError};
-use super::render;
 use super::types::{Crawl, Fetched, MapEntry, Page, SearchHit, SearchOpts, SiteMap};
 use crate::secrets::Account;
 
 pub const DEFAULT_URL: &str = "https://api.firecrawl.dev";
-/// Longest page text handed to an agent, in characters.
-const MAX_PAGE: usize = 30_000;
-/// Longest a whole answer may be.
-const MAX_ANSWER: usize = 60_000;
-/// Longest text taken from each page of a crawl.
-const MAX_CRAWLED_PAGE: usize = 6_000;
 /// Most pages one crawl call may fetch, whatever the agent asks for.
 pub const MAX_CRAWL_PAGES: u32 = 20;
-/// Pages crawled for a documentation snapshot.
-pub const DOCS_PAGES: u32 = 10;
-/// Longest text taken from each page of a documentation snapshot, and of the whole snapshot.
-const MAX_DOC_PAGE: usize = 20_000;
-const MAX_DOC_TOTAL: usize = 200_000;
 const MAX_SEARCH: u32 = 10;
 const MAX_MAP: usize = 100;
 const CRAWL_POLL: Duration = Duration::from_secs(2);
@@ -33,20 +21,9 @@ const CRAWL_WAIT: Duration = Duration::from_secs(90);
 pub struct Client {
     base: String,
     key: String,
-    /// What one credit costs, in dollars, to price what a call used.
-    usd_per_credit: f64,
     http: reqwest::Client,
     /// How long to wait between looks at a crawl.
     poll: Duration,
-}
-
-/// What a tool call gives back: text for the agent, and what it cost.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Output {
-    pub text: String,
-    pub credits: u64,
-    /// What those credits cost, at the account's price per credit.
-    pub usd: f64,
 }
 
 /// Credits left on an account, and what its plan includes.
@@ -59,16 +36,12 @@ pub struct Balance {
 impl Client {
     pub fn new(account: &Account) -> Result<Client> {
         anyhow::ensure!(!account.key.is_empty(), "the Firecrawl account has no key");
-        Ok(Client { usd_per_credit: account.credit_usd(), ..Client::with(&account.base_url, &account.key) })
+        Ok(Client::with(&account.base_url, &account.key))
     }
 
     pub fn with(base: &str, key: &str) -> Client {
         let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(120)).build().expect("http client");
-        Client { base: base.trim_end_matches('/').to_owned(), key: key.to_owned(), usd_per_credit: super::types::Provider::Firecrawl.default_usd_per_credit(), http, poll: CRAWL_POLL }
-    }
-
-    fn output(&self, text: String, credits: u64) -> Output {
-        Output { text, credits, usd: credits as f64 * self.usd_per_credit }
+        Client { base: base.trim_end_matches('/').to_owned(), key: key.to_owned(), http, poll: CRAWL_POLL }
     }
 
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -140,32 +113,6 @@ impl Client {
                 _ => {}
             }
         }
-    }
-
-    pub async fn search(&self, query: &str, limit: u32) -> Result<Output> {
-        let f = self.search_hits(query, limit, SearchOpts::default()).await?;
-        Ok(self.output(render::search(&f.value), f.credits))
-    }
-
-    pub async fn scrape(&self, url: &str) -> Result<Output> {
-        let f = self.scrape_page(url).await?;
-        Ok(self.output(render::page(&f.value, MAX_PAGE), f.credits))
-    }
-
-    pub async fn map(&self, url: &str, limit: u32) -> Result<Output> {
-        let f = self.map_site(url, limit).await?;
-        Ok(self.output(render::map(&f.value), f.credits))
-    }
-
-    pub async fn crawl(&self, url: &str, limit: u32) -> Result<Output> {
-        let f = self.crawl_site(url, limit).await?;
-        Ok(self.output(render::crawl(&f.value, MAX_CRAWLED_PAGE, MAX_ANSWER), f.credits))
-    }
-
-    /// A crawl kept in full, for reading later in files rather than handing straight to a model.
-    pub async fn crawl_pages(&self, url: &str, limit: u32) -> Result<Output> {
-        let f = self.crawl_site(url, limit).await?;
-        Ok(self.output(render::crawl(&f.value, MAX_DOC_PAGE, MAX_DOC_TOTAL), f.credits))
     }
 }
 
@@ -324,11 +271,11 @@ mod tests {
     async fn scrape_and_search_send_the_key_and_report_what_they_cost() {
         let (base, seen) = serve().await;
         let c = Client::with(&format!("{base}/"), "fc-key");
-        let s = c.scrape("https://x.test").await.unwrap();
-        assert_eq!((s.text.as_str(), s.credits), ("# T\nhttps://x.test\n\nBody text", 1));
-        let r = c.search("rust", 99).await.unwrap();
+        let s = c.scrape_page("https://x.test").await.unwrap();
+        assert_eq!((s.value, s.credits), (Page { url: "https://x.test".into(), title: "T".into(), markdown: "Body text".into() }, 1));
+        let r = c.search_hits("rust", 99, SearchOpts::default()).await.unwrap();
         assert_eq!(r.credits, 2);
-        assert!(r.text.contains("1. A — https://a.test"));
+        assert_eq!(r.value[0].url, "https://a.test");
         assert!(seen.auth.lock().unwrap().iter().all(|a| a == "Bearer fc-key"));
         let bodies = seen.bodies.lock().unwrap();
         assert_eq!(bodies[1].1["limit"], 10, "an agent cannot ask for more than the cap");
@@ -340,8 +287,8 @@ mod tests {
         let (base, seen) = serve().await;
         let mut c = Client::with(&base, "fc-key");
         c.poll = Duration::from_millis(10);
-        let out = c.crawl("https://x.test", 500).await.unwrap();
-        assert!(out.text.starts_with("1 page(s):") && out.text.contains("# P\nhttps://x.test/p\n\na\nb"), "{}", out.text);
+        let out = c.crawl_site("https://x.test", 500).await.unwrap();
+        assert_eq!(out.value.pages, vec![Page { url: "https://x.test/p".into(), title: "P".into(), markdown: "a\nb".into() }]);
         assert_eq!(out.credits, 2);
         assert_eq!(*seen.polls.lock().unwrap(), 2);
         assert_eq!(seen.bodies.lock().unwrap()[0].1["limit"], MAX_CRAWL_PAGES, "the page cap holds whatever was asked");
@@ -354,7 +301,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let err = Client::with(&base, "k").scrape("https://x.test").await.unwrap_err().to_string();
+        let err = Client::with(&base, "k").scrape_page("https://x.test").await.unwrap_err().to_string();
         assert!(err.contains("402") && err.contains("Insufficient credits"), "{err}");
     }
 }

@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::web::client::Client;
 use crate::secrets::Accounts;
 
 const FILE: &str = "model-intel.json";
@@ -46,11 +45,11 @@ pub async fn notes(data_dir: &Path, accounts: &Accounts) -> Option<String> {
     if fresh(&have, &urls, now()) {
         return Some(have.text);
     }
-    let client = accounts.firecrawl().and_then(|a| Client::new(a).ok());
+    let pool = crate::web::pool::Pool::of(accounts);
     let mut text = String::new();
-    if let Some(c) = client {
+    if !pool.is_empty() {
         for u in &urls {
-            if let Ok(page) = c.scrape(u).await {
+            if let Ok(page) = crate::web::tools::page_text(&pool, u).await {
                 text.push_str(&format!("From {u}:\n{}\n\n", crate::orch::trace::clip(&page.text, PER_PAGE)));
             }
         }

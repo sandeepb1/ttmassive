@@ -388,13 +388,14 @@ async fn chat_direct(State(st): State<Arc<AppState>>, Json(b): Json<DirectChat>)
         return (StatusCode::BAD_REQUEST, "that account has no key, or has no models").into_response();
     };
     let endpoint = chat::endpoint_for(account, &b.model);
-    let web = b.web.then(|| accounts.firecrawl().and_then(|a| crate::web::client::Client::new(a).ok())).flatten();
+    let web = b.web.then(|| Some(crate::web::pool::Pool::of(&accounts)).filter(|p| !p.is_empty())).flatten();
     let run = async {
         Ok::<_, anyhow::Error>(match web {
-            Some(client) => {
-                let r = chat::complete_with_tools(&endpoint, &messages, None, &crate::web::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::web::tools::Web(client)).await?;
-                let tools: Vec<_> = r.events.iter().map(|e| serde_json::json!({"name": e.name, "arguments": e.arguments})).collect();
-                (r.reply, tools, r.credits, r.web_usd)
+            Some(pool) => {
+                let tools = crate::web::tools::chat_tools(&pool);
+                let r = chat::complete_with_tools(&endpoint, &messages, None, &tools, chat::MAX_TOOL_CALLS, &crate::web::tools::Web(pool)).await?;
+                let used: Vec<_> = r.events.iter().map(|e| serde_json::json!({"name": e.name, "arguments": e.arguments})).collect();
+                (r.reply, used, r.credits, r.web_usd)
             }
             None => (chat::complete(&endpoint, &messages, None).await?, Vec::new(), 0, 0.0),
         })

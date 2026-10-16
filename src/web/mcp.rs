@@ -1,4 +1,4 @@
-//! An MCP server (streamable HTTP, answering in plain JSON) that gives an agent CLI the Firecrawl tools. The agent
+//! An MCP server (streamable HTTP, answering in plain JSON) that gives an agent CLI the web tools. The agent
 //! holds a lease token, not the account's key; every call is checked against the lease's cost cap and its cost
 //! is added to the lease, so a run's web use is counted exactly.
 
@@ -12,7 +12,10 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use super::{client::Client, tools};
+use super::{
+    pool::{Budget, Pool},
+    tools,
+};
 use crate::{AppState, openrouter::proxy::{Leases, token_of}, secrets};
 
 /// The protocol version answered when the client names one we do not know.
@@ -28,7 +31,7 @@ fn tool_result(id: &Value, text: String, is_error: bool) -> Value {
 }
 
 /// Answer one JSON-RPC message. `None` for a notification, which gets no answer.
-pub async fn handle_message(msg: &Value, token: &str, leases: &Leases, client: Option<&Client>) -> Option<Value> {
+pub async fn handle_message(msg: &Value, token: &str, leases: &Leases, pool: Option<&Pool>) -> Option<Value> {
     let id = msg.get("id")?.clone();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     Some(match method {
@@ -39,11 +42,11 @@ pub async fn handle_message(msg: &Value, token: &str, leases: &Leases, client: O
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "ttm-web", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Web search and page fetching. Each call uses Firecrawl credits, which are counted against this run.",
+                "instructions": "Web search and page fetching. Each call uses credits on your web accounts, which are counted against this run.",
             }})
         }
         "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
-        "tools/list" => json!({"jsonrpc": "2.0", "id": id, "result": {"tools": tools::definitions()}}),
+        "tools/list" => json!({"jsonrpc": "2.0", "id": id, "result": {"tools": pool.map(tools::definitions).unwrap_or_default()}}),
         "tools/call" => {
             let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("");
             let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));
@@ -51,12 +54,12 @@ pub async fn handle_message(msg: &Value, token: &str, leases: &Leases, client: O
             if lease.over_web_cap() {
                 return Some(tool_result(&id, format!("The web cost cap for this run is reached (${:.2} spent). Work from what you already have.", lease.spent.web_usd), true));
             }
-            let Some(client) = client else { return Some(tool_result(&id, "Web access is not set up: there is no Firecrawl account to use.".into(), true)) };
-            match tools::call(client, name, &args).await {
-                Ok(out) => {
-                    leases.record_web(token, out.credits, out.usd);
-                    tool_result(&id, out.text, false)
-                }
+            let Some(pool) = pool.filter(|p| !p.is_empty()) else { return Some(tool_result(&id, "Web access is not set up: there is no web account to use.".into(), true)) };
+            // The cap is checked again before each account is tried, and every attempt is counted as it is made.
+            let allowed = || leases.get(token).is_some_and(|l| !l.over_web_cap());
+            let record = |credits: u64, usd: f64| leases.record_web(token, credits, usd);
+            match tools::call(pool, Some(&Budget { allowed: &allowed, record: &record }), name, &args).await {
+                Ok(out) => tool_result(&id, out.text, false),
                 Err(e) => tool_result(&id, format!("{e:#}"), true),
             }
         }
@@ -76,22 +79,23 @@ pub async fn handle(State(st): State<Arc<AppState>>, ConnectInfo(peer): ConnectI
         return (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")]).into_response();
     }
     let Some(token) = token_of(&headers) else { return StatusCode::UNAUTHORIZED.into_response() };
-    let Some(lease) = st.leases.get(&token) else { return StatusCode::UNAUTHORIZED.into_response() };
+    if st.leases.get(&token).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     let Ok(msg) = serde_json::from_slice::<Value>(&body) else {
         return (StatusCode::BAD_REQUEST, axum::Json(rpc_error(&Value::Null, -32700, "parse error"))).into_response();
     };
-    let accounts = secrets::load(&st.data_dir).await;
-    let client = accounts.get(&lease.account).filter(|a| a.kind == secrets::Kind::Firecrawl).and_then(|a| Client::new(a).ok());
+    let pool = Pool::of(&secrets::load(&st.data_dir).await);
 
     let answers: Vec<Value> = match &msg {
         Value::Array(batch) => {
             let mut v = Vec::new();
             for m in batch {
-                v.extend(handle_message(m, &token, &st.leases, client.as_ref()).await);
+                v.extend(handle_message(m, &token, &st.leases, Some(&pool)).await);
             }
             v
         }
-        one => handle_message(one, &token, &st.leases, client.as_ref()).await.into_iter().collect(),
+        one => handle_message(one, &token, &st.leases, Some(&pool)).await.into_iter().collect(),
     };
     match (answers.len(), &msg) {
         (0, _) => StatusCode::ACCEPTED.into_response(),
@@ -103,16 +107,19 @@ pub async fn handle(State(st): State<Arc<AppState>>, ConnectInfo(peer): ConnectI
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::web::{client::Client, pool::{Cooldowns, Member}};
     use axum::{Router, routing::post};
+    use std::collections::HashMap;
 
-    async fn firecrawl() -> Client {
+    /// A pool of one Firecrawl account, at a cent a credit, in front of a stand-in service.
+    async fn firecrawl() -> Pool {
         let app = Router::new()
             .route("/v2/search", post(|| async { axum::Json(json!({"creditsUsed": 2, "data": {"web": [{"url": "https://a.test", "title": "A", "description": "d"}]}})) }))
             .route("/v2/scrape", post(|| async { axum::Json(json!({"data": {"markdown": "Body", "metadata": {"title": "T", "sourceURL": "https://x.test", "creditsUsed": 1}}})) }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        Client::with(&base, "k")
+        Pool::new(vec![Member::firecrawl("fc", 0.01, Client::with(&base, "k"))], HashMap::new(), Arc::new(Cooldowns::default()))
     }
 
     fn call(name: &str, args: Value) -> Value {
@@ -129,8 +136,10 @@ mod tests {
         let odd = handle_message(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "1999-01-01"}}), "t", &l, None).await.unwrap();
         assert_eq!(odd["result"]["protocolVersion"], VERSION, "an unknown version is answered with ours");
         assert!(handle_message(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), "t", &l, None).await.is_none());
-        let list = handle_message(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), "t", &l, None).await.unwrap();
+        let list = handle_message(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), "t", &l, Some(&firecrawl().await)).await.unwrap();
         assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 4);
+        let bare = handle_message(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), "t", &l, None).await.unwrap();
+        assert!(bare["result"]["tools"].as_array().unwrap().is_empty(), "with no web account there is nothing to offer");
         assert_eq!(handle_message(&json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}), "t", &l, None).await.unwrap()["result"], json!({}));
         let nope = handle_message(&json!({"jsonrpc": "2.0", "id": 4, "method": "resources/list"}), "t", &l, None).await.unwrap();
         assert_eq!(nope["error"]["code"], -32601);
@@ -143,18 +152,19 @@ mod tests {
         let a = handle_message(&call("web_search", json!({"query": "rust"})), &t, &l, Some(&c)).await.unwrap();
         assert_eq!(a["id"], 7);
         assert_eq!(a["result"]["isError"], false);
-        assert!(a["result"]["content"][0]["text"].as_str().unwrap().contains("1. A — https://a.test"));
+        let text = a["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("1. A — https://a.test") && text.ends_with("(via Firecrawl)"), "{text}");
         handle_message(&call("scrape", json!({"url": "https://x.test"})), &t, &l, Some(&c)).await.unwrap();
         let spent = l.get(&t).unwrap().spent;
         assert_eq!(spent.credits, 3, "2 for the search and 1 for the page");
-        assert!((spent.web_usd - 3.0 * 0.00083).abs() < 1e-9, "priced at the account's rate: {}", spent.web_usd);
+        assert!((spent.web_usd - 0.03).abs() < 1e-9, "priced at the account's rate: {}", spent.web_usd);
     }
 
     #[tokio::test]
     async fn at_the_cost_cap_a_call_is_refused_without_reaching_firecrawl() {
         let (l, c) = (Leases::new(), firecrawl().await);
         let t = l.mint("fc", "firecrawl", "tag", None);
-        l.set_web_cap("tag", Some(0.001));
+        l.set_web_cap("tag", Some(0.01));
         handle_message(&call("web_search", json!({"query": "rust"})), &t, &l, Some(&c)).await.unwrap();
         let refused = handle_message(&call("scrape", json!({"url": "https://x.test"})), &t, &l, Some(&c)).await.unwrap();
         assert_eq!(refused["result"]["isError"], true);

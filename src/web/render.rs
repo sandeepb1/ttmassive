@@ -2,6 +2,16 @@
 
 use super::types::{Crawl, Page, Provider, SearchHit, SiteMap};
 
+/// Longest page text handed to an agent, in characters.
+pub const PAGE: usize = 30_000;
+/// Longest a whole answer may be.
+pub const ANSWER: usize = 60_000;
+/// Longest text taken from each page of a crawl.
+pub const CRAWLED_PAGE: usize = 6_000;
+/// Longest text taken from each page of a documentation snapshot, and of the whole snapshot.
+pub const DOC_PAGE: usize = 20_000;
+pub const DOC_TOTAL: usize = 200_000;
+
 /// Cut `s` to `max` characters, saying so when it was.
 pub fn cut(s: &str, max: usize) -> String {
     let n = s.chars().count();

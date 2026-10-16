@@ -351,9 +351,9 @@ impl Accounts {
         self.accounts.iter().filter(|a| a.kind.is_web() && !a.key.is_empty() && a.use_in_orchestrator)
     }
 
-    /// The Firecrawl account agents use: the first with a key that is allowed in flows.
-    pub fn firecrawl(&self) -> Option<&Account> {
-        self.accounts.iter().find(|a| a.kind == Kind::Firecrawl && !a.key.is_empty() && a.use_in_orchestrator)
+    /// Whether agents have any web account to use.
+    pub fn has_web(&self) -> bool {
+        self.web_accounts().next().is_some()
     }
 
     /// Where to send a helper's call, when the user chose a model for it and its account can still be used.
@@ -654,12 +654,12 @@ mod tests {
         let acct = a.get(&id).unwrap();
         assert_eq!(acct.base_url, crate::web::client::DEFAULT_URL);
         assert!(acct.models.is_empty(), "it has no models to pin");
-        assert!(a.firecrawl().is_some());
+        assert!(a.has_web());
         a.accounts[0].use_in_orchestrator = false;
-        assert!(a.firecrawl().is_none(), "off in flows means agents do not get it");
+        assert!(!a.has_web(), "off in flows means agents do not get it");
         a.accounts[0].use_in_orchestrator = true;
         a.accounts[0].key.clear();
-        assert!(a.firecrawl().is_none(), "no key, no web");
+        assert!(!a.has_web(), "no key, no web");
         let mut own = input("Self", Kind::Firecrawl);
         own.base_url = "http://localhost:3002/".into();
         let id2 = a.upsert(None, own).unwrap();

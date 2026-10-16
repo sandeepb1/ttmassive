@@ -176,7 +176,7 @@ impl Service {
         let accounts = crate::secrets::load(data_dir).await;
         let openrouter = crate::openrouter::launch::flow_models(&accounts);
         // `web`: agents can be given web access, because there is a Firecrawl account to give it with.
-        json!({"claude": prompts::CLAUDE_MODELS, "codex": codex, "openrouter": openrouter, "web": accounts.firecrawl().is_some()})
+        json!({"claude": prompts::CLAUDE_MODELS, "codex": codex, "openrouter": openrouter, "web": accounts.has_web()})
     }
 
     async fn codex_models(&self) -> Vec<String> {
@@ -244,11 +244,13 @@ impl Service {
     /// without it; so does a run with no web account.
     async fn references(&self, accounts: &crate::secrets::Accounts, goal: &str) -> Vec<super::run::Reference> {
         let links = crate::web::tools::links_in(goal);
-        let Some(account) = accounts.firecrawl().filter(|_| !links.is_empty()) else { return Vec::new() };
-        let Ok(client) = crate::web::client::Client::new(account) else { return Vec::new() };
+        let pool = crate::web::pool::Pool::of(accounts);
+        if links.is_empty() || pool.is_empty() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for url in links {
-            out.push(match client.scrape(&url).await {
+            out.push(match crate::web::tools::page_text(&pool, &url).await {
                 Ok(page) => super::run::Reference { url, text: crate::orch::trace::clip(&page.text, super::run::MAX_REFERENCE), credits: page.credits, web_usd: page.usd, failed: false },
                 Err(e) => super::run::Reference { url, text: format!("{e:#}"), credits: 0, web_usd: 0.0, failed: true },
             });
@@ -258,13 +260,15 @@ impl Service {
 
     /// Crawl the documentation sites the user named, for the builders to read. Only addresses a stranger could reach are fetched.
     async fn docs(&self, accounts: &crate::secrets::Accounts, urls: &[String]) -> Vec<super::run::Reference> {
-        let Some(account) = accounts.firecrawl().filter(|_| !urls.is_empty()) else { return Vec::new() };
-        let Ok(client) = crate::web::client::Client::new(account) else { return Vec::new() };
+        let pool = crate::web::pool::Pool::of(accounts);
+        if urls.is_empty() || pool.is_empty() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for url in urls.iter().map(|u| u.trim()).filter(|u| !u.is_empty()).take(crate::web::tools::MAX_LINKS) {
             out.push(match crate::web::tools::url_ok(url) {
                 Err(why) => super::run::Reference { url: url.into(), text: why, credits: 0, web_usd: 0.0, failed: true },
-                Ok(()) => match client.crawl_pages(url, crate::web::client::DOCS_PAGES).await {
+                Ok(()) => match crate::web::tools::docs_text(&pool, url).await {
                     Ok(page) => super::run::Reference { url: url.into(), text: crate::orch::trace::clip(&page.text, super::run::MAX_DOCS), credits: page.credits, web_usd: page.usd, failed: false },
                     Err(e) => super::run::Reference { url: url.into(), text: format!("{e:#}"), credits: 0, web_usd: 0.0, failed: true },
                 },
@@ -372,7 +376,7 @@ impl Service {
             (goal, project, flow, history, round, run.references.clone())
         };
         let accounts = crate::secrets::load(&self.data_dir).await;
-        let research = accounts.firecrawl().and_then(|a| crate::web::client::Client::new(a).ok());
+        let research = Some(crate::web::pool::Pool::of(&accounts)).filter(|p| !p.is_empty());
         let (step, outcome) = prompts::grill(&goal, &project, &flow, &history, round, accounts.helper_endpoint("grill").as_ref(), &pages, research, &self.scratch).await?;
         let mut run = live.shared.lock().unwrap_or_else(|e| e.into_inner());
         run.overhead.add(&outcome.tokens);

@@ -209,12 +209,14 @@ impl EngineRunner {
             return None;
         }
         let accounts = crate::secrets::load(&self.data_dir).await;
-        let account = accounts.firecrawl()?;
+        if !accounts.has_web() {
+            return None;
+        }
         let tag = self.web_tag(&node.id);
         let cap = if self.waived.load(Ordering::SeqCst) { None } else { self.limits.lock().unwrap_or_else(|e| e.into_inner()).run_web_usd };
         let token = match self.leases.by_tag(&tag) {
             Some((token, _)) => token,
-            None => self.leases.mint(&account.id, "firecrawl", &tag, None),
+            None => self.leases.mint("web", "web", &tag, None),
         };
         self.leases.set_web_cap(&tag, cap);
         Some(Proxy { origin: self.origin.clone(), token })
@@ -304,10 +306,11 @@ impl EngineRunner {
         history.push(Message::user(prompt));
         log(format!("→ asked {} directly", node.model));
         // With web access it may search and fetch pages (a few calls a turn, and nothing else: no files, no shell).
-        let web = if node.web { accounts.firecrawl().and_then(|a| crate::web::client::Client::new(a).ok()) } else { None };
+        let web = if node.web { Some(crate::web::pool::Pool::of(&accounts)).filter(|p| !p.is_empty()) } else { None };
         let (reply, credits, web_usd) = match web {
-            Some(client) => {
-                let r = chat::complete_with_tools(&endpoint, &history, Some(&schema), &crate::web::tools::chat_tools(), chat::MAX_TOOL_CALLS, &crate::web::tools::Web(client)).await?;
+            Some(pool) => {
+                let tools = crate::web::tools::chat_tools(&pool);
+                let r = chat::complete_with_tools(&endpoint, &history, Some(&schema), &tools, chat::MAX_TOOL_CALLS, &crate::web::tools::Web(pool)).await?;
                 for e in &r.events {
                     log(format!("→ used {}", e.name));
                     trace.push(Kind::Tool, e.name.clone(), &e.arguments);
@@ -485,7 +488,7 @@ impl EngineRunner {
     /// One turn of a node, recording what happened into `trace` (and the commit a builder's work was saved in) even if it fails.
     async fn run_turn(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace, commit: &mut Option<String>) -> Result<Outcome> {
         if node.direct {
-            let has_web = node.web && crate::secrets::load(&self.data_dir).await.firecrawl().is_some();
+            let has_web = node.web && crate::secrets::load(&self.data_dir).await.has_web();
             let prompt = format!("{prompt}\n\n{}", if has_web { DIRECT_WEB_NOTE } else { DIRECT_NOTE });
             trace.push(Kind::Prompt, "prompt", &prompt);
             return self.run_direct(node, &prompt, log, trace).await;

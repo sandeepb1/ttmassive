@@ -186,3 +186,17 @@ pub struct Call<T> {
     /// Accounts passed over on the way, and why.
     pub notes: Vec<String>,
 }
+
+/// What a web tool gives back to an agent: the text, and what it cost.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Output {
+    pub text: String,
+    pub credits: u64,
+    pub usd: f64,
+}
+
+impl<T> Call<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Call<U> {
+        Call { value: f(self.value), credits: self.credits, usd: self.usd, source: self.source, notes: self.notes }
+    }
+}

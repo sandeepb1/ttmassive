@@ -51,6 +51,18 @@ impl Member {
         }
     }
 
+    async fn fetch(&self, op: &Op<'_>) -> Result<Fetched<Found>> {
+        fn wrap<T>(f: Fetched<T>, found: impl Fn(T) -> Found) -> Fetched<Found> {
+            Fetched { value: found(f.value), credits: f.credits }
+        }
+        Ok(match *op {
+            Op::Search { query, limit, opts } => wrap(self.search(query, limit, opts).await?, Found::Hits),
+            Op::Scrape { url } => wrap(self.scrape(url).await?, Found::Page),
+            Op::Map { url, limit } => wrap(self.map(url, limit).await?, Found::Site),
+            Op::Crawl { url, limit } => wrap(self.crawl(url, limit).await?, Found::Crawl),
+        })
+    }
+
     async fn search(&self, query: &str, limit: u32, opts: SearchOpts) -> Result<Fetched<Vec<SearchHit>>> {
         match &self.backend {
             Backend::Firecrawl(c) => c.search_hits(query, limit, opts).await,
@@ -115,12 +127,19 @@ impl Cooldowns {
     }
 }
 
+/// The rests every pool shares. A pool is built for each call, but an account that is out of credits stays so across
+/// them, whoever is asking.
+pub fn shared_cooldowns() -> Arc<Cooldowns> {
+    static SHARED: std::sync::OnceLock<Arc<Cooldowns>> = std::sync::OnceLock::new();
+    SHARED.get_or_init(Arc::default).clone()
+}
+
 /// How a run limits what the pool may spend.
 pub struct Budget<'a> {
     /// Asked before each attempt: whether the run may still spend.
-    pub allowed: &'a dyn Fn() -> bool,
+    pub allowed: &'a (dyn Fn() -> bool + Sync),
     /// Told what each attempt cost, whether or not it found anything.
-    pub record: &'a dyn Fn(u64, f64),
+    pub record: &'a (dyn Fn(u64, f64) + Sync),
 }
 
 pub struct Pool {
@@ -154,6 +173,16 @@ impl Pool {
         Pool::new(members, order, cooldowns)
     }
 
+    /// The pool the accounts make, sharing the process's rests.
+    pub fn of(accounts: &crate::secrets::Accounts) -> Pool {
+        Pool::from_accounts(accounts, shared_cooldowns())
+    }
+
+    /// Whether there is no account to ask.
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
     /// For each tool that some account can do, the accounts in the order they are asked.
     pub fn orders(&self) -> std::collections::BTreeMap<&'static str, Vec<String>> {
         Tool::ALL.into_iter().filter(|t| self.offers(*t)).map(|t| (t.key(), self.candidates(t).iter().map(|m| m.id.clone()).collect())).collect()
@@ -183,24 +212,41 @@ impl Pool {
     }
 
     pub async fn search(&self, query: &str, limit: u32, opts: SearchOpts, budget: Option<&Budget<'_>>) -> Result<Call<Vec<SearchHit>>> {
-        self.run(Tool::Search, budget, async |m: &Member| m.search(query, limit, opts).await, |v: &Vec<SearchHit>| v.is_empty()).await
+        let c = self.run(&Op::Search { query, limit, opts }, budget).await?;
+        Ok(c.map(|f| match f {
+            Found::Hits(v) => v,
+            _ => unreachable!("a search finds hits"),
+        }))
     }
 
     pub async fn scrape(&self, url: &str, budget: Option<&Budget<'_>>) -> Result<Call<Page>> {
-        self.run(Tool::Scrape, budget, async |m: &Member| m.scrape(url).await, |p: &Page| p.markdown.is_empty()).await
+        let c = self.run(&Op::Scrape { url }, budget).await?;
+        Ok(c.map(|f| match f {
+            Found::Page(p) => p,
+            _ => unreachable!("a scrape finds a page"),
+        }))
     }
 
     pub async fn map(&self, url: &str, limit: u32, budget: Option<&Budget<'_>>) -> Result<Call<SiteMap>> {
-        self.run(Tool::Map, budget, async |m: &Member| m.map(url, limit).await, |s: &SiteMap| s.pages.is_empty()).await
+        let c = self.run(&Op::Map { url, limit }, budget).await?;
+        Ok(c.map(|f| match f {
+            Found::Site(s) => s,
+            _ => unreachable!("a map finds a site"),
+        }))
     }
 
     pub async fn crawl(&self, url: &str, limit: u32, budget: Option<&Budget<'_>>) -> Result<Call<Crawl>> {
-        self.run(Tool::Crawl, budget, async |m: &Member| m.crawl(url, limit).await, |c: &Crawl| c.pages.is_empty()).await
+        let c = self.run(&Op::Crawl { url, limit }, budget).await?;
+        Ok(c.map(|f| match f {
+            Found::Crawl(c) => c,
+            _ => unreachable!("a crawl finds pages"),
+        }))
     }
 
     /// Ask each capable account once, in order, until one has something. What every attempt cost is counted, found or
     /// not. If all had nothing the answer is empty and says who was asked; if all failed it is an error saying why.
-    async fn run<T>(&self, tool: Tool, budget: Option<&Budget<'_>>, op: impl AsyncFn(&Member) -> Result<Fetched<T>>, is_empty: impl Fn(&T) -> bool) -> Result<Call<T>> {
+    async fn run(&self, op: &Op<'_>, budget: Option<&Budget<'_>>) -> Result<Call<Found>> {
+        let tool = op.tool();
         let (mut notes, mut credits, mut usd) = (Vec::new(), 0u64, 0.0f64);
         let mut empty = None;
         for m in self.candidates(tool) {
@@ -213,7 +259,7 @@ impl Pool {
                 notes.push("the web cost cap for this run is reached".into());
                 break;
             }
-            match op(m).await {
+            match m.fetch(op).await {
                 Ok(f) => {
                     let cost = f.credits as f64 * m.usd_per_credit;
                     if let Some(b) = budget {
@@ -221,7 +267,7 @@ impl Pool {
                     }
                     credits += f.credits;
                     usd += cost;
-                    if is_empty(&f.value) {
+                    if f.value.is_empty() {
                         notes.push(format!("{name} found nothing"));
                         empty = Some(f.value);
                     } else {
@@ -244,6 +290,44 @@ impl Pool {
             Some(value) => Ok(Call { value, credits, usd, source: None, notes }),
             None if notes.is_empty() => bail!("No web account is set up to {}.", tool.verb()),
             None => bail!("No web account could {}: {}.", tool.verb(), notes.join("; ")),
+        }
+    }
+}
+
+/// What is asked of the accounts.
+enum Op<'a> {
+    Search { query: &'a str, limit: u32, opts: SearchOpts },
+    Scrape { url: &'a str },
+    Map { url: &'a str, limit: u32 },
+    Crawl { url: &'a str, limit: u32 },
+}
+
+impl Op<'_> {
+    fn tool(&self) -> Tool {
+        match self {
+            Op::Search { .. } => Tool::Search,
+            Op::Scrape { .. } => Tool::Scrape,
+            Op::Map { .. } => Tool::Map,
+            Op::Crawl { .. } => Tool::Crawl,
+        }
+    }
+}
+
+/// What an account found.
+enum Found {
+    Hits(Vec<SearchHit>),
+    Page(Page),
+    Site(SiteMap),
+    Crawl(Crawl),
+}
+
+impl Found {
+    fn is_empty(&self) -> bool {
+        match self {
+            Found::Hits(v) => v.is_empty(),
+            Found::Page(p) => p.markdown.is_empty(),
+            Found::Site(s) => s.pages.is_empty(),
+            Found::Crawl(c) => c.pages.is_empty(),
         }
     }
 }
@@ -509,5 +593,52 @@ mod tests {
         let (p, _) = pool(vec![member("a", "http://x.test", 0.01)]);
         assert!(p.offers(Tool::Search) && p.offers(Tool::Crawl));
         let _: Value = json!({});
+    }
+
+    /// Against the real services, with `SERPER_API_KEY` and `TAVILY_API_KEY` set, and a Firecrawl key that is refused:
+    /// `cargo test live_pool -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "needs SERPER_API_KEY and TAVILY_API_KEY and spends a few credits"]
+    async fn live_pool_serves_from_the_right_account_and_fails_over() {
+        use crate::secrets::{Account, Accounts, Kind};
+        let acct = |id: &str, kind: Kind, base: &str, key: String| Account {
+            id: id.into(),
+            name: id.into(),
+            kind,
+            base_url: base.into(),
+            key,
+            use_in_orchestrator: true,
+            models: vec![],
+            prefs: Default::default(),
+            usd_per_credit: None,
+        };
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k}"));
+        let accounts = Accounts {
+            accounts: vec![
+                acct("fc", Kind::Firecrawl, crate::web::client::DEFAULT_URL, "fc-not-a-real-key".into()),
+                acct("tv", Kind::Tavily, tavily::DEFAULT_URL, env("TAVILY_API_KEY")),
+                acct("sv", Kind::Serper, serper::DEFAULT_URL, env("SERPER_API_KEY")),
+            ],
+            ..Default::default()
+        };
+        let cool = Arc::new(Cooldowns::default());
+        let p = Pool::from_accounts(&accounts, cool.clone());
+        println!("orders: {:?}", p.orders());
+
+        let c = p.search("rust programming language", 3, SearchOpts::default(), None).await.unwrap();
+        println!("search served by {:?}, {} hits, {} credits, ${:.4}, notes {:?}", c.source, c.value.len(), c.credits, c.usd, c.notes);
+        assert_eq!(c.source, Some(Provider::Serper), "Serper is first for search");
+
+        // Scrape asks Firecrawl first; its key is refused, so Tavily reads the page.
+        let c = p.scrape("https://example.com", None).await.unwrap();
+        println!("scrape served by {:?}, {} chars, {} credits, ${:.4}, notes {:?}", c.source, c.value.markdown.len(), c.credits, c.usd, c.notes);
+        assert_eq!(c.source, Some(Provider::Tavily));
+        assert_eq!(c.notes, vec!["Firecrawl refused its key".to_string()]);
+        assert_eq!(cool.resting("fc"), Some("refused its key"), "and Firecrawl is left alone for a while");
+
+        // The same, through the agent's tools, as the text it reads.
+        let out = crate::web::tools::call(&p, None, "web_search", &serde_json::json!({"query": "rust release", "news": true, "recency": "week", "limit": 2})).await.unwrap();
+        println!("--- agent sees ---\n{}\n---", out.text);
+        assert!(out.text.ends_with("(via Serper)"), "Serper answered, so no one else was passed over");
     }
 }
