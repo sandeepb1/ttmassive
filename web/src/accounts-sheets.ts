@@ -79,7 +79,7 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
     accountList = r.data;
     render(r.data);
     for (const a of r.data) {
-      if (a.kind !== 'openrouter' || !a.hasKey) continue;
+      if (a.kind === 'openai-compatible' || !a.hasKey) continue;
       void getJson<Remote>(`${ACCOUNTS}/${encodeURIComponent(a.id)}/remote`, onUnauthorized).then((b) => {
         const line = b.ok ? balanceLine(b.data) : null;
         if (line && balances.get(a.id) !== line) {
@@ -95,10 +95,11 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
   const render = (accounts: Account[]) => {
     const list = sheetBlock();
     for (const a of accounts) {
-      const bits = [a.hasKey ? `key …${a.last4}` : 'no key', `${a.models.length} model${a.models.length === 1 ? '' : 's'}`];
+      const bits = [a.hasKey ? `key …${a.last4}` : 'no key'];
+      if (a.kind !== 'firecrawl') bits.push(`${a.models.length} model${a.models.length === 1 ? '' : 's'}`);
       const bal = balances.get(a.id);
       if (bal) bits.push(bal);
-      if (!a.useInOrchestrator) bits.push('not in flows');
+      if (!a.useInOrchestrator) bits.push(a.kind === 'firecrawl' ? 'agents do not get it' : 'not in flows');
       const r = row(a.name, { hint: bits.join(' · '), mark: KIND_LABEL[a.kind] });
       r.addEventListener('click', () => edit(a, a.kind));
       list.append(r);
@@ -108,6 +109,7 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
     add.append(
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'openrouter') }, 'Add OpenRouter'),
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'openai-compatible') }, 'Add OpenAI-compatible'),
+      button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'firecrawl') }, 'Add Firecrawl'),
     );
     root.replaceChildren(sheetLabel('Provider accounts'), list, add, ...(accounts.length ? [helpersBlock(), driversBlock()] : []));
   };
@@ -211,15 +213,22 @@ class AccountSheet extends Sheet {
   open() {
     this.tall();
     const d = this.draft;
-    const name = input({ value: d.name, placeholder: d.kind === 'openrouter' ? 'OpenRouter' : 'Haimaker', label: 'Account name' });
+    const name = input({ value: d.name, placeholder: d.kind === 'openrouter' ? 'OpenRouter' : d.kind === 'firecrawl' ? 'Firecrawl' : 'Haimaker', label: 'Account name' });
     name.addEventListener('input', () => (d.name = name.value));
 
     const parts: HTMLElement[] = [sheetBlock(sheetLabel('Name'), name)];
 
-    if (d.kind === 'openai-compatible') {
-      const url = input({ value: d.baseUrl, placeholder: 'https://api.example.com/v1', mono: true, label: 'Base URL' });
+    if (d.kind !== 'openrouter') {
+      const web = d.kind === 'firecrawl';
+      const url = input({ value: d.baseUrl, placeholder: web ? 'https://api.firecrawl.dev' : 'https://api.example.com/v1', mono: true, label: 'Base URL' });
       url.addEventListener('input', () => (d.baseUrl = url.value));
-      parts.push(sheetBlock(sheetLabel('Base URL'), url, sheetHint('Where /chat/completions and /models live, usually ending in /v1.')));
+      parts.push(
+        sheetBlock(
+          sheetLabel(web ? 'Address (optional)' : 'Base URL'),
+          url,
+          sheetHint(web ? 'Leave empty for Firecrawl’s own service, or give the address of one you run yourself.' : 'Where /chat/completions and /models live, usually ending in /v1.'),
+        ),
+      );
     }
 
     this.keyField.autocomplete = 'off';
@@ -233,12 +242,23 @@ class AccountSheet extends Sheet {
       setChipOn(flows, d.useInOrchestrator);
     });
     const flowRow = el('div', 'flex items-center justify-between gap-3');
-    flowRow.append(el('span', 'text-md', 'Use in orchestrator flows'), flows);
-    parts.push(sheetBlock(flowRow, sheetHint('Off hides this account’s models from flow pickers, Suggest and Ask AI, and automatic model choice. Single sessions can still use it.')));
+    flowRow.append(el('span', 'text-md', d.kind === 'firecrawl' ? 'Give agents web access' : 'Use in orchestrator flows'), flows);
+    parts.push(
+      sheetBlock(
+        flowRow,
+        sheetHint(
+          d.kind === 'firecrawl'
+            ? 'Off stops agents being given web search and page fetching with this account. Each call uses Firecrawl credits.'
+            : 'Off hides this account’s models from flow pickers, Suggest and Ask AI, and automatic model choice. Single sessions can still use it.',
+        ),
+      ),
+    );
 
     if (d.kind === 'openrouter') parts.push(this.routingBlock());
-    parts.push(this.models);
-    this.renderModels();
+    if (d.kind !== 'firecrawl') {
+      parts.push(this.models);
+      this.renderModels();
+    }
 
     const save = button({ onClick: () => void this.save(save) }, 'Save');
     const actions = [save];

@@ -84,6 +84,9 @@ pub struct Node {
     /// The only way an OpenAI-compatible endpoint can run an agent; for an agent that only has to think, it is also the cheap way.
     #[serde(default, skip_serializing_if = "is_false")]
     pub direct: bool,
+    /// Give the agent web search and page fetching (Firecrawl), when a web account is set up. Each call costs credits.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub web: bool,
     /// Written by Sonnet and editable. Identical on every turn so the prompt cache holds.
     pub system_prompt: String,
     /// Stop and wait for approval before this node starts.
@@ -131,6 +134,9 @@ pub struct Budget {
     /// Most dollars a run may spend on OpenRouter, or `None` for no cap.
     #[serde(default)]
     pub run_usd: Option<f64>,
+    /// Most Firecrawl credits a run may use on web access, or `None` for no cap.
+    #[serde(default)]
+    pub run_credits: Option<u64>,
 }
 
 impl Budget {
@@ -138,6 +144,9 @@ impl Budget {
         let pct = |v: f64| v.is_finite() && v > 0.0 && v <= 100.0;
         if !(pct(self.claude_pct) && pct(self.codex_pct) && pct(self.stop_window_pct)) {
             return Err("limits must be above 0 and at most 100".into());
+        }
+        if self.run_credits == Some(0) {
+            return Err("the credit cap must be more than zero".into());
         }
         match self.run_usd {
             Some(c) if !(c.is_finite() && c > 0.0 && c < 1.0e6) => Err("the dollar cap must be more than zero".into()),
@@ -148,7 +157,7 @@ impl Budget {
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { claude_pct: 15.0, codex_pct: 10.0, stop_window_pct: 85.0, run_usd: None }
+        Self { claude_pct: 15.0, codex_pct: 10.0, stop_window_pct: 85.0, run_usd: None, run_credits: None }
     }
 }
 
@@ -441,6 +450,7 @@ mod tests {
             keep_model: false,
             account: None,
             direct: false,
+            web: false,
             x: 0.0,
             y: 0.0,
         }

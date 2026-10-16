@@ -1,0 +1,6 @@
+//! Firecrawl: web search, scraping and crawling for agents. The client talks to the service with the account's key;
+//! the MCP endpoint hands the same tools to agent CLIs without giving them the key.
+
+pub mod client;
+pub mod mcp;
+pub mod tools;

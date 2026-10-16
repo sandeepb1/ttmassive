@@ -108,6 +108,7 @@ export function newNode(flow: Flow, def: RoleDef, models: Models, at: { x: numbe
     checkpoint: def.checkpoint,
     tokenCap: null,
     keepModel: false,
+    web: !!def.web,
     x: Math.round(at.x),
     y: Math.round(at.y),
   };
@@ -596,3 +597,8 @@ export function priceNote(m: Pick<FlowModel, 'priceIn' | 'priceOut'>): string {
 
 /** Whether an agent in this role could call its model directly: it must need no tools. */
 export const canCallDirectly = (n: Pick<FlowNode, 'role' | 'custom'>): boolean => capabilityOf(n) === 'read';
+
+/** Firecrawl credits the run's agents have used. */
+export function runCredits(run: Run): number {
+  return Object.values(run.nodes).reduce((n, x) => n + (x.credits ?? 0), 0);
+}

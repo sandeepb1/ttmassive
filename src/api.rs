@@ -104,6 +104,8 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/or/{*rest}",
             axum::routing::any(crate::openrouter::proxy::handle).layer(DefaultBodyLimit::max(crate::openrouter::proxy::MAX_BODY)),
         )
+        // Agents reach the Firecrawl tools here, with a lease token.
+        .route("/mcp/web", axum::routing::any(crate::firecrawl::mcp::handle).layer(DefaultBodyLimit::max(1 << 20)))
         .merge(protected)
         .fallback(assets::serve)
         .with_state(state)

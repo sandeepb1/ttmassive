@@ -127,6 +127,7 @@ mod tests {
             keep_model: false,
             account: None,
             direct: false,
+            web: false,
             x: 0.0,
             y: 0.0,
         }

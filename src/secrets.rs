@@ -25,6 +25,8 @@ static WRITE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub enum Kind {
     Openrouter,
     OpenaiCompatible,
+    /// Web search and scraping for agents. Has no models.
+    Firecrawl,
 }
 
 /// A model pinned to the shortlist. Prices are dollars per million tokens and optional: without
@@ -178,8 +180,11 @@ impl Accounts {
         let base_url = match input.kind {
             Kind::Openrouter => OPENROUTER_URL.to_owned(),
             Kind::OpenaiCompatible => normalise_url(&input.base_url)?,
+            // Blank means the hosted service; a self-hosted one is named by its address.
+            Kind::Firecrawl if input.base_url.trim().is_empty() => crate::firecrawl::client::DEFAULT_URL.to_owned(),
+            Kind::Firecrawl => normalise_url(&input.base_url)?,
         };
-        let models = check_models(input.models)?;
+        let models = if input.kind == Kind::Firecrawl { Vec::new() } else { check_models(input.models)? };
         input.prefs.check()?;
         let old = match id {
             Some(id) => Some(self.get(id).ok_or("no such account")?.clone()),
@@ -236,8 +241,8 @@ impl Accounts {
             if !HELPERS.contains(&name.as_str()) {
                 return Err("unknown helper");
             }
-            if self.usable(&r.account).is_none() {
-                return Err("a helper's account has no key, or is not allowed in flows");
+            if self.usable(&r.account).is_none_or(|a| a.kind == Kind::Firecrawl) {
+                return Err("a helper's account has no key, is not allowed in flows, or has no models");
             }
             if !crate::openrouter::launch::valid_model(&r.model) {
                 return Err("a helper's model id is not valid");
@@ -249,6 +254,11 @@ impl Accounts {
         self.helpers = helpers;
         self.drivers = drivers;
         Ok(())
+    }
+
+    /// The Firecrawl account agents use: the first with a key that is allowed in flows.
+    pub fn firecrawl(&self) -> Option<&Account> {
+        self.accounts.iter().find(|a| a.kind == Kind::Firecrawl && !a.key.is_empty() && a.use_in_orchestrator)
     }
 
     /// Where to send a helper's call, when the user chose a model for it and its account can still be used.
@@ -509,6 +519,28 @@ mod tests {
         let old = r#"{"accounts":[]}"#;
         let a: Accounts = serde_json::from_str(old).unwrap();
         assert!(a.helpers.is_empty() && a.drivers.is_empty());
+    }
+
+    #[test]
+    fn a_firecrawl_account_has_a_default_address_no_models_and_is_found_for_agents() {
+        let mut a = Accounts::default();
+        let mut i = input("Web", Kind::Firecrawl);
+        i.base_url = String::new();
+        i.models = vec![PinnedModel { id: "x/y".into(), ..Default::default() }];
+        let id = a.upsert(None, i).unwrap();
+        let acct = a.get(&id).unwrap();
+        assert_eq!(acct.base_url, crate::firecrawl::client::DEFAULT_URL);
+        assert!(acct.models.is_empty(), "it has no models to pin");
+        assert!(a.firecrawl().is_some());
+        a.accounts[0].use_in_orchestrator = false;
+        assert!(a.firecrawl().is_none(), "off in flows means agents do not get it");
+        a.accounts[0].use_in_orchestrator = true;
+        a.accounts[0].key.clear();
+        assert!(a.firecrawl().is_none(), "no key, no web");
+        let mut own = input("Self", Kind::Firecrawl);
+        own.base_url = "http://localhost:3002/".into();
+        let id2 = a.upsert(None, own).unwrap();
+        assert_eq!(a.get(&id2).unwrap().base_url, "http://localhost:3002");
     }
 
     #[test]

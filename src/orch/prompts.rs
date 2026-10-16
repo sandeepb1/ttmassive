@@ -239,6 +239,7 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
             keep_model: false,
             account: pick.map(|m| m.account.clone()),
             direct: false,
+            web: super::roles::web_default(role),
             x: 0.0,
             y: 0.0,
         });
@@ -375,6 +376,7 @@ async fn one_shot(model: &str, system: &str, prompt: &str, schema: Value, cwd: &
         cwd: cwd.to_path_buf(),
         read_also: vec![],
         proxy: None,
+        web: None,
     };
     let mut agent = claude::Agent::start(&spec).await?;
     let outcome = agent.turn(prompt, |_| {}).await;
@@ -392,7 +394,7 @@ async fn helper_call(via: Option<&Endpoint>, default: &str, system: &str, prompt
     let Some(e) = via else { return one_shot(default, system, prompt, schema, cwd).await };
     let r = chat::complete(e, &[Message::system(system), Message::user(prompt)], Some(&schema)).await?;
     let answer = r.structured.clone().with_context(|| format!("{} did not answer in the required shape", e.model))?;
-    Ok((answer, Outcome { structured: r.structured, text: r.text, tokens: r.tokens, cost_usd: r.cost_usd.unwrap_or(0.0), is_error: false, session: None }))
+    Ok((answer, Outcome { structured: r.structured, text: r.text, tokens: r.tokens, cost_usd: r.cost_usd.unwrap_or(0.0), credits: 0, is_error: false, session: None }))
 }
 
 /// Sonnet designs a flow for a goal.
@@ -526,6 +528,7 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
                     keep_model: false,
                     account: None,
                     direct: false,
+                    web: super::roles::web_default(role),
                     x: 0.0,
                     y: 0.0,
                 };
@@ -649,7 +652,7 @@ pub async fn edit_flow(
 async fn one_shot_codex(hub: &super::codex::Hub, model: &str, system: &str, prompt: &str, schema: &Value, cwd: &Path) -> Result<(Value, Outcome)> {
     tokio::fs::create_dir_all(cwd).await?;
     let server = hub.get().await?;
-    let spec = super::codex::Spec { model: model.into(), system_prompt: system.into(), read_only: true, cwd: cwd.to_path_buf(), proxy: None };
+    let spec = super::codex::Spec { model: model.into(), system_prompt: system.into(), read_only: true, cwd: cwd.to_path_buf(), proxy: None, web: None };
     let mut thread = server.start_thread(&spec).await?;
     let outcome = server.turn(&mut thread, prompt, schema, |_| {}).await?;
     let answer = outcome.structured.clone().context("codex did not answer in the required shape")?;
@@ -799,6 +802,7 @@ mod tests {
             keep_model: false,
             account: None,
             direct: false,
+            web: false,
             x: 900.0,
             y: 0.0,
         });

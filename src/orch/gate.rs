@@ -88,6 +88,12 @@ pub fn check(run: &Run, w: &Windows, b: &Budget) -> Option<String> {
     if run.waived {
         return None;
     }
+    if let Some(cap) = b.run_credits {
+        let used = run.credits();
+        if used >= cap {
+            return Some(format!("This run has used {used} web credits (its cap is {cap})"));
+        }
+    }
     if let Some(cap) = b.run_usd {
         let spent = run.cost_usd();
         if spent >= cap {
@@ -235,6 +241,24 @@ mod tests {
         assert_eq!(check(&r, &Windows::default(), &Budget::default()), None, "no cap, no stop");
         r.waived = true;
         assert_eq!(check(&r, &Windows::default(), &cap(0.10)), None, "carrying on anyway skips the cap");
+    }
+
+    #[test]
+    fn a_run_stops_when_its_web_tools_have_used_its_credit_cap() {
+        let mut r = run();
+        on_openrouter(&mut r);
+        let ids: Vec<String> = r.flow.nodes.iter().map(|n| n.id.clone()).collect();
+        r.nodes.get_mut(&ids[0]).unwrap().credits = 7;
+        r.nodes.get_mut(&ids[1]).unwrap().credits = 5;
+        let cap = |c: u64| Budget { run_credits: Some(c), ..Budget::default() };
+        assert_eq!(r.credits(), 12);
+        assert_eq!(check(&r, &Windows::default(), &cap(13)), None);
+        let m = check(&r, &Windows::default(), &cap(12)).expect("at the cap");
+        assert!(m.contains("12 web credits") && m.contains("cap is 12"), "{m}");
+        assert_eq!(check(&r, &Windows::default(), &Budget::default()), None, "no cap, no stop");
+        assert!(Budget { run_credits: Some(0), ..Budget::default() }.validate().is_err(), "a zero cap would stop every run");
+        r.waived = true;
+        assert_eq!(check(&r, &Windows::default(), &cap(1)), None);
     }
 
     #[test]

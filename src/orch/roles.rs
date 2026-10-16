@@ -49,6 +49,8 @@ pub enum Stage {
 #[serde(rename_all = "camelCase")]
 pub struct RoleDef {
     pub id: Role,
+    /// Gets the web tools (Firecrawl) by default when there is a web account: the roles whose job is finding things out.
+    pub web: bool,
     pub label: &'static str,
     pub blurb: &'static str,
     pub stage: Stage,
@@ -67,6 +69,11 @@ pub struct RoleDef {
     pub prompt: &'static str,
 }
 
+/// The roles that look things up and so are given the web tools unless told otherwise.
+pub const fn web_default(role: Role) -> bool {
+    matches!(role, Role::Search | Role::Researcher | Role::Analyst | Role::Architect)
+}
+
 const fn def(
     id: Role,
     label: &'static str,
@@ -80,6 +87,7 @@ const fn def(
 ) -> RoleDef {
     RoleDef {
         id,
+        web: web_default(id),
         label,
         blurb,
         stage,

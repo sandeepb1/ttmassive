@@ -27,6 +27,8 @@ export interface RoleDef {
   prefer: Engine;
   claudeModel: string;
   codexModel?: string | null;
+  /** Given the web tools by default when there is a web account. */
+  web?: boolean;
   prompt: string;
 }
 export type Engine = 'claude' | 'codex';
@@ -44,6 +46,8 @@ export interface FlowNode {
   account?: string | null;
   /** Called directly, with no CLI and so no tools. */
   direct?: boolean;
+  /** Given web search and page fetching (Firecrawl), when there is an account for it. */
+  web?: boolean;
   systemPrompt: string;
   checkpoint: boolean;
   tokenCap?: number | null;
@@ -66,9 +70,11 @@ export interface Budget {
   stopWindowPct: number;
   /** Most dollars one run may spend on OpenRouter; null for no cap. */
   runUsd?: number | null;
+  /** Most Firecrawl credits one run may use; null for no cap. */
+  runCredits?: number | null;
 }
 
-export const DEFAULT_LIMITS: Budget = { claudePct: 15, codexPct: 10, stopWindowPct: 85, runUsd: null };
+export const DEFAULT_LIMITS: Budget = { claudePct: 15, codexPct: 10, stopWindowPct: 85, runUsd: null, runCredits: null };
 
 export interface Flow {
   id: string;
@@ -98,6 +104,8 @@ export interface NodeRun {
   tokens: Tokens;
   /** Dollars over all attempts: charged by OpenRouter, or Claude Code's estimate at API prices for an agent on your plan. */
   costUsd?: number;
+  /** Firecrawl credits its web tools used. */
+  credits?: number;
   transcript: string[];
   /** The agent's conversation id after its latest finished turn; present once it has finished one. */
   session?: string | null;
@@ -204,6 +212,8 @@ export interface Models {
   claude: string[];
   codex: string[];
   openrouter: FlowModel[];
+  /** There is a web account, so agents can be given web access. */
+  web?: boolean;
 }
 
 export interface FlowLists {

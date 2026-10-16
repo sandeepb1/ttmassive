@@ -74,6 +74,17 @@ function FlowPanel({ flow, run, editable, limits, onLimits, onFlow }: Props) {
             onChange={(e) => onLimits({ ...b, runUsd: Number(e.target.value) > 0 ? Number(e.target.value) : null })}
           />
         </Field>
+        <Field label="Most one run may use on web access" hint="Firecrawl credits. The run pauses, and asks you, when it reaches this; an agent that would go past it is told to work from what it has. Leave empty for no cap.">
+          <input
+            className="mc-field mc-mono"
+            type="number"
+            min={0}
+            step={5}
+            placeholder="No cap"
+            value={b.runCredits ?? ''}
+            onChange={(e) => onLimits({ ...b, runCredits: Number(e.target.value) >= 1 ? Math.round(Number(e.target.value)) : null })}
+          />
+        </Field>
         {run?.waived && <p className="mc-hint">You chose to carry on past the limits for this run, so it is not being stopped by them.</p>}
       </div>
 
@@ -263,6 +274,15 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
 
       <div className="mc-section">
         <Switch on={node.checkpoint} disabled={!editable} onChange={(v) => onNode(node.id, { checkpoint: v })} label="Ask me before it starts" hint={node.role === 'builder' ? 'It changes files, in its own copy of the project.' : undefined} />
+        {(models.web || node.web) && !node.direct && (
+          <Switch
+            on={!!node.web}
+            disabled={!editable}
+            onChange={(v) => onNode(node.id, { web: v })}
+            label="Web search and page fetching"
+            hint={models.web ? 'Through your Firecrawl account. Each search or page uses credits, counted toward this run’s cap. Agents that look things up have it on by default.' : 'There is no Firecrawl account to give it with: add one in Settings, under Account.'}
+          />
+        )}
         <Switch on={!!node.keepModel} disabled={!editable} onChange={(v) => onNode(node.id, { keepModel: v })} label="Always use this model" hint="Never switch it to a cheaper one. Only matters when the flow uses cheaper models as the plan fills up." />
         {flow.edges.some((e) => e.kind === 'retry' && e.to === node.id) && <p className="mc-hint">A judge can send work back to this agent.</p>}
       </div>
@@ -314,6 +334,12 @@ function RunDetail({ nr, node, feedback }: { nr: NodeRun; node: FlowNode; feedba
             <dd title="Claude Code's estimate at API prices. Your plan was not charged this.">≈ {usdLabel(nr.costUsd ?? 0)} at API prices (not billed)</dd>
           </>
         ) : null}
+        {(nr.credits ?? 0) > 0 && (
+          <>
+            <dt>Web</dt>
+            <dd>{nr.credits} credit{nr.credits === 1 ? '' : 's'}</dd>
+          </>
+        )}
         {(nr.cacheBreaks ?? 0) > 0 && (
           <>
             <dt>Cache breaks</dt>

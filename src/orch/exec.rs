@@ -196,6 +196,7 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
     let n = run.nodes.get_mut(&node.id).expect("every node has a state");
     n.tokens.add(&outcome.tokens);
     n.cost_usd += outcome.cost_usd;
+    n.credits += outcome.credits;
     watch_cache(n, &outcome.tokens);
     if let Some(id) = &outcome.session {
         n.session = Some(id.clone());
@@ -372,6 +373,7 @@ mod tests {
             keep_model: false,
             account: None,
             direct: false,
+            web: false,
             x: 0.0,
             y: 0.0,
         }
@@ -410,6 +412,7 @@ mod tests {
             text: String::new(),
             tokens: Tokens { input: 10, output: 10, cache_read: 0, cache_write: 0 },
             cost_usd: 0.0,
+            credits: 0,
             is_error: false,
             session: None,
         })
@@ -673,6 +676,7 @@ mod tests {
             text: "I could not".into(),
             tokens: Tokens::default(),
             cost_usd: 0.0,
+            credits: 0,
             is_error: false,
             session: None,
         });
@@ -910,7 +914,7 @@ mod tests {
     }
 
     fn ok_with(v: serde_json::Value, tokens: Tokens) -> anyhow::Result<Outcome> {
-        Ok(Outcome { structured: Some(v), text: String::new(), tokens, cost_usd: 0.0, is_error: false, session: None })
+        Ok(Outcome { structured: Some(v), text: String::new(), tokens, cost_usd: 0.0, credits: 0, is_error: false, session: None })
     }
 
     fn tok(input: u64, cache_read: u64) -> Tokens {

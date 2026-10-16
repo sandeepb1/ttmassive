@@ -44,7 +44,12 @@ pub struct Spec {
     pub read_also: Vec<PathBuf>,
     /// Run on OpenRouter through ttm's proxy instead of your own Claude login.
     pub proxy: Option<Proxy>,
+    /// Give the agent the web tools, through ttm's MCP endpoint with this lease.
+    pub web: Option<Proxy>,
 }
+
+/// The name the web tools go by in the agent: `mcp__ttm_web__web_search` and so on.
+pub const WEB_SERVER: &str = "ttm_web";
 
 /// Settings that confine an `Inspect` agent's shell. Enforced by the operating system, not by the
 /// model: nothing writes in `dir`, and the user's home is unreadable except `dir` and `read_also`.
@@ -97,14 +102,21 @@ pub fn args(spec: &Spec) -> Vec<String> {
     match spec.access {
         Access::None => a.extend(["--tools".into(), String::new()]),
         Access::ReadOnly => {
-            a.extend(["--tools".into(), READ_ONLY_TOOLS.into(), "--allowedTools".into(), READ_ONLY_TOOLS.into()])
+            a.extend(["--tools".into(), READ_ONLY_TOOLS.into(), "--allowedTools".into(), allowed(READ_ONLY_TOOLS, spec)])
         }
         Access::Inspect => {
             let tools = format!("{READ_ONLY_TOOLS},Bash");
-            a.extend(["--tools".into(), tools.clone(), "--allowedTools".into(), tools]);
+            a.extend(["--tools".into(), tools.clone(), "--allowedTools".into(), allowed(&tools, spec)]);
         }
         // A builder works inside its own worktree; the checkpoint before it starts is the human gate.
         Access::Write => a.push("--dangerously-skip-permissions".into()),
+    }
+    if let Some(w) = &spec.web {
+        // The token is read from the environment (`TTM_WEB_TOKEN`) so it is not on the command line. The flag takes
+        // any number of values, so another flag follows it.
+        let url = format!("{}/mcp/web", w.origin.trim_end_matches('/'));
+        let config = json!({"mcpServers": {WEB_SERVER: {"type": "http", "url": url, "headers": {"Authorization": "Bearer ${TTM_WEB_TOKEN}"}}}});
+        a.extend(["--mcp-config".into(), config.to_string()]);
     }
     // One `--settings`: a second would replace the first rather than add to it.
     let settings = settings_json(spec);
@@ -112,6 +124,11 @@ pub fn args(spec: &Spec) -> Vec<String> {
         a.extend(["--settings".into(), Value::Object(settings).to_string()]);
     }
     a
+}
+
+/// The tools an agent may use without asking: the built-in ones its access allows, and the web tools if it has them.
+fn allowed(builtin: &str, spec: &Spec) -> String {
+    if spec.web.is_some() { format!("{builtin},mcp__{WEB_SERVER}") } else { builtin.to_owned() }
 }
 
 /// The `--settings` an agent needs, if any: the sandbox for a shell, and the proxy's address for an agent on
@@ -200,6 +217,7 @@ pub fn parse(line: &str) -> Event {
             text: s(&v, "result"),
             tokens: v.get("usage").map(Tokens::from_claude).unwrap_or_default(),
             cost_usd: v.get("total_cost_usd").and_then(Value::as_f64).unwrap_or(0.0),
+            credits: 0,
             is_error: v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
             session: v.get("session_id").and_then(Value::as_str).map(String::from),
         }),
@@ -234,6 +252,9 @@ impl Agent {
         }
         if let Some(p) = &spec.proxy {
             cmd.envs(super::super::openrouter::proxy::claude_env(&p.origin, &p.token));
+        }
+        if let Some(w) = &spec.web {
+            cmd.env("TTM_WEB_TOKEN", &w.token);
         }
         let mut child = cmd
             .stdin(Stdio::piped())
@@ -300,6 +321,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             read_also: vec![],
             proxy: None,
+            web: None,
         }
     }
 
@@ -339,6 +361,26 @@ mod tests {
         }
         assert!(!has(&args(&spec(Access::Write)), "--settings"), "an agent on your own plan gets no settings it does not need");
         assert!(has(&args(&spec(Access::Inspect)), "--settings"));
+    }
+
+    #[test]
+    fn an_agent_with_web_access_gets_the_server_and_may_use_its_tools_without_the_token_on_the_command_line() {
+        let web = Some(Proxy { origin: "http://127.0.0.1:7681/".into(), token: "ttm-or-webtoken".into() });
+        for access in [Access::ReadOnly, Access::Inspect] {
+            let a = args(&Spec { web: web.clone(), ..spec(access) });
+            let cfg: Value = serde_json::from_str(after(&a, "--mcp-config").unwrap()).unwrap();
+            let server = &cfg["mcpServers"][WEB_SERVER];
+            assert_eq!((server["type"].as_str(), server["url"].as_str()), (Some("http"), Some("http://127.0.0.1:7681/mcp/web")));
+            assert_eq!(server["headers"]["Authorization"], "Bearer ${TTM_WEB_TOKEN}", "the token comes from the environment");
+            assert!(after(&a, "--allowedTools").unwrap().ends_with(",mcp__ttm_web"), "its tools are allowed");
+            assert!(after(&a, "--tools").unwrap().find("mcp__").is_none(), "--tools lists built-ins only");
+            assert!(!a.join(" ").contains("ttm-or-webtoken"));
+            assert!(has(&a, "--strict-mcp-config"), "only ttm's server loads, not the user's");
+        }
+        let plain = args(&spec(Access::ReadOnly));
+        assert!(!has(&plain, "--mcp-config") && !after(&plain, "--allowedTools").unwrap().contains("mcp__"));
+        // A builder skips permission prompts, so its tools need no list; it still gets the server.
+        assert!(has(&args(&Spec { web, ..spec(Access::Write) }), "--mcp-config"));
     }
 
     #[test]

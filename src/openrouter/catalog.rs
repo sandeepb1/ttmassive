@@ -59,6 +59,8 @@ pub struct Remote {
     pub free_tier: Option<bool>,
     /// OpenAI-compatible only: the endpoint's own model ids.
     pub models: Vec<String>,
+    /// What `usage`, `limit` and `remaining` count, when not dollars: Firecrawl's credits.
+    pub unit: Option<&'static str>,
 }
 
 static MEMORY: Mutex<Option<Arc<Catalog>>> = Mutex::new(None);
@@ -206,7 +208,11 @@ pub async fn remote(account: &Account) -> Result<Remote> {
             let v: Value = res.json().await?;
             let d = v.get("data").unwrap_or(&Value::Null);
             let num = |k: &str| d.get(k).and_then(Value::as_f64);
-            Ok(Remote { usage: num("usage"), limit: num("limit"), remaining: num("limit_remaining"), free_tier: d.get("is_free_tier").and_then(Value::as_bool), models: Vec::new() })
+            Ok(Remote { usage: num("usage"), limit: num("limit"), remaining: num("limit_remaining"), free_tier: d.get("is_free_tier").and_then(Value::as_bool), models: Vec::new(), unit: None })
+        }
+        Kind::Firecrawl => {
+            let b = crate::firecrawl::client::Client::new(account)?.credits().await?;
+            Ok(Remote { usage: Some(b.plan.saturating_sub(b.remaining) as f64), limit: Some(b.plan as f64), remaining: Some(b.remaining as f64), unit: Some("credits"), ..Default::default() })
         }
         Kind::OpenaiCompatible => {
             let res = get(format!("{}/models", account.base_url)).await.context("asking the endpoint for its models")?;

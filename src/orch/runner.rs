@@ -148,7 +148,35 @@ impl EngineRunner {
         self.waived.store(true, Ordering::SeqCst);
         for n in &self.flow.nodes {
             self.leases.set_cap(&self.lease_tag(&n.id), None);
+            self.leases.set_credit_cap(&self.web_tag(&n.id), None);
         }
+    }
+
+    fn web_tag(&self, node_id: &str) -> String {
+        format!("{}:web", self.lease_tag(node_id))
+    }
+
+    /// The web tools for an agent that is to have them, with a lease of its own so its credits are counted apart.
+    /// `None` when the agent is not to have them or there is no web account to give them with.
+    async fn web_for(&self, node: &Node) -> Option<Proxy> {
+        if !node.web || node.direct {
+            return None;
+        }
+        let accounts = crate::secrets::load(&self.data_dir).await;
+        let account = accounts.firecrawl()?;
+        let tag = self.web_tag(&node.id);
+        let cap = if self.waived.load(Ordering::SeqCst) { None } else { self.limits.lock().unwrap_or_else(|e| e.into_inner()).run_credits };
+        let token = match self.leases.by_tag(&tag) {
+            Some((token, _)) => token,
+            None => self.leases.mint(&account.id, "firecrawl", &tag, None),
+        };
+        self.leases.set_credit_cap(&tag, cap);
+        Some(Proxy { origin: self.origin.clone(), token })
+    }
+
+    /// Firecrawl credits the agent's web lease has used so far.
+    fn web_spent(&self, node: &Node) -> u64 {
+        self.leases.by_tag(&self.web_tag(&node.id)).map_or(0, |(_, l)| l.spent.credits)
     }
 
     /// End the leases of every agent of this run. Called when the run is over.
@@ -230,7 +258,7 @@ impl EngineRunner {
         let reply = chat::complete(&endpoint, &history, Some(&schema)).await?;
         history.push(Message::assistant(reply.text.clone()));
         self.direct.lock().await.insert(node.id.clone(), history);
-        Ok(Outcome { structured: reply.structured, text: reply.text, tokens: reply.tokens, cost_usd: reply.cost_usd.unwrap_or(0.0), is_error: false, session: None })
+        Ok(Outcome { structured: reply.structured, text: reply.text, tokens: reply.tokens, cost_usd: reply.cost_usd.unwrap_or(0.0), credits: 0, is_error: false, session: None })
     }
 
     async fn run_claude(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
@@ -251,6 +279,7 @@ impl EngineRunner {
                     // A worktree keeps its history in the main repository's .git; `git status` needs it.
                     read_also: vec![self.project.join(".git")],
                     proxy: self.proxy_for(node),
+                    web: self.web_for(node).await,
                 };
                 claude::Agent::start(&spec).await?
             }
@@ -282,6 +311,7 @@ impl EngineRunner {
                     read_only: !node.writes(),
                     cwd,
                     proxy: self.proxy_for(node),
+                    web: self.web_for(node).await,
                 };
                 server.start_thread(&spec).await?
             }
@@ -316,6 +346,7 @@ impl NodeRunner for EngineRunner {
         let prompt = with_folder_note(prompt, &cwd, limits(node));
         let folder = cwd.clone();
         let before = self.spent(node);
+        let credits_before = self.web_spent(node);
         let mut result = match node.engine {
             Engine::Claude => self.run_claude(node, cwd, &prompt, log).await,
             Engine::Codex => self.run_codex(node, cwd, &prompt, log).await,
@@ -326,6 +357,9 @@ impl NodeRunner for EngineRunner {
             if let Ok(o) = &mut result {
                 o.cost_usd = charged;
             }
+        }
+        if let Ok(o) = &mut result {
+            o.credits = self.web_spent(node).saturating_sub(credits_before);
         }
         // Whatever the builder got done is kept on its branch, even if its turn then failed: the work is not lost.
         if node.writes() {
@@ -444,6 +478,7 @@ mod tests {
             keep_model: false,
             account: None,
             direct: false,
+            web: false,
             x: 0.0,
             y: 0.0,
         }

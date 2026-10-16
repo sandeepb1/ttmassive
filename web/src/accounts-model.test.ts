@@ -128,6 +128,12 @@ test('balance line', () => {
   assert.equal(balanceLine({ usage: null, limit: null, remaining: null }), null);
 });
 
+test('a Firecrawl balance is counted in credits, not dollars', () => {
+  assert.equal(balanceLine({ usage: 132, limit: 1000, remaining: 868, unit: 'credits' }), '868 of 1000 credits left');
+  assert.equal(balanceLine({ usage: null, limit: null, remaining: 40, unit: 'credits' }), '40 credits left');
+  assert.equal(balanceLine({ usage: null, limit: null, remaining: null, unit: 'credits' }), null);
+});
+
 test('flows only see accounts that opt in and have a key', () => {
   const acct = (id: string, o: Partial<Account>): Account => ({
     id,

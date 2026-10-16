@@ -177,6 +177,8 @@ pub struct Spend {
     pub cost_usd: f64,
     /// Requests whose reply carried no cost, so `cost_usd` undercounts by their share.
     pub unpriced: u64,
+    /// Firecrawl credits used, for a web lease.
+    pub credits: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,6 +189,9 @@ pub struct Lease {
     /// What the lease is for, such as a session name or `run:node`. Looked up by the page.
     pub tag: String,
     pub cap_usd: Option<f64>,
+    /// For a web lease: most Firecrawl credits it may use.
+    #[serde(default)]
+    pub cap_credits: Option<u64>,
     #[serde(default)]
     pub spent: Spend,
 }
@@ -194,6 +199,10 @@ pub struct Lease {
 impl Lease {
     pub fn over_cap(&self) -> bool {
         self.cap_usd.is_some_and(|c| self.spent.cost_usd >= c)
+    }
+
+    pub fn over_credit_cap(&self) -> bool {
+        self.cap_credits.is_some_and(|c| self.spent.credits >= c)
     }
 }
 
@@ -232,7 +241,7 @@ impl Leases {
     pub fn mint(&self, account: &str, model: &str, tag: &str, cap_usd: Option<f64>) -> String {
         self.revoke_tag(tag);
         let token = new_token();
-        self.map.insert(token.clone(), Lease { account: account.into(), model: model.into(), tag: tag.into(), cap_usd, spent: Spend::default() });
+        self.map.insert(token.clone(), Lease { account: account.into(), model: model.into(), tag: tag.into(), cap_usd, cap_credits: None, spent: Spend::default() });
         self.save(true);
         token
     }
@@ -297,6 +306,25 @@ impl Leases {
             self.save(true);
         }
         gone
+    }
+
+    /// Limit a web lease to this many Firecrawl credits, or lift the limit.
+    pub fn set_credit_cap(&self, tag: &str, cap: Option<u64>) -> bool {
+        let Some(token) = self.by_tag(tag).map(|(t, _)| t) else { return false };
+        if let Some(mut l) = self.map.get_mut(&token) {
+            l.cap_credits = cap;
+        }
+        self.save(true);
+        true
+    }
+
+    /// Add Firecrawl credits to a lease after a tool call.
+    pub fn record_credits(&self, token: &str, credits: u64) {
+        if let Some(mut l) = self.map.get_mut(token) {
+            l.spent.credits += credits;
+            l.spent.requests += 1;
+        }
+        self.save(false);
     }
 
     pub fn revoke_tag(&self, tag: &str) -> bool {
@@ -745,6 +773,24 @@ mod tests {
         assert!(l.get(&t).is_none(), "a new lease for a tag replaces the old one");
         assert_eq!(l.get(&t2).unwrap().spent, Spend::default());
         assert!(l.revoke_tag("sess") && !l.revoke_tag("sess"));
+    }
+
+    #[test]
+    fn web_leases_count_credits_and_have_their_own_cap() {
+        let l = Leases::new();
+        let t = l.mint("fc", "firecrawl", "orch:r:n:web", None);
+        assert!(!l.get(&t).unwrap().over_credit_cap(), "no cap, no limit");
+        assert!(l.set_credit_cap("orch:r:n:web", Some(5)));
+        l.record_credits(&t, 3);
+        assert!(!l.get(&t).unwrap().over_credit_cap());
+        l.record_credits(&t, 2);
+        let lease = l.get(&t).unwrap();
+        assert_eq!((lease.spent.credits, lease.spent.requests), (5, 2));
+        assert!(lease.over_credit_cap());
+        assert!(!lease.over_cap(), "dollars are a different count");
+        assert!(l.set_credit_cap("orch:r:n:web", None) && !l.get(&t).unwrap().over_credit_cap());
+        let old: Lease = serde_json::from_str(r#"{"account":"a","model":"m","tag":"t","capUsd":null,"spent":{"requests":1}}"#).unwrap();
+        assert_eq!(old.cap_credits, None, "leases saved before web leases still load");
     }
 
     #[test]

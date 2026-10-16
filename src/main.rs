@@ -10,6 +10,7 @@ mod config;
 mod control;
 mod daemon;
 mod files;
+mod firecrawl;
 mod gitinfo;
 mod layouts;
 mod limits;

@@ -206,7 +206,7 @@ mod tests {
         let dir = tmp("limits");
         let s = Store::new(&dir);
         assert_eq!(s.load_limits(), crate::orch::graph::Budget::default());
-        let b = crate::orch::graph::Budget { claude_pct: 40.0, codex_pct: 30.0, stop_window_pct: 90.0, run_usd: Some(2.5) };
+        let b = crate::orch::graph::Budget { claude_pct: 40.0, codex_pct: 30.0, stop_window_pct: 90.0, run_usd: Some(2.5), run_credits: Some(120) };
         s.save_limits(&b).unwrap();
         assert_eq!(s.load_limits(), b);
         assert!(s.save_limits(&crate::orch::graph::Budget { claude_pct: 0.0, ..b }).is_err());

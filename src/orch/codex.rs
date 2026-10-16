@@ -25,6 +25,8 @@ pub struct Spec {
     pub cwd: PathBuf,
     /// Run on OpenRouter through ttm's proxy instead of your own Codex login.
     pub proxy: Option<Proxy>,
+    /// Give the agent the web tools, through ttm's MCP endpoint with this lease.
+    pub web: Option<Proxy>,
 }
 
 pub fn initialize_params() -> Value {
@@ -55,8 +57,16 @@ pub fn mcp_names(config_read: &Value) -> Vec<String> {
 pub fn thread_start_params(spec: &Spec, mcp_off: &[String]) -> Value {
     let features: serde_json::Map<String, Value> = FEATURES_OFF.iter().map(|f| (f.to_string(), Value::Bool(false))).collect();
     let mut config = json!({ "features": features });
-    if !mcp_off.is_empty() {
-        config["mcp_servers"] = mcp_off.iter().map(|n| (n.clone(), json!({"enabled": false}))).collect::<serde_json::Map<_, _>>().into();
+    let mut servers: serde_json::Map<String, Value> = mcp_off.iter().map(|n| (n.clone(), json!({"enabled": false}))).collect();
+    if let Some(w) = &spec.web {
+        // This thread's own copy of the server, with its own lease; the server process is shared, so the token cannot be an environment variable.
+        servers.insert(
+            "ttm_web".into(),
+            json!({"url": format!("{}/mcp/web", w.origin.trim_end_matches('/')), "http_headers": {"Authorization": format!("Bearer {}", w.token)}, "enabled": true, "startup_timeout_sec": 20, "tool_timeout_sec": 120}),
+        );
+    }
+    if !servers.is_empty() {
+        config["mcp_servers"] = servers.into();
     }
     if !spec.read_only {
         // A builder installs dependencies and runs the project's checks, which need the network. Its sandbox lets
@@ -152,6 +162,7 @@ impl TurnAcc {
                     text: std::mem::take(&mut self.text),
                     tokens: self.total().since(&self.base),
                     cost_usd: 0.0,
+                    credits: 0,
                     is_error: false,
                     session: Some(self.thread_id.clone()),
                 }))
@@ -378,6 +389,28 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_with_web_access_gets_the_server_with_its_own_token_next_to_the_servers_switched_off() {
+        let spec = |token: &str| Spec {
+            model: "gpt-6-luna".into(),
+            system_prompt: String::new(),
+            read_only: true,
+            cwd: PathBuf::from("/tmp"),
+            proxy: None,
+            web: Some(Proxy { origin: "http://127.0.0.1:7681".into(), token: token.into() }),
+        };
+        let a = thread_start_params(&spec("web-a"), &["homelab".to_string()]);
+        let servers = &a["config"]["mcp_servers"];
+        assert_eq!(servers["homelab"]["enabled"], false, "the user's own servers stay off");
+        assert_eq!(servers["ttm_web"]["url"], "http://127.0.0.1:7681/mcp/web");
+        assert_eq!(servers["ttm_web"]["http_headers"]["Authorization"], "Bearer web-a");
+        assert_eq!(servers["ttm_web"]["enabled"], true);
+        let b = thread_start_params(&spec("web-b"), &[]);
+        assert_eq!(b["config"]["mcp_servers"]["ttm_web"]["http_headers"]["Authorization"], "Bearer web-b", "each thread its own");
+        let none = thread_start_params(&Spec { web: None, ..spec("x") }, &[]);
+        assert!(none["config"].get("mcp_servers").is_none(), "nothing added when there is no web access");
+    }
+
+    #[test]
     fn a_thread_on_openrouter_gets_its_own_provider_with_its_own_lease() {
         let spec = |token: &str| Spec {
             model: "openai/gpt-6-luna".into(),
@@ -385,6 +418,7 @@ mod tests {
             read_only: true,
             cwd: PathBuf::from("/tmp"),
             proxy: Some(Proxy { origin: "http://127.0.0.1:7681/".into(), token: token.into() }),
+            web: None,
         };
         let a = thread_start_params(&spec("ttm-or-a"), &[]);
         let b = thread_start_params(&spec("ttm-or-b"), &[]);
@@ -476,7 +510,7 @@ mod tests {
             model: "gpt-6-luna".into(),
             system_prompt: "You search.".into(),
             read_only: true,
-            cwd: PathBuf::from("/work"), proxy: None,
+            cwd: PathBuf::from("/work"), proxy: None, web: None,
         };
         let t = thread_start_params(&spec, &[]);
         assert_eq!(t["sandbox"], "read-only");
@@ -536,7 +570,7 @@ mod tests {
             model: "gpt-6-luna".into(),
             system_prompt: "Answer tersely.".into(),
             read_only: true,
-            cwd: scratch.0.clone(), proxy: None,
+            cwd: scratch.0.clone(), proxy: None, web: None,
         };
         let mut thread = server.start_thread(&spec).await.unwrap();
         let schema = json!({
@@ -570,7 +604,7 @@ mod tests {
         let mut codes = Vec::new();
         for read_only in [false, true] {
             let scratch = Scratch::new(if read_only { "net-ro" } else { "net-rw" });
-            let spec = Spec { model: "gpt-6-luna".into(), system_prompt: "Do exactly what is asked.".into(), read_only, cwd: scratch.0.clone(), proxy: None };
+            let spec = Spec { model: "gpt-6-luna".into(), system_prompt: "Do exactly what is asked.".into(), read_only, cwd: scratch.0.clone(), proxy: None, web: None };
             let mut thread = server.start_thread(&spec).await.unwrap();
             let out = server.turn(&mut thread, ask, &schema, |_| {}).await.unwrap();
             codes.push(out.structured.unwrap()["code"].as_str().unwrap().to_string());

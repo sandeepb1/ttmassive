@@ -175,7 +175,9 @@ pub fn check_accounts<'a>(accounts: &Accounts, nodes: impl IntoIterator<Item = O
         let Some(a) = accounts.get(account) else {
             return Err(format!("{name} runs on an account that no longer exists"));
         };
-        let why = if a.kind == Kind::OpenaiCompatible && !direct {
+        let why = if a.kind == Kind::Firecrawl {
+            Some("is a web account, not one that has models")
+        } else if a.kind == Kind::OpenaiCompatible && !direct {
             // No CLI can run a model on a plain OpenAI-compatible endpoint, so such an agent must call it itself.
             Some("can only be called directly, with no tools")
         } else if a.key.is_empty() {
@@ -334,6 +336,9 @@ mod tests {
         assert!(why("nokey", "a/b").contains("no key"));
         assert!(why("oai", "a/b").contains("only be called directly"), "no CLI runs a plain endpoint's models");
         assert_eq!(check_accounts(&accounts, [("Think", "oai", "a/b", true)]), Ok(()));
+        let mut with_web = accounts.clone();
+        with_web.accounts.push(account("web", Kind::Firecrawl, "k", true, &[]));
+        assert!(check_accounts(&with_web, [("Think", "web", "a/b", true)]).unwrap_err().contains("web account"));
         assert!(why("ok", "a b").contains("cannot be used"));
         assert!(why("off", "a/b").contains("off-name"), "names the account");
     }

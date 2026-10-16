@@ -1,7 +1,7 @@
 // Provider accounts and the model lists behind their pickers: the shapes the server sends, and the
 // sorting, filtering and formatting the pickers need. No DOM here, so it can be tested on its own.
 
-export type AccountKind = 'openrouter' | 'openai-compatible';
+export type AccountKind = 'openrouter' | 'openai-compatible' | 'firecrawl';
 
 /** How OpenRouter routes an account's requests. Sent to it as the request's `provider` object. */
 export interface Prefs {
@@ -81,9 +81,11 @@ export interface Remote {
   remaining: number | null;
   freeTier: boolean | null;
   models: string[];
+  /** What the numbers count when they are not dollars: Firecrawl's credits. */
+  unit?: 'credits' | null;
 }
 
-export const KIND_LABEL: Record<AccountKind, string> = { openrouter: 'OpenRouter', 'openai-compatible': 'OpenAI-compatible' };
+export const KIND_LABEL: Record<AccountKind, string> = { openrouter: 'OpenRouter', 'openai-compatible': 'OpenAI-compatible', firecrawl: 'Firecrawl' };
 
 export function emptyInput(kind: AccountKind): AccountInput {
   return { name: '', kind, baseUrl: '', useInOrchestrator: true, models: [], prefs: { ...DEFAULT_PREFS } };
@@ -206,7 +208,8 @@ export function parsePrice(text: string): number | null | 'bad' {
 }
 
 /** Remaining credit as a line for the account list, or null when OpenRouter did not say. */
-export function balanceLine(r: Pick<Remote, 'usage' | 'limit' | 'remaining'>): string | null {
+export function balanceLine(r: Pick<Remote, 'usage' | 'limit' | 'remaining'> & { unit?: 'credits' | null }): string | null {
+  if (r.unit === 'credits') return r.remaining === null ? null : `${Math.round(r.remaining)}${r.limit !== null ? ` of ${Math.round(r.limit)}` : ''} credits left`;
   const usd = (n: number) => `$${n.toFixed(2)}`;
   if (r.remaining !== null) return `${usd(r.remaining)} left`;
   if (r.usage !== null) return r.limit !== null ? `${usd(r.usage)} of ${usd(r.limit)} used` : `${usd(r.usage)} used`;

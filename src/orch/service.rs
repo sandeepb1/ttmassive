@@ -165,8 +165,10 @@ impl Service {
     /// Models each engine offers. Codex's are asked of Codex itself, so they never go stale.
     pub async fn models(&self, data_dir: &Path) -> serde_json::Value {
         let codex = self.codex_models().await;
-        let openrouter = crate::openrouter::launch::flow_models(&crate::secrets::load(data_dir).await);
-        json!({"claude": prompts::CLAUDE_MODELS, "codex": codex, "openrouter": openrouter})
+        let accounts = crate::secrets::load(data_dir).await;
+        let openrouter = crate::openrouter::launch::flow_models(&accounts);
+        // `web`: agents can be given web access, because there is a Firecrawl account to give it with.
+        json!({"claude": prompts::CLAUDE_MODELS, "codex": codex, "openrouter": openrouter, "web": accounts.firecrawl().is_some()})
     }
 
     async fn codex_models(&self) -> Vec<String> {

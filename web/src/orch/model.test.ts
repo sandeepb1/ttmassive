@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  canCallDirectly, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import type { Flow, FlowNode, Models, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
@@ -561,4 +561,14 @@ test('only a role that needs no tools can call its model directly', () => {
   assert.equal(canCallDirectly(n('researcher')), true);
   assert.equal(canCallDirectly(n('builder')), false);
   assert.equal(canCallDirectly(n('judge')), false, 'a judge runs the checks');
+});
+
+test('agents that look things up start with web access on, and a run adds up its credits', () => {
+  const f = emptyFlow('f', 'F');
+  const researcher = newNode(f, { ...def('researcher'), web: true }, models, at);
+  const builder = newNode(f, { ...def('builder'), web: false }, models, at);
+  assert.equal(researcher.web, true);
+  assert.equal(builder.web, false);
+  const run = { nodes: { a: { credits: 3 }, b: { credits: 2 }, c: {} } } as unknown as Run;
+  assert.equal(runCredits(run), 5, 'an agent that used none counts as none');
 });
