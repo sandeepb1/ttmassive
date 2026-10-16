@@ -68,7 +68,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 }
 
 async fn models(State(st): St) -> Response {
-    json_nocache(st.orch.models().await)
+    json_nocache(st.orch.models(&st.data_dir).await)
 }
 
 async fn flows(State(st): St) -> Response {

@@ -76,6 +76,10 @@ pub struct Node {
     pub custom: Option<CustomRole>,
     pub engine: Engine,
     pub model: String,
+    /// The OpenRouter account this agent runs on, when `model` is an OpenRouter model id. The CLI that
+    /// runs it is still `engine`; it reaches OpenRouter through ttm's proxy instead of your own login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// Written by Sonnet and editable. Identical on every turn so the prompt cache holds.
     pub system_prompt: String,
     /// Stop and wait for approval before this node starts.
@@ -116,22 +120,27 @@ pub struct Budget {
     pub codex_pct: f64,
     /// Stop the run when the whole window (your own sessions included) passes this.
     pub stop_window_pct: f64,
+    /// Most dollars a run may spend on OpenRouter, or `None` for no cap.
+    #[serde(default)]
+    pub run_usd: Option<f64>,
 }
 
 impl Budget {
     pub fn validate(&self) -> Result<(), String> {
         let pct = |v: f64| v.is_finite() && v > 0.0 && v <= 100.0;
-        if pct(self.claude_pct) && pct(self.codex_pct) && pct(self.stop_window_pct) {
-            Ok(())
-        } else {
-            Err("limits must be above 0 and at most 100".into())
+        if !(pct(self.claude_pct) && pct(self.codex_pct) && pct(self.stop_window_pct)) {
+            return Err("limits must be above 0 and at most 100".into());
+        }
+        match self.run_usd {
+            Some(c) if !(c.is_finite() && c > 0.0 && c < 1.0e6) => Err("the dollar cap must be more than zero".into()),
+            _ => Ok(()),
         }
     }
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { claude_pct: 15.0, codex_pct: 10.0, stop_window_pct: 85.0 }
+        Self { claude_pct: 15.0, codex_pct: 10.0, stop_window_pct: 85.0, run_usd: None }
     }
 }
 
@@ -161,6 +170,12 @@ pub fn id_ok(s: &str) -> bool {
 }
 
 impl Node {
+    /// Whether this agent draws on your Claude or Codex plan. One on OpenRouter is paid per token instead,
+    /// so the plan windows say nothing about it.
+    pub fn uses_plan(&self) -> bool {
+        self.account.is_none()
+    }
+
     /// What this agent may do.
     pub fn capability(&self) -> Capability {
         self.custom.as_ref().map_or_else(|| self.role.capability(), |c| c.capability)
@@ -393,6 +408,7 @@ mod tests {
             checkpoint: false,
             token_cap: None,
             keep_model: false,
+            account: None,
             x: 0.0,
             y: 0.0,
         }

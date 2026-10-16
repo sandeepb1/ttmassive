@@ -99,6 +99,8 @@ pub struct Scan {
     /// Decided by the first byte: `{` means one JSON document, anything else is server-sent events.
     json: Option<bool>,
     usage: Option<Usage>,
+    /// The reply's last event has gone by (`message_stop`, `response.completed` or `[DONE]`).
+    complete: bool,
 }
 
 impl Scan {
@@ -128,9 +130,18 @@ impl Scan {
         let t = line.trim_ascii();
         let Some(rest) = t.strip_prefix(b"data:") else { return };
         let rest = rest.trim_ascii();
-        if rest.starts_with(b"{") && rest.windows(7).any(|w| w == b"\"usage\"") {
+        let has = |needle: &[u8]| rest.windows(needle.len()).any(|w| w == needle);
+        if rest.starts_with(b"{") && has(b"\"usage\"") {
             self.take(rest);
         }
+        if rest == b"[DONE]" || (rest.starts_with(b"{") && (has(b"\"message_stop\"") || has(b"\"response.completed\""))) {
+            self.complete = true;
+        }
+    }
+
+    /// The reply has said everything it will say about usage.
+    pub fn is_complete(&self) -> bool {
+        self.complete
     }
 
     fn take(&mut self, bytes: &[u8]) {
@@ -275,6 +286,17 @@ impl Leases {
         }
         self.save(true);
         true
+    }
+
+    /// End every lease whose tag starts with `prefix`, such as all of a flow run's agents.
+    pub fn revoke_prefix(&self, prefix: &str) -> usize {
+        let before = self.map.len();
+        self.map.retain(|_, l| !l.tag.starts_with(prefix));
+        let gone = before - self.map.len();
+        if gone > 0 {
+            self.save(true);
+        }
+        gone
     }
 
     pub fn revoke_tag(&self, tag: &str) -> bool {
@@ -448,6 +470,9 @@ struct Tee {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     scan: Scan,
     done: Option<Box<dyn FnOnce(Usage) + Send>>,
+    /// A reply that is one JSON document has a known length; reading all of it is its last event.
+    expected: Option<usize>,
+    seen: usize,
 }
 
 impl Tee {
@@ -467,6 +492,12 @@ impl Stream for Tee {
         match self.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(b))) => {
                 self.scan.push(&b);
+                self.seen += b.len();
+                // Record the cost now, before the chunk that ends the reply reaches the agent: it can finish its
+                // turn the moment it has that chunk, and whoever reads the lease then must see the charge.
+                if self.scan.is_complete() || self.expected == Some(self.seen) {
+                    self.finish();
+                }
                 Poll::Ready(Some(Ok(b)))
             }
             Poll::Ready(None) => {
@@ -549,7 +580,10 @@ pub async fn forward(leases: Arc<Leases>, account: &Account, token: &str, method
         }
     }
     let token = token.to_owned();
+    let expected = res.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).filter(|_| !res.headers().contains_key("content-encoding"));
     let tee = Tee {
+        expected,
+        seen: 0,
         inner: Box::pin(body_stream(res)),
         scan: Scan::default(),
         done: status.is_success().then(|| Box::new(move |u: Usage| leases.record(&token, &u)) as Box<dyn FnOnce(Usage) + Send>),
@@ -805,6 +839,7 @@ mod tests {
                         let parts: Vec<Result<Bytes, std::io::Error>> = vec![
                             Ok(Bytes::from("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n")),
                             Ok(Bytes::from("event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":12,\"output_tokens\":14,\"cost\":0.25}}\n\n")),
+                            Ok(Bytes::from("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")),
                         ];
                         ([(header::CONTENT_TYPE, "text/event-stream")], Body::from_stream(futures_util::stream::iter(parts))).into_response()
                     } else {
@@ -862,6 +897,27 @@ mod tests {
         let s = leases.get(&token).unwrap().spent;
         assert_eq!((s.input, s.output), (12, 14), "the stream's last report replaces its first");
         assert!((s.cost_usd - 0.25).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn the_charge_is_recorded_before_the_last_event_reaches_the_agent() {
+        use futures_util::StreamExt;
+        let seen = Arc::new(Seen::default());
+        let base = upstream(seen.clone(), true).await;
+        let leases = Arc::new(Leases::new());
+        let token = leases.mint("acct", "a/b", "sess", None);
+        let res = forward(leases.clone(), &account(&base, Prefs::default()), &token, Method::POST, "anthropic/v1/messages", &HeaderMap::new(), Bytes::from("{\"model\":\"x\",\"stream\":true}")).await;
+        let mut body = res.into_body().into_data_stream();
+        let mut text = String::new();
+        while let Some(chunk) = body.next().await {
+            text.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
+            if text.contains("message_stop") {
+                // The agent now has the end of the reply and may finish its turn: the charge must be there.
+                assert!((leases.get(&token).unwrap().spent.cost_usd - 0.25).abs() < 1e-12, "recorded before the end was handed over");
+                return;
+            }
+        }
+        panic!("the reply never reached message_stop");
     }
 
     #[tokio::test]

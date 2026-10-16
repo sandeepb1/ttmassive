@@ -5,11 +5,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use tokio::sync::Mutex;
 
-use super::Outcome;
+use super::{Outcome, Proxy};
+use crate::openrouter::proxy::Leases;
 use super::claude::{self, Access, Event};
 use super::codex;
 use super::exec::NodeRunner;
@@ -31,6 +33,14 @@ pub struct EngineRunner {
     active: std::sync::Mutex<HashSet<String>>,
     /// Builders can start together, and `git worktree add` on one repository must not overlap itself.
     worktree_lock: Mutex<()>,
+    /// Where agents on OpenRouter get their credentials: one lease per agent, tagged `orch:<run>:<node>`.
+    leases: Arc<Leases>,
+    /// Where those agents reach the proxy.
+    origin: String,
+    /// The plan limits, for the dollar cap a new lease is given.
+    limits: Arc<std::sync::Mutex<super::graph::Budget>>,
+    /// The user chose to carry on past the limits, so new leases get no dollar cap.
+    waived: AtomicBool,
 }
 
 /// One line of a transcript: the first line of `s`, cut short.
@@ -89,7 +99,17 @@ fn with_folder_note(prompt: &str, cwd: &std::path::Path, limits: Limits) -> Stri
 }
 
 impl EngineRunner {
-    pub fn new(flow: Flow, project: PathBuf, worktrees: PathBuf, run_id: String, codex: Arc<codex::Hub>) -> Self {
+    pub fn new(
+        flow: Flow,
+        project: PathBuf,
+        worktrees: PathBuf,
+        run_id: String,
+        codex: Arc<codex::Hub>,
+        leases: Arc<Leases>,
+        origin: String,
+        limits: Arc<std::sync::Mutex<super::graph::Budget>>,
+        waived: bool,
+    ) -> Self {
         Self {
             flow,
             project,
@@ -100,7 +120,52 @@ impl EngineRunner {
             threads: Mutex::default(),
             active: std::sync::Mutex::default(),
             worktree_lock: Mutex::new(()),
+            leases,
+            origin,
+            limits,
+            waived: AtomicBool::new(waived),
         }
+    }
+
+    fn lease_tag(&self, node_id: &str) -> String {
+        lease_tag(&self.run_id, node_id)
+    }
+
+    /// The run goes on past its limits: leases stop capping dollars too, those already made included.
+    pub fn waive(&self) {
+        self.waived.store(true, Ordering::SeqCst);
+        for n in &self.flow.nodes {
+            self.leases.set_cap(&self.lease_tag(&n.id), None);
+        }
+    }
+
+    /// End the leases of every agent of this run. Called when the run is over.
+    pub fn end_leases(&self) {
+        self.leases.revoke_prefix(&format!("orch:{}:", self.run_id));
+    }
+
+    /// What an agent on OpenRouter is given: the proxy and its lease. The lease is kept for the life of the run,
+    /// so a send-back carries on with the same spend and the same model. `None` for an agent on your own plan.
+    fn proxy_for(&self, node: &Node) -> Option<Proxy> {
+        let account = node.account.as_deref()?;
+        let tag = self.lease_tag(&node.id);
+        let cap = if self.waived.load(Ordering::SeqCst) { None } else { self.limits.lock().unwrap_or_else(|e| e.into_inner()).run_usd };
+        let token = match self.leases.by_tag(&tag) {
+            Some((token, lease)) => {
+                if lease.model != node.model {
+                    self.leases.set_model(&tag, &node.model);
+                }
+                self.leases.set_cap(&tag, cap);
+                token
+            }
+            None => self.leases.mint(account, &node.model, &tag, cap),
+        };
+        Some(Proxy { origin: self.origin.clone(), token })
+    }
+
+    /// Dollars the node's lease has been charged so far.
+    fn spent(&self, node: &Node) -> f64 {
+        self.leases.by_tag(&self.lease_tag(&node.id)).map_or(0.0, |(_, l)| l.spent.cost_usd)
     }
 
     /// Where a builder's worktree is.
@@ -158,6 +223,7 @@ impl EngineRunner {
                     cwd,
                     // A worktree keeps its history in the main repository's .git; `git status` needs it.
                     read_also: vec![self.project.join(".git")],
+                    proxy: self.proxy_for(node),
                 };
                 claude::Agent::start(&spec).await?
             }
@@ -188,6 +254,7 @@ impl EngineRunner {
                     system_prompt: node.system_prompt.clone(),
                     read_only: !node.writes(),
                     cwd,
+                    proxy: self.proxy_for(node),
                 };
                 server.start_thread(&spec).await?
             }
@@ -208,15 +275,28 @@ impl EngineRunner {
     }
 }
 
+/// The lease tag of one agent of a run.
+pub fn lease_tag(run_id: &str, node_id: &str) -> String {
+    format!("orch:{run_id}:{node_id}")
+}
+
 impl NodeRunner for EngineRunner {
     async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
         let cwd = self.cwd(node).await?;
         let prompt = with_folder_note(prompt, &cwd, limits(node));
         let folder = cwd.clone();
-        let result = match node.engine {
+        let before = self.spent(node);
+        let mut result = match node.engine {
             Engine::Claude => self.run_claude(node, cwd, &prompt, log).await,
             Engine::Codex => self.run_codex(node, cwd, &prompt, log).await,
         };
+        // On OpenRouter the charge is exact, and it is what the proxy saw: the agent's own estimate is not used.
+        if node.account.is_some() {
+            let charged = (self.spent(node) - before).max(0.0);
+            if let Ok(o) = &mut result {
+                o.cost_usd = charged;
+            }
+        }
         // Whatever the builder got done is kept on its branch, even if its turn then failed: the work is not lost.
         if node.writes() {
             let msg = format!("{} (ttm run {})", node.name, self.run_id);
@@ -260,6 +340,7 @@ mod tests {
             checkpoint: false,
             token_cap: None,
             keep_model: false,
+            account: None,
             x: 0.0,
             y: 0.0,
         }

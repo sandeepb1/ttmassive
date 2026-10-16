@@ -167,6 +167,7 @@ pub fn flow_from_suggestion(v: &Value, flow_id: &str, codex_models: &[String]) -
             checkpoint: n.get("checkpoint").and_then(Value::as_bool).unwrap_or(false),
             token_cap: None,
             keep_model: false,
+            account: None,
             x: 0.0,
             y: 0.0,
         });
@@ -299,6 +300,7 @@ async fn one_shot(model: &str, system: &str, prompt: &str, schema: Value, cwd: &
         access: Access::None,
         cwd: cwd.to_path_buf(),
         read_also: vec![],
+        proxy: None,
     };
     let mut agent = claude::Agent::start(&spec).await?;
     let outcome = agent.turn(prompt, |_| {}).await;
@@ -427,6 +429,7 @@ pub fn flow_from_edit(base: &Flow, v: &Value, codex_models: &[String]) -> Result
                     checkpoint: false,
                     token_cap: None,
                     keep_model: false,
+                    account: None,
                     x: 0.0,
                     y: 0.0,
                 };
@@ -439,6 +442,10 @@ pub fn flow_from_edit(base: &Flow, v: &Value, codex_models: &[String]) -> Result
             node.role = role;
         }
         node.engine = engine;
+        // An OpenRouter account goes with its model: a different model is one of the built-in ones, which that account cannot serve.
+        if existing.is_none_or(|e| e.model != model) {
+            node.account = None;
+        }
         node.model = model;
         if !s("name").is_empty() {
             node.name = s("name").chars().take(60).collect();
@@ -529,7 +536,7 @@ pub async fn edit_flow(
 async fn one_shot_codex(hub: &super::codex::Hub, model: &str, system: &str, prompt: &str, schema: &Value, cwd: &Path) -> Result<(Value, Outcome)> {
     tokio::fs::create_dir_all(cwd).await?;
     let server = hub.get().await?;
-    let spec = super::codex::Spec { model: model.into(), system_prompt: system.into(), read_only: true, cwd: cwd.to_path_buf() };
+    let spec = super::codex::Spec { model: model.into(), system_prompt: system.into(), read_only: true, cwd: cwd.to_path_buf(), proxy: None };
     let mut thread = server.start_thread(&spec).await?;
     let outcome = server.turn(&mut thread, prompt, schema, |_| {}).await?;
     let answer = outcome.structured.clone().context("codex did not answer in the required shape")?;
@@ -676,6 +683,7 @@ mod tests {
             checkpoint: false,
             token_cap: None,
             keep_model: false,
+            account: None,
             x: 900.0,
             y: 0.0,
         });
@@ -736,6 +744,31 @@ mod tests {
         let n = f.nodes.iter().find(|n| n.id == "n2").unwrap();
         assert_eq!((n.name.as_str(), n.model.as_str(), n.system_prompt.as_str()), ("Coder", "gpt-6-luna", "Build it carefully."));
         assert_eq!((n.y, n.token_cap, n.keep_model), (222.0, Some(50_000), true));
+    }
+
+    #[test]
+    fn an_agent_on_openrouter_keeps_its_account_only_while_it_keeps_its_model() {
+        let mut b = base();
+        b.nodes[1].account = Some("acct".into());
+        b.nodes[1].model = "openai/gpt-6-luna".into();
+        b.nodes[1].engine = Engine::Codex;
+        let answer = |change: &dyn Fn(&mut Value)| {
+            let mut v = edit_view(&b);
+            v["summary"] = json!("Did it.");
+            change(&mut v);
+            flow_from_edit(&b, &v, &models()).unwrap().0
+        };
+        let kept = answer(&|_| {});
+        let n = kept.nodes.iter().find(|n| n.id == "n2").unwrap();
+        assert_eq!((n.account.as_deref(), n.model.as_str()), (Some("acct"), "openai/gpt-6-luna"), "an untouched OpenRouter agent stays as it was");
+        // The editor moves it to one of the built-in models: the account cannot serve that, so it goes.
+        let moved = answer(&|v| v["nodes"][1]["model"] = json!("gpt-6-luna"));
+        let n = moved.nodes.iter().find(|n| n.id == "n2").unwrap();
+        assert_eq!((n.account.as_deref(), n.model.as_str()), (None, "gpt-6-luna"));
+        // The editor changes its engine, which makes its model unknown: it falls back, and the account goes with the old model.
+        let swapped = answer(&|v| v["nodes"][1]["engine"] = json!("claude"));
+        let n = swapped.nodes.iter().find(|n| n.id == "n2").unwrap();
+        assert_eq!((n.account.as_deref(), n.model.as_str()), (None, "sonnet"));
     }
 
     #[test]

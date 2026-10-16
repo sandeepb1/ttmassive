@@ -32,8 +32,14 @@ impl Windows {
     }
 }
 
+/// Dollars with enough digits to tell small amounts apart: $2.50, but $0.0004.
+fn usd(n: f64) -> String {
+    if n >= 0.01 { format!("${n:.2}") } else { format!("${n:.4}") }
+}
+
+/// Whether any agent of the flow draws on `engine`'s plan. Agents on OpenRouter do not.
 fn uses(flow: &Flow, engine: Engine) -> bool {
-    flow.nodes.iter().any(|n| n.engine == engine)
+    flow.nodes.iter().any(|n| n.engine == engine && n.uses_plan())
 }
 
 fn check_engine(
@@ -81,6 +87,12 @@ pub fn pressure(run: &Run, w: &Windows, b: &Budget, engine: Engine) -> f64 {
 pub fn check(run: &Run, w: &Windows, b: &Budget) -> Option<String> {
     if run.waived {
         return None;
+    }
+    if let Some(cap) = b.run_usd {
+        let spent = run.cost_usd();
+        if spent >= cap {
+            return Some(format!("This run has spent {} on OpenRouter (its dollar cap is {})", usd(spent), usd(cap)));
+        }
     }
     if uses(&run.flow, Engine::Claude) {
         if let Some(m) = check_engine("Claude", w.claude_5h, w.claude_7d, run.baseline.claude, b.claude_pct, b.stop_window_pct) {
@@ -186,6 +198,43 @@ mod tests {
         assert!(check(&r, &windows(99.0, 99.0, 99.0, 99.0), &Budget::default()).is_some());
         r.waived = true;
         assert_eq!(check(&r, &windows(99.0, 99.0, 99.0, 99.0), &Budget::default()), None);
+    }
+
+    fn on_openrouter(r: &mut Run) {
+        for n in &mut r.flow.nodes {
+            n.account = Some("acct".into());
+        }
+    }
+
+    #[test]
+    fn a_flow_that_runs_only_on_openrouter_is_not_held_to_the_plan_windows() {
+        let mut r = run();
+        assert!(check(&r, &windows(99.0, 99.0, 99.0, 99.0), &Budget::default()).is_some());
+        on_openrouter(&mut r);
+        assert_eq!(check(&r, &windows(99.0, 99.0, 99.0, 99.0), &Budget::default()), None, "no agent draws on either plan");
+        // One agent back on the plan brings that plan's check back, for its engine only.
+        let (id, engine) = (r.flow.nodes[0].id.clone(), r.flow.nodes[0].engine);
+        r.flow.nodes.iter_mut().find(|n| n.id == id).unwrap().account = None;
+        let w = windows(99.0, 99.0, 10.0, 10.0);
+        assert_eq!(check(&r, &w, &Budget::default()).is_some(), engine == Engine::Claude);
+    }
+
+    #[test]
+    fn a_run_stops_when_it_has_spent_its_dollar_cap_and_not_before() {
+        let mut r = run();
+        on_openrouter(&mut r);
+        let ids: Vec<String> = r.flow.nodes.iter().map(|n| n.id.clone()).collect();
+        r.nodes.get_mut(&ids[0]).unwrap().cost_usd = 0.40;
+        r.nodes.get_mut(&ids[1]).unwrap().cost_usd = 0.35;
+        let cap = |c: f64| Budget { run_usd: Some(c), ..Budget::default() };
+        assert_eq!(check(&r, &Windows::default(), &cap(1.00)), None);
+        let m = check(&r, &Windows::default(), &cap(0.75)).expect("0.75 spent is at the cap");
+        assert!(m.contains("$0.75") && m.contains("dollar cap is $0.75"), "{m}");
+        assert_eq!(usd(0.0004), "$0.0004");
+        assert_eq!(usd(2.5), "$2.50");
+        assert_eq!(check(&r, &Windows::default(), &Budget::default()), None, "no cap, no stop");
+        r.waived = true;
+        assert_eq!(check(&r, &Windows::default(), &cap(0.10)), None, "carrying on anyway skips the cap");
     }
 
     #[test]

@@ -136,6 +136,10 @@ pub struct NodeRun {
     pub error: Option<String>,
     /// Use over all attempts.
     pub tokens: Tokens,
+    /// Dollars spent over all attempts. On OpenRouter this is what was charged; for a Claude agent on your plan
+    /// it is Claude Code's estimate at API prices, which is not billed.
+    #[serde(default)]
+    pub cost_usd: f64,
     pub transcript: Vec<String>,
     /// The agent's own conversation id after its latest finished turn, for opening it in a live session.
     #[serde(default)]
@@ -160,6 +164,7 @@ impl NodeRun {
             output: None,
             error: None,
             tokens: Tokens::default(),
+            cost_usd: 0.0,
             transcript: Vec::new(),
             session: None,
             model_used: None,
@@ -244,6 +249,12 @@ impl Run {
         }
     }
 
+    /// Dollars the run has spent on OpenRouter agents. Estimates for agents on your plan are not counted:
+    /// nothing was charged for them.
+    pub fn cost_usd(&self) -> f64 {
+        self.flow.nodes.iter().filter(|n| !n.uses_plan()).filter_map(|n| self.nodes.get(&n.id)).map(|n| n.cost_usd).sum()
+    }
+
     /// Add a line to the run's log.
     pub fn note(&mut self, node: Option<&str>, kind: LogKind, title: impl Into<String>, body: Option<String>) {
         if self.log.len() >= MAX_LOG {
@@ -301,6 +312,7 @@ mod tests {
             checkpoint: false,
             token_cap: None,
             keep_model: false,
+            account: None,
             x: 0.0,
             y: 0.0,
         };
@@ -314,6 +326,18 @@ mod tests {
             downshift: false,
         };
         Run::new("r1".into(), flow, "brief".into(), 100)
+    }
+
+    #[test]
+    fn a_runs_cost_is_what_openrouter_charged_for_its_agents_on_it() {
+        let mut r = Run::new("r".into(), Flow { id: "f".into(), name: "f".into(), nodes: vec![], edges: vec![], max_retries: 1, budget: Default::default(), downshift: false }, "g".into(), 0);
+        assert_eq!(r.cost_usd(), 0.0);
+        let mk = |id: &str, account: Option<&str>| Node { id: id.into(), name: id.into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "m".into(), account: account.map(String::from), system_prompt: String::new(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0 };
+        r.flow.nodes = vec![mk("plan", None), mk("or1", Some("a")), mk("or2", Some("a"))];
+        for (id, cost) in [("plan", 5.0), ("or1", 0.25), ("or2", 0.5)] {
+            r.nodes.insert(id.into(), NodeRun { cost_usd: cost, ..NodeRun::new() });
+        }
+        assert!((r.cost_usd() - 0.75).abs() < 1e-12, "the estimate for the agent on your plan is not counted");
     }
 
     #[test]

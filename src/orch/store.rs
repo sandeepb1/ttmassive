@@ -29,6 +29,8 @@ pub struct RunSummary {
     pub created: i64,
     /// Everything the agents read and wrote, cache included.
     pub tokens: u64,
+    /// Dollars charged by OpenRouter for the run's agents on it.
+    pub cost_usd: f64,
 }
 
 impl Store {
@@ -127,7 +129,8 @@ impl Store {
             .into_iter()
             .map(|r| {
                 let tokens = r.tokens().total();
-                RunSummary { id: r.id, flow_id: r.flow.id, flow_name: r.flow.name, goal: r.goal, status: r.status, created: r.created, tokens }
+                let cost_usd = r.cost_usd();
+                RunSummary { id: r.id, flow_id: r.flow.id, flow_name: r.flow.name, goal: r.goal, status: r.status, created: r.created, tokens, cost_usd }
             })
             .collect();
         v.sort_by(|a, b| b.created.cmp(&a.created));
@@ -203,7 +206,7 @@ mod tests {
         let dir = tmp("limits");
         let s = Store::new(&dir);
         assert_eq!(s.load_limits(), crate::orch::graph::Budget::default());
-        let b = crate::orch::graph::Budget { claude_pct: 40.0, codex_pct: 30.0, stop_window_pct: 90.0 };
+        let b = crate::orch::graph::Budget { claude_pct: 40.0, codex_pct: 30.0, stop_window_pct: 90.0, run_usd: Some(2.5) };
         s.save_limits(&b).unwrap();
         assert_eq!(s.load_limits(), b);
         assert!(s.save_limits(&crate::orch::graph::Budget { claude_pct: 0.0, ..b }).is_err());

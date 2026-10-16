@@ -459,6 +459,7 @@ async fn create_session(State(st): State<Arc<AppState>>, Json(b): Json<CreateBod
             name: b.name.as_deref(),
             dir: b.dir.clone().map(std::path::PathBuf::from),
             yolo: b.yolo,
+            resume: None,
         };
         return match sessions::create_openrouter(&st, req).await {
             Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({ "id": id }))).into_response(),

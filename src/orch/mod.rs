@@ -22,6 +22,15 @@ use serde_json::Value;
 
 use usage::Tokens;
 
+/// Where an agent on OpenRouter sends its requests: ttm's own proxy, with this lease as its credential.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Proxy {
+    /// Where the proxy is, such as `http://127.0.0.1:7681`.
+    pub origin: String,
+    /// The lease token. Handed to the agent in its environment (Claude) or provider config (Codex), never on a command line.
+    pub token: String,
+}
+
 /// What one agent turn produced, whichever engine ran it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {

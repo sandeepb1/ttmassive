@@ -19,6 +19,7 @@ fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: us
         checkpoint: false,
         token_cap: None,
         keep_model: false,
+        account: None,
         x: layer as f64 * 280.0,
         y: row as f64 * 180.0,
     }
@@ -150,7 +151,7 @@ pub fn all() -> Vec<Flow> {
             ("weigh", "report", F),
         ],
         1,
-        Budget { claude_pct: 10.0, codex_pct: 5.0, stop_window_pct: 85.0 },
+        Budget { claude_pct: 10.0, codex_pct: 5.0, stop_window_pct: 85.0, run_usd: None },
     );
 
     vec![feature, bug, refactor, review, report]

@@ -14,8 +14,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, broadcast, oneshot};
 
-use super::Outcome;
 use super::usage::Tokens;
+use super::{Outcome, Proxy};
 
 #[derive(Debug, Clone)]
 pub struct Spec {
@@ -23,6 +23,8 @@ pub struct Spec {
     pub system_prompt: String,
     pub read_only: bool,
     pub cwd: PathBuf,
+    /// Run on OpenRouter through ttm's proxy instead of your own Codex login.
+    pub proxy: Option<Proxy>,
 }
 
 pub fn initialize_params() -> Value {
@@ -60,6 +62,17 @@ pub fn thread_start_params(spec: &Spec, mcp_off: &[String]) -> Value {
         // A builder installs dependencies and runs the project's checks, which need the network. Its sandbox lets
         // it write only inside its own copy, but Codex shuts the network in that sandbox unless told otherwise.
         config["sandbox_workspace_write"] = json!({ "network_access": true });
+    }
+    if let Some(p) = &spec.proxy {
+        // This thread's own provider. The token rides in a header because the server is shared by every node, so an
+        // environment variable could hold only one of their leases.
+        config["model_provider"] = json!("ttm_or");
+        config["model_providers"] = json!({"ttm_or": {
+            "name": "OpenRouter via ttm",
+            "base_url": format!("{}/or/openai/v1", p.origin.trim_end_matches('/')),
+            "wire_api": "responses",
+            "http_headers": {"Authorization": format!("Bearer {}", p.token)},
+        }});
     }
     json!({
         "cwd": spec.cwd,
@@ -159,6 +172,8 @@ pub struct Server {
     notes: broadcast::Sender<Value>,
     /// The user's own MCP servers, switched off in every thread.
     mcp_servers: Vec<String>,
+    /// False once the process has ended, so the next use starts a new one.
+    alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Server {
@@ -176,7 +191,8 @@ impl Server {
         let pending: Pending = Arc::default();
         let (notes, _) = broadcast::channel(1024);
 
-        let (p, n, w) = (pending.clone(), notes.clone(), stdin.clone());
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (p, n, w, a) = (pending.clone(), notes.clone(), stdin.clone(), alive.clone());
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -208,13 +224,14 @@ impl Server {
                     _ => {}
                 }
             }
-            // The process ended: fail everything still waiting.
+            // The process ended: fail everything still waiting, and let the next use start a new one.
+            a.store(false, Ordering::SeqCst);
             for (_, tx) in p.lock().await.drain() {
                 let _ = tx.send(Err("codex exited".into()));
             }
         });
 
-        let mut server = Server { _child: child, stdin, pending, next: AtomicU64::new(1), notes, mcp_servers: Vec::new() };
+        let mut server = Server { _child: child, stdin, pending, next: AtomicU64::new(1), notes, mcp_servers: Vec::new(), alive };
         server.request("initialize", initialize_params()).await?;
         server.send(&json!({"method": "initialized"})).await?;
         // Which MCP servers there are is the user's business; if it cannot be read, nothing is switched off.
@@ -288,13 +305,20 @@ impl Server {
     }
 }
 
-/// One shared server, started the first time a Codex node needs it.
+/// One shared server, started the first time a Codex node needs it, and started again if it has since ended
+/// (it was killed, or Codex crashed): without that, every Codex agent would fail until ttm itself restarted.
 #[derive(Default)]
-pub struct Hub(tokio::sync::OnceCell<Server>);
+pub struct Hub(Mutex<Option<Arc<Server>>>);
 
 impl Hub {
-    pub async fn get(&self) -> Result<&Server> {
-        self.0.get_or_try_init(Server::start).await
+    pub async fn get(&self) -> Result<Arc<Server>> {
+        let mut slot = self.0.lock().await;
+        if let Some(s) = slot.as_ref().filter(|s| s.alive.load(Ordering::SeqCst)) {
+            return Ok(s.clone());
+        }
+        let server = Arc::new(Server::start().await?);
+        *slot = Some(server.clone());
+        Ok(server)
     }
 }
 
@@ -351,6 +375,29 @@ mod tests {
 
     fn completed(status: &str) -> Value {
         note("turn/completed", json!({"threadId": "t1", "turn": {"id": "u1", "items": [], "status": status}}))
+    }
+
+    #[test]
+    fn a_thread_on_openrouter_gets_its_own_provider_with_its_own_lease() {
+        let spec = |token: &str| Spec {
+            model: "openai/gpt-6-luna".into(),
+            system_prompt: String::new(),
+            read_only: true,
+            cwd: PathBuf::from("/tmp"),
+            proxy: Some(Proxy { origin: "http://127.0.0.1:7681/".into(), token: token.into() }),
+        };
+        let a = thread_start_params(&spec("ttm-or-a"), &[]);
+        let b = thread_start_params(&spec("ttm-or-b"), &[]);
+        assert_eq!(a["config"]["model_provider"], "ttm_or");
+        let p = &a["config"]["model_providers"]["ttm_or"];
+        assert_eq!((p["base_url"].as_str(), p["wire_api"].as_str()), (Some("http://127.0.0.1:7681/or/openai/v1"), Some("responses")));
+        assert_eq!(p["http_headers"]["Authorization"], "Bearer ttm-or-a");
+        assert_eq!(b["config"]["model_providers"]["ttm_or"]["http_headers"]["Authorization"], "Bearer ttm-or-b", "each thread has its own token");
+        assert_eq!(a["model"], "openai/gpt-6-luna");
+        assert!(a["config"]["features"]["plugins"] == false, "the isolation settings are still there");
+        // An agent on your own plan is left on your own Codex login.
+        let own = thread_start_params(&Spec { proxy: None, ..spec("x") }, &[]);
+        assert!(own["config"].get("model_provider").is_none() && own["config"].get("model_providers").is_none());
     }
 
     #[test]
@@ -429,7 +476,7 @@ mod tests {
             model: "gpt-6-luna".into(),
             system_prompt: "You search.".into(),
             read_only: true,
-            cwd: PathBuf::from("/work"),
+            cwd: PathBuf::from("/work"), proxy: None,
         };
         let t = thread_start_params(&spec, &[]);
         assert_eq!(t["sandbox"], "read-only");
@@ -489,7 +536,7 @@ mod tests {
             model: "gpt-6-luna".into(),
             system_prompt: "Answer tersely.".into(),
             read_only: true,
-            cwd: scratch.0.clone(),
+            cwd: scratch.0.clone(), proxy: None,
         };
         let mut thread = server.start_thread(&spec).await.unwrap();
         let schema = json!({
@@ -523,7 +570,7 @@ mod tests {
         let mut codes = Vec::new();
         for read_only in [false, true] {
             let scratch = Scratch::new(if read_only { "net-ro" } else { "net-rw" });
-            let spec = Spec { model: "gpt-6-luna".into(), system_prompt: "Do exactly what is asked.".into(), read_only, cwd: scratch.0.clone() };
+            let spec = Spec { model: "gpt-6-luna".into(), system_prompt: "Do exactly what is asked.".into(), read_only, cwd: scratch.0.clone(), proxy: None };
             let mut thread = server.start_thread(&spec).await.unwrap();
             let out = server.turn(&mut thread, ask, &schema, |_| {}).await.unwrap();
             codes.push(out.structured.unwrap()["code"].as_str().unwrap().to_string());

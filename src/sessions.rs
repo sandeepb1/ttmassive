@@ -709,6 +709,8 @@ pub struct OrNew<'a> {
     pub name: Option<&'a str>,
     pub dir: Option<PathBuf>,
     pub yolo: bool,
+    /// Carry on this conversation of the agent instead of starting a new one.
+    pub resume: Option<&'a str>,
 }
 
 pub async fn create_openrouter(st: &AppState, req: OrNew<'_>) -> Result<String> {
@@ -745,7 +747,7 @@ pub async fn create_openrouter(st: &AppState, req: OrNew<'_>) -> Result<String> 
         anyhow::ensure!(d.is_dir(), "{} is not a folder", d.display());
         spec.dir = Some(d);
     }
-    register(st, id, new_uid(), spec, None, None, None).await
+    register(st, id, new_uid(), spec, None, None, req.resume).await
 }
 
 /// Switch the model of an OpenRouter session, from its next request on. Remembered, so a restore keeps it.

@@ -64,6 +64,9 @@ pub struct Service {
     /// The plan limits. Read each time a run is checked, so a change reaches runs that are already going.
     limits: Arc<Mutex<super::graph::Budget>>,
     scratch: PathBuf,
+    /// Credentials for agents on OpenRouter, and where they reach the proxy.
+    leases: Arc<crate::openrouter::proxy::Leases>,
+    origin: String,
 }
 
 fn now() -> i64 {
@@ -80,7 +83,7 @@ fn new_id() -> String {
 }
 
 impl Service {
-    pub fn new(data_dir: &Path) -> Service {
+    pub fn new(data_dir: &Path, leases: Arc<crate::openrouter::proxy::Leases>, origin: String) -> Service {
         let store = Store::new(data_dir);
         // A run that was going when ttm stopped did not finish; say so rather than show it as running.
         for mut r in store.all_runs() {
@@ -99,6 +102,8 @@ impl Service {
             runs: Mutex::default(),
             events: broadcast::channel(256).0,
             windows: Arc::default(),
+            leases,
+            origin,
         }
     }
 
@@ -135,6 +140,10 @@ impl Service {
                 self.store.worktrees(),
                 run.id.clone(),
                 self.codex.clone(),
+                self.leases.clone(),
+                self.origin.clone(),
+                self.limits.clone(),
+                run.waived,
             ),
             shared: Mutex::new(run),
             cancelled: AtomicBool::new(false),
@@ -151,18 +160,18 @@ impl Service {
     }
 
     /// Models each engine offers. Codex's are asked of Codex itself, so they never go stale.
-    pub async fn models(&self) -> serde_json::Value {
+    pub async fn models(&self, data_dir: &Path) -> serde_json::Value {
+        let codex = self.codex_models().await;
+        let openrouter = crate::openrouter::launch::flow_models(&crate::secrets::load(data_dir).await);
+        json!({"claude": prompts::CLAUDE_MODELS, "codex": codex, "openrouter": openrouter})
+    }
+
+    async fn codex_models(&self) -> Vec<String> {
         let codex = match self.codex.get().await {
             Ok(s) => s.models().await.unwrap_or_default(),
             Err(_) => Vec::new(),
         };
-        let codex = if codex.is_empty() { FALLBACK_CODEX.iter().map(|s| s.to_string()).collect() } else { codex };
-        json!({"claude": prompts::CLAUDE_MODELS, "codex": codex})
-    }
-
-    async fn codex_models(&self) -> Vec<String> {
-        let m = self.models().await;
-        serde_json::from_value(m["codex"].clone()).unwrap_or_default()
+        if codex.is_empty() { FALLBACK_CODEX.iter().map(|s| s.to_string()).collect() } else { codex }
     }
 
     pub async fn suggest_flow(&self, st: &Arc<AppState>, goal: &str) -> Result<Flow, Fail> {
@@ -216,6 +225,13 @@ impl Service {
         skip_grill: bool,
     ) -> Result<Run, Fail> {
         flow.validate().map_err(Fail::Bad)?;
+        // An agent on OpenRouter needs its account to be there and allowed, so say so now rather than mid-run.
+        let accounts = crate::secrets::load(&st.data_dir).await;
+        crate::openrouter::launch::check_accounts(
+            &accounts,
+            flow.nodes.iter().filter_map(|n| n.account.as_deref().map(|a| (n.name.as_str(), a, n.model.as_str()))),
+        )
+        .map_err(Fail::Bad)?;
         if goal.trim().is_empty() {
             return Err(Fail::Bad("say what you want done".into()));
         }
@@ -353,6 +369,7 @@ impl Service {
             }
             if waive && !run.waived {
                 run.waived = true;
+                live.runner.waive();
                 run.note(None, super::run::LogKind::Decision, "You chose to carry on past the plan limits: they are not checked again for this run", None);
             }
             run.status = RunStatus::Running;
@@ -388,6 +405,7 @@ impl Service {
         }
         self.store.delete_run(id).map_err(|_| Fail::Bad("bad id".into()))?;
         runs.remove(id);
+        self.leases.revoke_prefix(&format!("orch:{id}:"));
         Ok(())
     }
 
@@ -435,6 +453,10 @@ impl Service {
                 }
             }
             refresher.abort();
+            // A run that is over needs no credentials any more; one that is paused keeps them to carry on.
+            if matches!(live.shared.lock().unwrap_or_else(|e| e.into_inner()).status, RunStatus::Done | RunStatus::Cancelled) {
+                live.runner.end_leases();
+            }
             live.driving.store(false, Ordering::SeqCst);
         });
     }
@@ -464,6 +486,17 @@ impl Service {
         let dir = live.runner.worktree_dir(node_id);
         if !dir.is_dir() {
             return Err(Fail::Conflict("its worktree is gone".into()));
+        }
+        // An agent that ran on OpenRouter carries on there, on the same model, not on your own login.
+        if let Some(account) = node.account.as_deref() {
+            live.runner.release(node_id).await;
+            let name = format!("orch-{node_id}-{}", &run_id[..run_id.len().min(10)]);
+            let driver = match node.engine {
+                super::graph::Engine::Claude => crate::openrouter::launch::Driver::Claude,
+                super::graph::Engine::Codex => crate::openrouter::launch::Driver::Codex,
+            };
+            let req = crate::sessions::OrNew { account, model: &node.model, driver: Some(driver), cap_usd: None, name: Some(&name), dir: Some(dir), yolo: false, resume: Some(&session) };
+            return crate::sessions::create_openrouter(st, req).await.map_err(Fail::Internal);
         }
         let wanted = match node.engine {
             super::graph::Engine::Claude => crate::config::Agent::Claude,

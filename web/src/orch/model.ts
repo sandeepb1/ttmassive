@@ -4,7 +4,7 @@
 
 import { DEFAULT_LIMITS } from './types.ts';
 import type {
-  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
+  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowModel, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
 // ---------------------------------------------------------------------------- roles
@@ -535,4 +535,61 @@ export function answerFor(q: Question, pick: Answer): string {
 /** The answers to send, in order. Anything left untouched takes the suggestion. */
 export function answersFor(pending: Question[], picks: Record<number, Answer>): string[] {
   return pending.map((q, i) => answerFor(q, picks[i] ?? startingAnswer(q)));
+}
+
+// ---------------------------------------------------------------------------- OpenRouter models and what they cost
+
+/** The picker's value for an agent's model: `plan:<model>` for one on your plan, `or:<account>:<model>` for OpenRouter. */
+export function modelKey(node: Pick<FlowNode, 'account' | 'model'>): string {
+  return node.account ? `or:${node.account}:${node.model}` : `plan:${node.model}`;
+}
+
+/** The other way. An OpenRouter model id may hold colons (`…:free`), an account id never does. */
+export function parseModelKey(key: string): { account: string | null; model: string } {
+  if (key.startsWith('or:')) {
+    const rest = key.slice(3);
+    const at = rest.indexOf(':');
+    if (at > 0) return { account: rest.slice(0, at), model: rest.slice(at + 1) };
+  }
+  return { account: null, model: key.replace(/^plan:/, '') };
+}
+
+/**
+ * What choosing `key` in the model picker changes. An OpenRouter model brings its account, and the CLI that runs
+ * it unless one is already running it. A model on your plan clears the account.
+ */
+export function modelPatch(key: string, models: Models): Partial<FlowNode> {
+  const { account, model } = parseModelKey(key);
+  if (!account) return { model, account: null };
+  const known = models.openrouter.find((m) => m.account === account && m.id === model);
+  return known ? { model, account, engine: known.driver } : { model, account };
+}
+
+/** The pinned OpenRouter models, with the node's own first if it is no longer on offer (its account was changed or removed). */
+export function openRouterChoices(node: FlowNode, models: Models): { key: string; label: string; offered: boolean }[] {
+  // The account's name only helps when there is more than one to tell apart.
+  const several = new Set(models.openrouter.map((m) => m.account)).size > 1;
+  const out = models.openrouter.map((m) => ({ key: `or:${m.account}:${m.id}`, label: several ? `${m.accountName} · ${m.id}` : m.id, offered: true }));
+  const mine = node.account ? modelKey(node) : null;
+  if (mine && !out.some((o) => o.key === mine)) out.unshift({ key: mine, label: `${node.model} (account unavailable)`, offered: false });
+  return out;
+}
+
+/** Dollars OpenRouter charged for the run: only the agents on it, since the others were not billed. */
+export function runCost(run: Run): number {
+  return run.flow.nodes.filter((n) => n.account).reduce((sum, n) => sum + (run.nodes[n.id]?.costUsd ?? 0), 0);
+}
+
+/** Dollars as a person reads them. A flow's agents often cost fractions of a cent, so small amounts keep their digits. */
+export function usdLabel(n: number): string {
+  if (n <= 0) return '$0.00';
+  if (n < 0.0001) return '<$0.0001';
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(n < 10 ? 3 : 2).replace(/(\.\d\d)0$/, '$1')}`;
+}
+
+/** What the model costs per million tokens, as a line under the picker. */
+export function priceNote(m: Pick<FlowModel, 'priceIn' | 'priceOut'>): string {
+  const p = (v: number | null) => (v === null ? '?' : v === 0 ? 'free' : `$${Number.isInteger(v) ? v : v.toFixed(2)}`);
+  return m.priceIn === null && m.priceOut === null ? 'No price on file' : `${p(m.priceIn)} in · ${p(m.priceOut)} out, per million tokens`;
 }

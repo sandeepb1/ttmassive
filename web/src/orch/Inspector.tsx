@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import { Icon, iconFor, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, cacheHit, consistent, fmtTokens, modelShown, roleBlurb, roleLabel, totalTokens, writes } from './model';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, cacheHit, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
 import type { Budget, Capability, Engine, Flow, FlowNode, Models, NodeRun, Output, Run } from './types';
 
 interface Props {
@@ -63,6 +63,17 @@ function FlowPanel({ flow, run, editable, limits, onLimits, onFlow }: Props) {
         <Field label="Stop everything at" hint="Stop whenever any window reaches this, so your own sessions are never left with nothing.">
           <input className="mc-field mc-mono" type="number" min={1} max={100} value={b.stopWindowPct} onChange={(e) => onLimits({ ...b, stopWindowPct: pct(e.target.value, b.stopWindowPct) })} />
         </Field>
+        <Field label="Most one run may spend on OpenRouter" hint="Dollars. The run pauses, and asks you, when it reaches this; an agent that would go past it mid-turn is stopped. Leave empty for no cap. Agents on your own plan are not counted.">
+          <input
+            className="mc-field mc-mono"
+            type="number"
+            min={0}
+            step={0.5}
+            placeholder="No cap"
+            value={b.runUsd ?? ''}
+            onChange={(e) => onLimits({ ...b, runUsd: Number(e.target.value) > 0 ? Number(e.target.value) : null })}
+          />
+        </Field>
         {run?.waived && <p className="mc-hint">You chose to carry on past the limits for this run, so it is not being stopped by them.</p>}
       </div>
 
@@ -91,8 +102,13 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
   const [writing, setWriting] = useState(false);
   const [opening, setOpening] = useState(false);
   const modelList = node.engine === 'claude' ? models.claude : models.codex;
-  const options = modelList.includes(node.model) ? modelList : [node.model, ...modelList];
+  // A model this node already has stays in the list even when it is no longer offered, so it is never changed silently.
+  const options = node.account || modelList.includes(node.model) ? modelList : [node.model, ...modelList];
+  const choices = openRouterChoices(node, models);
+  const chosen = models.openrouter.find((m) => m.account === node.account && m.id === node.model);
   const setEngine = (engine: Engine) => {
+    // An agent on OpenRouter keeps its model and account: only the CLI that runs it changes.
+    if (node.account) return onNode(node.id, { engine });
     const list = engine === 'claude' ? models.claude : models.codex;
     onNode(node.id, { engine, model: list[0] ?? node.model });
   };
@@ -188,15 +204,32 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
           </select>
         </Field>
         <Field label="Model">
-          <select className="mc-field mc-mono" disabled={!editable} value={node.model} onChange={(e) => onNode(node.id, { model: e.target.value })}>
-            {options.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
+          <select className="mc-field mc-mono" disabled={!editable} value={modelKey(node)} onChange={(e) => onNode(node.id, modelPatch(e.target.value, models))}>
+            <optgroup label={node.engine === 'claude' ? 'Your Claude plan' : 'Your Codex plan'}>
+              {options.map((m) => (
+                <option key={m} value={`plan:${m}`}>
+                  {m}
+                </option>
+              ))}
+            </optgroup>
+            {choices.length > 0 && (
+              <optgroup label="OpenRouter">
+                {choices.map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </Field>
       </div>
+      {node.account && (
+        <p className="mc-hint">
+          Billed by OpenRouter, not your plan. {chosen ? `${priceNote(chosen)}. ` : ''}
+          {node.engine === 'claude' ? 'Claude Code' : 'Codex'} runs it through ttm, and its cost is counted toward this run’s dollar cap.
+        </p>
+      )}
 
       <Field label="Instructions" hint="Sent the same way on every turn, so the prompt cache holds. The goal is given separately.">
         <textarea className="mc-field" rows={7} disabled={!editable} value={node.systemPrompt} maxLength={16000} onChange={(e) => onNode(node.id, { systemPrompt: e.target.value })} />
@@ -249,6 +282,17 @@ function RunDetail({ nr, node, feedback }: { nr: NodeRun; node: FlowNode; feedba
         </dd>
         <dt>Total</dt>
         <dd>{fmtTokens(totalTokens(t))}</dd>
+        {node.account ? (
+          <>
+            <dt>Cost</dt>
+            <dd>{usdLabel(nr.costUsd ?? 0)} on OpenRouter</dd>
+          </>
+        ) : (nr.costUsd ?? 0) > 0 ? (
+          <>
+            <dt>Cost</dt>
+            <dd title="Claude Code's estimate at API prices. Your plan was not charged this.">≈ {usdLabel(nr.costUsd ?? 0)} at API prices (not billed)</dd>
+          </>
+        ) : null}
         {(nr.cacheBreaks ?? 0) > 0 && (
           <>
             <dt>Cache breaks</dt>

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { orch } from './api';
 import { Icon, StatusPill } from './bits';
-import { builderBranches, cacheBreakCount, cacheHit, fmtDuration, fmtTokens, pauseInfo, runTokens, summary, totalTokens, writes } from './model';
+import { builderBranches, cacheBreakCount, cacheHit, fmtDuration, fmtTokens, pauseInfo, runCost, runTokens, summary, totalTokens, usdLabel, writes } from './model';
 import type { RepoState, Run } from './types';
 
 interface Props {
@@ -83,6 +83,7 @@ export function RunBar({ run, busy, link, onApprove, onResume, onLimits, onCance
   const done = run.status.state === 'done';
   const branches = builderBranches(run);
   const breaks = cacheBreakCount(run);
+  const cost = runCost(run);
   const sum = summary(run);
   const failed = run.status.state === 'paused' && (run.status.pause.kind === 'failed' || run.status.pause.kind === 'retriesExhausted');
 
@@ -97,6 +98,11 @@ export function RunBar({ run, busy, link, onApprove, onResume, onLimits, onCance
           <span>
             <b>{fmtTokens(totalTokens(tokens))}</b> tok
           </span>
+          {cost > 0 && (
+            <span title="What OpenRouter has charged for this run's agents on it">
+              <b>{usdLabel(cost)}</b> spent
+            </span>
+          )}
           {hit !== null && (
             <span>
               <b>{Math.round(hit * 100)}%</b> cached
@@ -162,6 +168,7 @@ export function RunBar({ run, busy, link, onApprove, onResume, onLimits, onCance
           <p className="mc-notice-detail mc-mono">
             {[
               `${fmtTokens(sum.tokens)} tokens`,
+              runCost(run) > 0 ? `${usdLabel(runCost(run))} on OpenRouter` : null,
               sum.cached !== null ? `${Math.round(sum.cached * 100)}% from the cache` : null,
               sum.sentBack ? `sent back ${sum.sentBack}×` : null,
               sum.cheaper ? `${sum.cheaper} on a cheaper model` : null,

@@ -5,7 +5,7 @@
 import { useState } from 'react';
 import { Icon, StatusPill, ago } from './bits';
 import { menuOn, useLongPress, type MenuItem, type MenuState } from './ContextMenu';
-import { fmtTokens, runsLabel, whenLabel, type FlowEntry } from './model';
+import { fmtTokens, runsLabel, usdLabel, whenLabel, type FlowEntry } from './model';
 import type { Flow, RunSummary } from './types';
 
 interface Props {
@@ -170,7 +170,7 @@ function FlowPanel(p: Props) {
                   <span className="mc-row-sub">
                     <span>
                       {whenLabel(r.created)}
-                      {r.tokens > 0 ? ` · ${fmtTokens(r.tokens)} tok` : ''}
+                      {r.tokens > 0 ? ` · ${fmtTokens(r.tokens)} tok` : ''}{(r.costUsd ?? 0) > 0 ? ` · ${usdLabel(r.costUsd ?? 0)}` : ''}
                     </span>
                     <StatusPill status={r.status} />
                   </span>

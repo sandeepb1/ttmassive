@@ -194,6 +194,7 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
     };
     let n = run.nodes.get_mut(&node.id).expect("every node has a state");
     n.tokens.add(&outcome.tokens);
+    n.cost_usd += outcome.cost_usd;
     watch_cache(n, &outcome.tokens);
     if let Some(id) = &outcome.session {
         n.session = Some(id.clone());
@@ -368,6 +369,7 @@ mod tests {
             checkpoint: false,
             token_cap: None,
             keep_model: false,
+            account: None,
             x: 0.0,
             y: 0.0,
         }

@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-use super::Outcome;
 use super::usage::Tokens;
+use super::{Outcome, Proxy};
 
 /// Tools a read-only role gets: look at files and the web, change nothing.
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob,WebSearch,WebFetch";
@@ -42,6 +42,8 @@ pub struct Spec {
     /// More folders an `Inspect` shell may read, such as the main repository's `.git`, which a
     /// worktree needs for `git status`.
     pub read_also: Vec<PathBuf>,
+    /// Run on OpenRouter through ttm's proxy instead of your own Claude login.
+    pub proxy: Option<Proxy>,
 }
 
 /// Settings that confine an `Inspect` agent's shell. Enforced by the operating system, not by the
@@ -100,12 +102,34 @@ pub fn args(spec: &Spec) -> Vec<String> {
         Access::Inspect => {
             let tools = format!("{READ_ONLY_TOOLS},Bash");
             a.extend(["--tools".into(), tools.clone(), "--allowedTools".into(), tools]);
-            a.extend(["--settings".into(), inspect_settings(&spec.cwd, &spec.read_also).to_string()]);
         }
         // A builder works inside its own worktree; the checkpoint before it starts is the human gate.
         Access::Write => a.push("--dangerously-skip-permissions".into()),
     }
+    // One `--settings`: a second would replace the first rather than add to it.
+    let settings = settings_json(spec);
+    if !settings.is_empty() {
+        a.extend(["--settings".into(), Value::Object(settings).to_string()]);
+    }
     a
+}
+
+/// The `--settings` an agent needs, if any: the sandbox for a shell, and the proxy's address for an agent on
+/// OpenRouter. The address is repeated here, and not only in the environment, so a project's own `env` setting
+/// cannot send the agent elsewhere. The token is not: that stays out of the command line.
+fn settings_json(spec: &Spec) -> serde_json::Map<String, Value> {
+    let mut m = match spec.access {
+        Access::Inspect => match inspect_settings(&spec.cwd, &spec.read_also) {
+            Value::Object(o) => o,
+            _ => Default::default(),
+        },
+        _ => Default::default(),
+    };
+    if let Some(p) = &spec.proxy {
+        let base = super::super::openrouter::proxy::claude_env(&p.origin, &p.token).into_iter().find(|(k, _)| *k == "ANTHROPIC_BASE_URL").map(|(_, v)| v);
+        m.insert("env".into(), json!({"ANTHROPIC_BASE_URL": base, "ANTHROPIC_API_KEY": ""}));
+    }
+    m
 }
 
 /// One line of the agent's output stream, reduced to what the runner acts on.
@@ -194,6 +218,9 @@ pub struct Agent {
     child: Child,
     stdin: ChildStdin,
     lines: tokio::io::Lines<BufReader<ChildStdout>>,
+    /// `total_cost_usd` as of the last finished turn. Claude reports it for the whole conversation, so a
+    /// turn's own cost is the difference.
+    cost_seen: f64,
 }
 
 impl Agent {
@@ -205,6 +232,9 @@ impl Agent {
             // so tell it not to try. `git status` and `git diff` then work.
             cmd.env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_OPTIONAL_LOCKS", "0").env("XDG_CONFIG_HOME", "/dev/null");
         }
+        if let Some(p) = &spec.proxy {
+            cmd.envs(super::super::openrouter::proxy::claude_env(&p.origin, &p.token));
+        }
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -215,7 +245,7 @@ impl Agent {
             .context("could not start claude")?;
         let stdin = child.stdin.take().context("no stdin")?;
         let stdout = child.stdout.take().context("no stdout")?;
-        Ok(Agent { session: None, child, stdin, lines: BufReader::new(stdout).lines() })
+        Ok(Agent { session: None, child, stdin, lines: BufReader::new(stdout).lines(), cost_seen: 0.0 })
     }
 
     /// Send one prompt and read events until the turn is done. `on_event` sees every event, so the
@@ -232,6 +262,9 @@ impl Agent {
             on_event(&ev);
             if let Event::Done(mut o) = ev {
                 o.session = o.session.or_else(|| self.session.clone());
+                let total = o.cost_usd;
+                o.cost_usd = (total - self.cost_seen).max(0.0);
+                self.cost_seen = self.cost_seen.max(total);
                 return Ok(o);
             }
         }
@@ -266,6 +299,7 @@ mod tests {
             access,
             cwd: PathBuf::from("/tmp"),
             read_also: vec![],
+            proxy: None,
         }
     }
 
@@ -289,6 +323,22 @@ mod tests {
             assert_eq!(after(&a, "--append-system-prompt"), Some("You are a researcher."));
             assert!(!has(&a, "--resume") && !has(&a, "--continue"));
         }
+    }
+
+    #[test]
+    fn an_agent_on_openrouter_gets_the_proxy_in_one_settings_flag_and_never_the_token_on_the_command_line() {
+        let proxy = Some(Proxy { origin: "http://127.0.0.1:7681".into(), token: "ttm-or-secret".into() });
+        for access in [Access::None, Access::Inspect, Access::Write] {
+            let a = args(&Spec { proxy: proxy.clone(), ..spec(access) });
+            assert_eq!(a.iter().filter(|x| *x == "--settings").count(), 1, "a second --settings would replace the first");
+            let s: Value = serde_json::from_str(after(&a, "--settings").unwrap()).unwrap();
+            assert_eq!(s["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:7681/or/anthropic");
+            assert_eq!(s["env"]["ANTHROPIC_API_KEY"], "");
+            assert_eq!(s.get("sandbox").is_some(), access == Access::Inspect, "the shell's sandbox is kept, in the same flag");
+            assert!(!a.join(" ").contains("ttm-or-secret"), "the token travels in the environment");
+        }
+        assert!(!has(&args(&spec(Access::Write)), "--settings"), "an agent on your own plan gets no settings it does not need");
+        assert!(has(&args(&spec(Access::Inspect)), "--settings"));
     }
 
     #[test]

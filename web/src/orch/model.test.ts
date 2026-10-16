@@ -6,10 +6,11 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
+  modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import type { Flow, FlowNode, Models, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
-const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'] };
+const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'], openrouter: [] };
 const at = { x: 0, y: 0 };
 const LIMITS = { claudePct: 15, codexPct: 10, stopWindowPct: 85 };
 const def = (id: Role) => roleDef(id)!;
@@ -33,11 +34,11 @@ test('roles get sensible default models, falling back when Codex has none', () =
   assert.deepEqual(defaultModel(def('judge'), models), { engine: 'claude', model: 'opus' });
   assert.deepEqual(defaultModel(def('builder'), models), { engine: 'codex', model: 'gpt-6.1-sol' });
   assert.deepEqual(defaultModel(def('search'), models), { engine: 'codex', model: 'gpt-6-luna' });
-  const none: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: [] };
+  const none: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: [], openrouter: [] };
   assert.deepEqual(defaultModel(def('builder'), none), { engine: 'claude', model: 'sonnet' });
   assert.deepEqual(defaultModel(def('search'), none), { engine: 'claude', model: 'haiku' });
   // A role's preferred model that is not on offer falls back to one that is, not to a name that may not exist.
-  assert.deepEqual(defaultModel(def('builder'), { claude: ['opus'], codex: [] }), { engine: 'claude', model: 'opus' });
+  assert.deepEqual(defaultModel(def('builder'), { claude: ['opus'], codex: [], openrouter: [] }), { engine: 'claude', model: 'opus' });
 });
 
 test('a new builder waits for approval and a second node of a role is numbered', () => {
@@ -486,4 +487,67 @@ test('the log shows what each working agent last did, and nothing for the rest',
   assert.deepEqual(liveLines(run), [{ node: b.id, line: '→ Grep foo' }]);
   run.nodes[b.id] = state('running', []);
   assert.deepEqual(liveLines(run), [{ node: b.id, line: 'starting…' }]);
+});
+
+const orModels: Models = {
+  ...models,
+  openrouter: [
+    { account: 'a1b2', accountName: 'Main', id: 'anthropic/claude-haiku-5.5', driver: 'claude', priceIn: 1, priceOut: 5, tools: true },
+    { account: 'a1b2', accountName: 'Main', id: 'openai/gpt-6-luna:free', driver: 'codex', priceIn: 0, priceOut: 0, tools: true },
+  ],
+};
+
+test('the model picker tells your plan\'s models from OpenRouter ones, even with colons in the id', () => {
+  assert.equal(modelKey({ model: 'sonnet' }), 'plan:sonnet');
+  assert.equal(modelKey({ model: 'openai/gpt-6-luna:free', account: 'a1b2' }), 'or:a1b2:openai/gpt-6-luna:free');
+  assert.deepEqual(parseModelKey('plan:sonnet'), { account: null, model: 'sonnet' });
+  assert.deepEqual(parseModelKey('or:a1b2:openai/gpt-6-luna:free'), { account: 'a1b2', model: 'openai/gpt-6-luna:free' });
+  assert.deepEqual(parseModelKey('sonnet'), { account: null, model: 'sonnet' }, 'an old bare value still reads');
+  const k = modelKey({ model: 'x/y:z', account: 'acct' });
+  assert.deepEqual(parseModelKey(k), { account: 'acct', model: 'x/y:z' });
+});
+
+test('choosing an OpenRouter model brings its account and its CLI; choosing one of yours clears the account', () => {
+  assert.deepEqual(modelPatch('or:a1b2:anthropic/claude-haiku-5.5', orModels), { model: 'anthropic/claude-haiku-5.5', account: 'a1b2', engine: 'claude' });
+  assert.deepEqual(modelPatch('or:a1b2:openai/gpt-6-luna:free', orModels), { model: 'openai/gpt-6-luna:free', account: 'a1b2', engine: 'codex' });
+  assert.deepEqual(modelPatch('plan:haiku', orModels), { model: 'haiku', account: null });
+  assert.deepEqual(modelPatch('or:a1b2:vendor/unlisted', orModels), { model: 'vendor/unlisted', account: 'a1b2' }, 'a model not on offer leaves the engine alone');
+});
+
+test('a node whose account is gone still shows its model, marked unavailable, so it is not silently changed', () => {
+  const n = { ...newNode(emptyFlow('f', 'F'), def('builder'), models, at), account: 'gone', model: 'x/y' } as FlowNode;
+  const c = openRouterChoices(n, orModels);
+  assert.deepEqual(c[0], { key: 'or:gone:x/y', label: 'x/y (account unavailable)', offered: false });
+  assert.equal(c.length, 3);
+  assert.equal(c[1]!.label, 'anthropic/claude-haiku-5.5', 'one account: its name adds nothing');
+  const two: Models = { ...orModels, openrouter: [...orModels.openrouter, { account: 'c3d4', accountName: 'Work', id: 'google/gemini-3', driver: 'codex', priceIn: 1, priceOut: 2, tools: true }] };
+  assert.equal(openRouterChoices(n, two)[1]!.label, 'Main · anthropic/claude-haiku-5.5', 'two accounts: say which');
+  const plain = newNode(emptyFlow('f', 'F'), def('builder'), models, at);
+  assert.equal(openRouterChoices(plain, orModels).length, 2, 'a node on your plan adds nothing');
+});
+
+test('a run costs only what OpenRouter charged: agents on your plan are estimates and are not counted', () => {
+  let f = emptyFlow('f', 'F');
+  f = { ...f, nodes: [newNode(f, def('orchestrator'), models, at)] };
+  f = { ...f, nodes: [...f.nodes, { ...newNode(f, def('builder'), models, at), id: 'or1', account: 'a1b2' }] };
+  const run = {
+    flow: f,
+    nodes: { [f.nodes[0]!.id]: { costUsd: 0.5 }, or1: { costUsd: 0.0123 } },
+  } as unknown as Run;
+  assert.equal(runCost(run), 0.0123);
+});
+
+test('dollars and prices read plainly', () => {
+  assert.equal(usdLabel(0), '$0.00');
+  assert.equal(usdLabel(0.00004), '<$0.0001');
+  assert.equal(usdLabel(0.004), '$0.0040');
+  assert.equal(usdLabel(0.000425), '$0.0004');
+  assert.equal(usdLabel(0.0123), '$0.012');
+  assert.equal(usdLabel(0.176), '$0.176');
+  assert.equal(usdLabel(2.5), '$2.500'.replace('.500', '.50'));
+  assert.equal(usdLabel(12.5), '$12.50');
+  assert.equal(priceNote({ priceIn: 1, priceOut: 5 }), '$1 in · $5 out, per million tokens');
+  assert.equal(priceNote({ priceIn: 0.2, priceOut: 1.2 }), '$0.20 in · $1.20 out, per million tokens');
+  assert.equal(priceNote({ priceIn: 0, priceOut: 0 }), 'free in · free out, per million tokens');
+  assert.equal(priceNote({ priceIn: null, priceOut: null }), 'No price on file');
 });

@@ -40,6 +40,8 @@ export interface FlowNode {
   custom?: CustomRole | null;
   engine: Engine;
   model: string;
+  /** The OpenRouter account this agent runs on, when `model` is one of its models. */
+  account?: string | null;
   systemPrompt: string;
   checkpoint: boolean;
   tokenCap?: number | null;
@@ -60,9 +62,11 @@ export interface Budget {
   claudePct: number;
   codexPct: number;
   stopWindowPct: number;
+  /** Most dollars one run may spend on OpenRouter; null for no cap. */
+  runUsd?: number | null;
 }
 
-export const DEFAULT_LIMITS: Budget = { claudePct: 15, codexPct: 10, stopWindowPct: 85 };
+export const DEFAULT_LIMITS: Budget = { claudePct: 15, codexPct: 10, stopWindowPct: 85, runUsd: null };
 
 export interface Flow {
   id: string;
@@ -90,6 +94,8 @@ export interface NodeRun {
   output: unknown;
   error: string | null;
   tokens: Tokens;
+  /** Dollars over all attempts: charged by OpenRouter, or Claude Code's estimate at API prices for an agent on your plan. */
+  costUsd?: number;
   transcript: string[];
   /** The agent's conversation id after its latest finished turn; present once it has finished one. */
   session?: string | null;
@@ -174,11 +180,26 @@ export interface RunSummary {
   created: number;
   /** Everything the agents read and wrote, cache included. */
   tokens: number;
+  /** Dollars charged by OpenRouter for the run's agents on it. */
+  costUsd?: number;
+}
+
+/** A pinned OpenRouter model a flow's agent may use. */
+export interface FlowModel {
+  account: string;
+  accountName: string;
+  id: string;
+  /** The CLI that runs it unless the agent is told otherwise. */
+  driver: Engine;
+  priceIn: number | null;
+  priceOut: number | null;
+  tools: boolean;
 }
 
 export interface Models {
   claude: string[];
   codex: string[];
+  openrouter: FlowModel[];
 }
 
 export interface FlowLists {

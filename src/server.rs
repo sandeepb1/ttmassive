@@ -48,6 +48,8 @@ pub async fn serve(cfg: Config) -> Result<()> {
         tokio::task::spawn_blocking(move || images.cleanup(crate::chatimg::KEEP));
     }
     let ttm_exe = std::env::current_exe().context("locating the ttm executable")?;
+    // Sessions and flow runs hand out leases from one table.
+    let leases = Arc::new(crate::openrouter::proxy::Leases::load(&data_dir));
     let state = Arc::new(AppState {
         vapid_private: notify::load_or_create_vapid(&data_dir)?,
         subscriptions: std::sync::Mutex::new(subs),
@@ -59,7 +61,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         stopping: std::sync::atomic::AtomicBool::new(false),
         sessions: registry,
         usage: crate::usage::Usage::new(),
-        leases: std::sync::Arc::new(crate::openrouter::proxy::Leases::load(&data_dir)),
+        leases: leases.clone(),
         chat: crate::chat::ChatCache::with_images(chat_images.clone()),
         driver: tokio::sync::Mutex::new(()),
         tunnel: std::sync::Mutex::new(crate::tunnel::TunnelState {
@@ -71,7 +73,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         teamclaude: crate::teamclaude::Probes::new(),
         branches: crate::gitinfo::Branches::new(),
         update: crate::selfupdate::Updater::new(),
-        orch: crate::orch::service::Service::new(&data_dir),
+        orch: crate::orch::service::Service::new(&data_dir, leases, crate::openrouter::launch::origin(bind.port())),
         data_dir,
         cfg,
         auth,

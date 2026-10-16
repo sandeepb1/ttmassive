@@ -114,7 +114,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const wide = useMedia(WIDE);
   const phone = useMedia(PHONE);
 
-  const [models, setModels] = useState<Models>({ claude: ['opus', 'sonnet', 'haiku'], codex: [] });
+  const [models, setModels] = useState<Models>({ claude: ['opus', 'sonnet', 'haiku'], codex: [], openrouter: [] });
   const [lists, setLists] = useState<FlowLists>({ saved: [], starters: [] });
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [usage, setUsage] = useState<UsageSnapshot | null>(null);

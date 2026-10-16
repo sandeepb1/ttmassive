@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::proxy;
-use crate::secrets;
+use crate::secrets::{self, Accounts, Kind};
 
 const DIR: &str = "or-settings";
 
@@ -123,6 +123,65 @@ pub fn claude_flags(settings: &Path, model: &str) -> Flags {
     Flags { args: format!(" --settings {} --model {}", q(&settings.display().to_string()), q(model)), env: Vec::new() }
 }
 
+/// A pinned OpenRouter model as a flow's agent pickers offer it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowModel {
+    pub account: String,
+    pub account_name: String,
+    pub id: String,
+    /// The CLI that runs it unless a node asks for the other.
+    pub driver: Driver,
+    pub price_in: Option<f64>,
+    pub price_out: Option<f64>,
+    pub tools: bool,
+}
+
+/// The models flows may use: every pinned model of every OpenRouter account that has a key and is allowed in flows.
+pub fn flow_models(accounts: &Accounts) -> Vec<FlowModel> {
+    accounts
+        .accounts
+        .iter()
+        .filter(|a| a.kind == Kind::Openrouter && a.use_in_orchestrator && !a.key.is_empty())
+        .flat_map(|a| {
+            a.models.iter().map(|m| FlowModel {
+                account: a.id.clone(),
+                account_name: a.name.clone(),
+                id: m.id.clone(),
+                driver: driver_for(&m.id),
+                price_in: m.price_in,
+                price_out: m.price_out,
+                tools: m.tools,
+            })
+        })
+        .collect()
+}
+
+/// Why a node cannot run on its OpenRouter account, or `Ok` when it can (or is not on one). `nodes` is
+/// (node name, account id, model).
+pub fn check_accounts<'a>(accounts: &Accounts, nodes: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Result<(), String> {
+    for (name, account, model) in nodes {
+        let Some(a) = accounts.get(account) else {
+            return Err(format!("{name} runs on an OpenRouter account that no longer exists"));
+        };
+        let why = if a.kind != Kind::Openrouter {
+            Some("is not an OpenRouter account")
+        } else if a.key.is_empty() {
+            Some("has no key")
+        } else if !a.use_in_orchestrator {
+            Some("is not allowed in flows (see Settings, Account)")
+        } else if !valid_model(model) {
+            Some("was given a model id that cannot be used")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(format!("{name} runs on the OpenRouter account “{}”, which {why}", a.name));
+        }
+    }
+    Ok(())
+}
+
 /// What a session's page shows about its OpenRouter lease.
 pub fn summary(spec: &OrSpec, lease: Option<&proxy::Lease>) -> Value {
     json!({
@@ -199,6 +258,57 @@ mod tests {
         assert_eq!(k.args, " --settings '/data/or settings/u.json' --model 'anthropic/claude-haiku-5.5'");
         assert!(k.env.is_empty(), "Claude's token travels in the settings file");
         assert_eq!(q("it's"), r"'it'\''s'");
+    }
+
+    fn account(id: &str, kind: Kind, key: &str, flows: bool, models: &[&str]) -> secrets::Account {
+        secrets::Account {
+            id: id.into(),
+            name: format!("{id}-name"),
+            kind,
+            base_url: "u".into(),
+            key: key.into(),
+            use_in_orchestrator: flows,
+            models: models.iter().map(|m| secrets::PinnedModel { id: (*m).into(), price_in: Some(1.0), price_out: None, tools: true }).collect(),
+            prefs: secrets::Prefs::default(),
+        }
+    }
+
+    #[test]
+    fn flows_are_offered_only_the_models_they_may_use() {
+        let accounts = Accounts {
+            accounts: vec![
+                account("ok", Kind::Openrouter, "k", true, &["anthropic/claude-haiku-5.5", "openai/gpt-6-luna"]),
+                account("off", Kind::Openrouter, "k", false, &["x/hidden"]),
+                account("nokey", Kind::Openrouter, "", true, &["x/nokey"]),
+                account("oai", Kind::OpenaiCompatible, "k", true, &["x/direct"]),
+            ],
+        };
+        let m = flow_models(&accounts);
+        assert_eq!(m.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["anthropic/claude-haiku-5.5", "openai/gpt-6-luna"]);
+        assert_eq!((m[0].driver, m[1].driver, m[0].account_name.as_str()), (Driver::Claude, Driver::Codex, "ok-name"));
+        let json = serde_json::to_value(&m[0]).unwrap();
+        assert_eq!((json["accountName"].as_str(), json["driver"].as_str(), json["priceIn"].as_f64()), (Some("ok-name"), Some("claude"), Some(1.0)));
+    }
+
+    #[test]
+    fn a_node_whose_account_cannot_serve_it_is_refused_with_a_reason() {
+        let accounts = Accounts {
+            accounts: vec![
+                account("ok", Kind::Openrouter, "k", true, &[]),
+                account("off", Kind::Openrouter, "k", false, &[]),
+                account("nokey", Kind::Openrouter, "", true, &[]),
+                account("oai", Kind::OpenaiCompatible, "k", true, &[]),
+            ],
+        };
+        assert_eq!(check_accounts(&accounts, [("Plan", "ok", "a/b")]), Ok(()));
+        assert_eq!(check_accounts(&accounts, std::iter::empty()), Ok(()));
+        let why = |a: &'static str, m: &'static str| check_accounts(&accounts, [("Build", a, m)]).unwrap_err();
+        assert!(why("gone", "a/b").contains("no longer exists"));
+        assert!(why("off", "a/b").contains("not allowed in flows"));
+        assert!(why("nokey", "a/b").contains("no key"));
+        assert!(why("oai", "a/b").contains("not an OpenRouter account"));
+        assert!(why("ok", "a b").contains("cannot be used"));
+        assert!(why("off", "a/b").contains("off-name"), "names the account");
     }
 
     #[test]
