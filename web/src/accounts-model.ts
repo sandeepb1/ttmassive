@@ -3,6 +3,27 @@
 
 export type AccountKind = 'openrouter' | 'openai-compatible';
 
+/** How OpenRouter routes an account's requests. Sent to it as the request's `provider` object. */
+export interface Prefs {
+  /** None lets OpenRouter balance price, speed and uptime. */
+  sort: 'price' | 'throughput' | 'latency' | null;
+  /** Only providers that neither keep nor train on prompts. */
+  denyDataCollection: boolean;
+  /** Only zero-data-retention providers. */
+  zdr: boolean;
+  /** Try another provider when the first fails. */
+  allowFallbacks: boolean;
+}
+
+export const DEFAULT_PREFS: Prefs = { sort: null, denyDataCollection: false, zdr: false, allowFallbacks: true };
+
+export const SORT_CHOICES: { value: string; label: string }[] = [
+  { value: '', label: 'Balanced' },
+  { value: 'price', label: 'Cheapest' },
+  { value: 'throughput', label: 'Fastest output' },
+  { value: 'latency', label: 'Lowest latency' },
+];
+
 export interface PinnedModel {
   id: string;
   /** Dollars per million tokens; null when unknown. */
@@ -20,6 +41,7 @@ export interface Account {
   last4: string;
   useInOrchestrator: boolean;
   models: PinnedModel[];
+  prefs: Prefs;
 }
 
 /** What the server accepts when an account is added or changed. A missing `key` keeps the stored one. */
@@ -30,6 +52,7 @@ export interface AccountInput {
   key?: string;
   useInOrchestrator: boolean;
   models: PinnedModel[];
+  prefs: Prefs;
 }
 
 export interface CatalogModel {
@@ -63,11 +86,11 @@ export interface Remote {
 export const KIND_LABEL: Record<AccountKind, string> = { openrouter: 'OpenRouter', 'openai-compatible': 'OpenAI-compatible' };
 
 export function emptyInput(kind: AccountKind): AccountInput {
-  return { name: '', kind, baseUrl: '', useInOrchestrator: true, models: [] };
+  return { name: '', kind, baseUrl: '', useInOrchestrator: true, models: [], prefs: { ...DEFAULT_PREFS } };
 }
 
 export function inputOf(a: Account): AccountInput {
-  return { name: a.name, kind: a.kind, baseUrl: a.baseUrl, useInOrchestrator: a.useInOrchestrator, models: a.models.map((m) => ({ ...m })) };
+  return { name: a.name, kind: a.kind, baseUrl: a.baseUrl, useInOrchestrator: a.useInOrchestrator, models: a.models.map((m) => ({ ...m })), prefs: { ...a.prefs } };
 }
 
 /** Dollars per million tokens as a person reads them: $0.30, $15, free. */

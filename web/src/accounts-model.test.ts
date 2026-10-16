@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DEFAULT_PREFS,
   ageLabel,
   balanceLine,
   contextLabel,
+  emptyInput,
   filterModels,
   flowModels,
   inputOf,
@@ -123,16 +125,25 @@ test('flows only see accounts that opt in and have a key', () => {
     last4: '1234',
     useInOrchestrator: true,
     models: [{ id: `${id}/m`, priceIn: null, priceOut: null, tools: true }],
+    prefs: { ...DEFAULT_PREFS },
     ...o,
   });
   const list = [acct('on', {}), acct('off', { useInOrchestrator: false }), acct('nokey', { hasKey: false })];
   assert.deepEqual(flowModels(list).map((x) => x.model.id), ['on/m']);
 });
 
+test('a new account starts with balanced routing and fallbacks on', () => {
+  assert.deepEqual(emptyInput('openrouter').prefs, { sort: null, denyDataCollection: false, zdr: false, allowFallbacks: true });
+  assert.notEqual(emptyInput('openrouter').prefs, emptyInput('openrouter').prefs, 'each draft has its own copy');
+});
+
 test('an edit draft is a copy', () => {
-  const a: Account = { id: 'a1', name: 'N', kind: 'openrouter', baseUrl: 'u', hasKey: true, last4: '1', useInOrchestrator: false, models: [{ id: 'x', priceIn: 1, priceOut: 2, tools: true }] };
+  const a: Account = { id: 'a1', name: 'N', kind: 'openrouter', baseUrl: 'u', hasKey: true, last4: '1', useInOrchestrator: false, models: [{ id: 'x', priceIn: 1, priceOut: 2, tools: true }], prefs: { sort: 'price', denyDataCollection: true, zdr: false, allowFallbacks: false } };
   const draft = inputOf(a);
   draft.models[0]!.priceIn = 99;
   assert.equal(a.models[0]!.priceIn, 1);
+  draft.prefs.sort = null;
+  assert.equal(a.prefs.sort, 'price', 'prefs are copied too');
+  assert.equal(draft.prefs.denyDataCollection, true);
   assert.equal('key' in draft, false, 'the key is never prefilled');
 });

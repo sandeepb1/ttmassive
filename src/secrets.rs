@@ -43,6 +43,35 @@ impl Default for PinnedModel {
     }
 }
 
+/// How OpenRouter should route requests made with an account. Sent as the request's `provider` object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Prefs {
+    /// `price`, `throughput` or `latency`; none lets OpenRouter balance them.
+    pub sort: Option<String>,
+    /// Only providers that do not keep or train on prompts.
+    pub deny_data_collection: bool,
+    /// Only zero-data-retention providers.
+    pub zdr: bool,
+    /// Let OpenRouter try another provider when the first fails.
+    pub allow_fallbacks: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self { sort: None, deny_data_collection: false, zdr: false, allow_fallbacks: true }
+    }
+}
+
+impl Prefs {
+    fn check(&self) -> Result<(), &'static str> {
+        match self.sort.as_deref() {
+            None | Some("price" | "throughput" | "latency") => Ok(()),
+            Some(_) => Err("sort must be price, throughput or latency"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
@@ -54,6 +83,8 @@ pub struct Account {
     /// Hides this account's models from every orchestrator picker, pool and helper call when off.
     pub use_in_orchestrator: bool,
     pub models: Vec<PinnedModel>,
+    #[serde(default)]
+    pub prefs: Prefs,
 }
 
 /// What the page may see of an account: everything but the key.
@@ -68,6 +99,7 @@ pub struct AccountView {
     pub last4: String,
     pub use_in_orchestrator: bool,
     pub models: Vec<PinnedModel>,
+    pub prefs: Prefs,
 }
 
 /// A create or update from the page. A missing `key` keeps the stored one.
@@ -83,6 +115,8 @@ pub struct AccountInput {
     pub use_in_orchestrator: bool,
     #[serde(default)]
     pub models: Vec<PinnedModel>,
+    #[serde(default)]
+    pub prefs: Prefs,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -103,6 +137,7 @@ impl Account {
             last4: tail.into_iter().rev().collect(),
             use_in_orchestrator: self.use_in_orchestrator,
             models: self.models.clone(),
+            prefs: self.prefs.clone(),
         }
     }
 }
@@ -130,6 +165,7 @@ impl Accounts {
             Kind::OpenaiCompatible => normalise_url(&input.base_url)?,
         };
         let models = check_models(input.models)?;
+        input.prefs.check()?;
         let old = match id {
             Some(id) => Some(self.get(id).ok_or("no such account")?.clone()),
             None => {
@@ -156,6 +192,7 @@ impl Accounts {
             key,
             use_in_orchestrator: input.use_in_orchestrator,
             models,
+            prefs: input.prefs,
         };
         let id = account.id.clone();
         match self.accounts.iter_mut().find(|a| a.id == id) {
@@ -260,21 +297,23 @@ pub async fn update<T>(
 
 async fn write(data_dir: &Path, a: &Accounts) -> Result<()> {
     let path = path(data_dir);
-    let tmp = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(a)?;
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        use std::io::Write;
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-        let mut f = opts.open(&tmp)?;
-        f.write_all(&bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(())
-    })
-    .await??;
+    tokio::task::spawn_blocking(move || write_private(&path, &bytes)).await??;
+    Ok(())
+}
+
+/// Write a file only its owner can read, through a temp file so a crash never leaves half of it.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("json.tmp");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    let mut f = opts.open(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -290,6 +329,7 @@ mod tests {
             key: Some("sk-or-abcdef1234".into()),
             use_in_orchestrator: true,
             models: vec![PinnedModel { id: "anthropic/claude-sonnet-5".into(), ..Default::default() }],
+            prefs: Prefs::default(),
         }
     }
 
@@ -353,6 +393,22 @@ mod tests {
         let mut i = input("B", Kind::Openrouter);
         i.models[0].price_out = Some(-1.0);
         assert!(a.upsert(None, i).is_err());
+    }
+
+    #[test]
+    fn routing_preferences_are_checked_and_old_files_still_load() {
+        let mut a = Accounts::default();
+        let mut i = input("OR", Kind::Openrouter);
+        i.prefs = Prefs { sort: Some("fastest".into()), ..Prefs::default() };
+        assert!(a.upsert(None, i).is_err());
+        let mut i = input("OR", Kind::Openrouter);
+        i.prefs = Prefs { sort: Some("price".into()), deny_data_collection: true, ..Prefs::default() };
+        let id = a.upsert(None, i).unwrap();
+        assert_eq!(a.get(&id).unwrap().view().prefs.sort.as_deref(), Some("price"));
+        assert!(Prefs::default().allow_fallbacks, "fallbacks are on unless turned off");
+        let old = r#"{"accounts":[{"id":"a1","name":"N","kind":"openrouter","baseUrl":"u","key":"k","useInOrchestrator":true,"models":[]}]}"#;
+        let loaded: Accounts = serde_json::from_str(old).unwrap();
+        assert_eq!(loaded.accounts[0].prefs, Prefs::default());
     }
 
     #[test]

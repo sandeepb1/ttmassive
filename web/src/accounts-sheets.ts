@@ -6,6 +6,7 @@ import { callJson, getJson } from './api-json';
 import {
   KIND_LABEL,
   SORTS,
+  SORT_CHOICES,
   ageLabel,
   balanceLine,
   contextLabel,
@@ -25,6 +26,7 @@ import {
   type Catalog,
   type CatalogModel,
   type PinnedModel,
+  type Prefs,
   type Remote,
   type SortKey,
 } from './accounts-model';
@@ -146,6 +148,7 @@ class AccountSheet extends Sheet {
     flowRow.append(el('span', 'text-md', 'Use in orchestrator flows'), flows);
     parts.push(sheetBlock(flowRow, sheetHint('Off hides this account’s models from flow pickers, Suggest and Ask AI, and automatic model choice. Single sessions can still use it.')));
 
+    if (d.kind === 'openrouter') parts.push(this.routingBlock());
     parts.push(this.models);
     this.renderModels();
 
@@ -158,6 +161,34 @@ class AccountSheet extends Sheet {
     wrap.append(...parts);
     this.body.replaceChildren(wrap);
     this.show();
+  }
+
+  /** Where OpenRouter may send this account's requests. */
+  private routingBlock(): HTMLElement {
+    const p = this.draft.prefs;
+    const sort = select(SORT_CHOICES, { value: p.sort ?? '', label: 'Prefer', cls: 'w-auto' });
+    sort.addEventListener('change', () => (p.sort = (sort.value || null) as Prefs['sort']));
+    const flag = (label: string, key: 'denyDataCollection' | 'zdr' | 'allowFallbacks') => {
+      const c = chip({ on: p[key] }, p[key] ? 'On' : 'Off');
+      c.addEventListener('click', () => {
+        p[key] = !p[key];
+        c.textContent = p[key] ? 'On' : 'Off';
+        setChipOn(c, p[key]);
+      });
+      const r = el('div', 'flex items-center justify-between gap-3');
+      r.append(el('span', 'text-md', label), c);
+      return r;
+    };
+    const pick = el('div', 'flex items-center justify-between gap-3');
+    pick.append(el('span', 'text-md', 'Prefer'), sort);
+    return sheetBlock(
+      sheetLabel('Routing'),
+      pick,
+      flag('Only providers that keep no prompts', 'denyDataCollection'),
+      flag('Zero data retention only', 'zdr'),
+      flag('Fall back to another provider', 'allowFallbacks'),
+      sheetHint('Applies to every request this account makes, in sessions and in flows. Stricter settings can leave fewer providers for a model.'),
+    );
   }
 
   private renderModels() {

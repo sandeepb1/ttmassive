@@ -59,6 +59,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
         stopping: std::sync::atomic::AtomicBool::new(false),
         sessions: registry,
         usage: crate::usage::Usage::new(),
+        leases: std::sync::Arc::new(crate::openrouter::proxy::Leases::load(&data_dir)),
         chat: crate::chat::ChatCache::with_images(chat_images.clone()),
         driver: tokio::sync::Mutex::new(()),
         tunnel: std::sync::Mutex::new(crate::tunnel::TunnelState {

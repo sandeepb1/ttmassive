@@ -69,6 +69,8 @@ pub struct AppState {
     pub sessions: sessions::Registry,
     /// Plan-limit usage for Claude Code and Codex, and per-session token totals.
     pub usage: usage::Usage,
+    /// Tokens that let a session's CLI use an OpenRouter account through the local proxy.
+    pub leases: std::sync::Arc<openrouter::proxy::Leases>,
     /// Each session's conversation log, parsed for the chat view.
     pub chat: chat::ChatCache,
     /// Held while keys are being typed into an agent's menus, so two requests never interleave.

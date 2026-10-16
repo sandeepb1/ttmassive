@@ -85,6 +85,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/accounts", get(list_accounts).post(create_account))
         .route("/api/accounts/{id}", axum::routing::put(update_account).delete(delete_account))
         .route("/api/accounts/{id}/remote", get(account_remote))
+        .route("/api/openrouter/leases", get(list_leases))
+        .route("/api/openrouter/leases/{tag}/model", post(set_lease_model))
         .route("/api/openrouter/models", get(openrouter_models))
         .route("/api/groups/{name}/start", post(start_group))
         .merge(crate::orch::api::routes())
@@ -96,6 +98,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/internal/usage", post(internal_usage))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
+        // Agents reach OpenRouter through here with a lease token, not the login cookie.
+        .route(
+            "/or/{*rest}",
+            axum::routing::any(crate::openrouter::proxy::handle).layer(DefaultBodyLimit::max(crate::openrouter::proxy::MAX_BODY)),
+        )
         .merge(protected)
         .fallback(assets::serve)
         .with_state(state)
@@ -316,6 +323,25 @@ async fn account_remote(State(st): State<Arc<AppState>>, Path(id): Path<String>)
         Ok(r) => ([(header::CACHE_CONTROL, "no-store")], Json(r)).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}")).into_response(),
     }
+}
+
+/// Each lease's model, cap and spend. The tokens themselves stay on the server.
+async fn list_leases(State(st): State<Arc<AppState>>) -> impl IntoResponse {
+    ([(header::CACHE_CONTROL, "no-store")], Json(st.leases.all()))
+}
+
+#[derive(Deserialize)]
+struct LeaseModel {
+    model: String,
+}
+
+/// Switch the model of a running OpenRouter session, from its next request on.
+async fn set_lease_model(State(st): State<Arc<AppState>>, Path(tag): Path<String>, Json(b): Json<LeaseModel>) -> Response {
+    let model = b.model.trim();
+    if model.is_empty() || model.len() > 200 || model.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return (StatusCode::BAD_REQUEST, "model id is not valid").into_response();
+    }
+    if st.leases.set_model(&tag, model) { StatusCode::NO_CONTENT.into_response() } else { StatusCode::NOT_FOUND.into_response() }
 }
 
 async fn logout(jar: CookieJar) -> impl IntoResponse {
