@@ -592,6 +592,7 @@ mod tests {
             use_in_orchestrator: true,
             models: vec![crate::secrets::PinnedModel { id: "vendor/think".into(), price_in: Some(1.0), price_out: Some(2.0), tools: false }],
             prefs: Default::default(),
+            usd_per_credit: None,
         };
         let accounts = crate::secrets::Accounts { accounts: vec![account], ..Default::default() };
         std::fs::write(dir.join("accounts.json"), serde_json::to_vec(&accounts).unwrap()).unwrap();

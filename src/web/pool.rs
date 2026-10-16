@@ -135,6 +135,30 @@ impl Pool {
         Pool { members, order, cooldowns }
     }
 
+    /// The pool the accounts make: every web account with a key that flows may use, in the order saved for each tool.
+    pub fn from_accounts(accounts: &crate::secrets::Accounts, cooldowns: Arc<Cooldowns>) -> Pool {
+        use crate::secrets::Kind;
+        let members = accounts
+            .web_accounts()
+            .filter_map(|a| {
+                let rate = a.credit_usd();
+                match a.kind {
+                    Kind::Firecrawl => Client::new(a).ok().map(|c| Member::firecrawl(&a.id, rate, c)),
+                    Kind::Tavily => tavily::Client::new(a).ok().map(|c| Member::tavily(&a.id, rate, c)),
+                    Kind::Serper => serper::Client::new(a).ok().map(|c| Member::serper(&a.id, rate, c)),
+                    Kind::Openrouter | Kind::OpenaiCompatible => None,
+                }
+            })
+            .collect();
+        let order = accounts.web_order.iter().filter_map(|(k, ids)| Some((Tool::from_key(k)?, ids.clone()))).collect();
+        Pool::new(members, order, cooldowns)
+    }
+
+    /// For each tool that some account can do, the accounts in the order they are asked.
+    pub fn orders(&self) -> std::collections::BTreeMap<&'static str, Vec<String>> {
+        Tool::ALL.into_iter().filter(|t| self.offers(*t)).map(|t| (t.key(), self.candidates(t).iter().map(|m| m.id.clone()).collect())).collect()
+    }
+
     /// Whether any account can do `tool`.
     pub fn offers(&self, tool: Tool) -> bool {
         self.members.iter().any(|m| m.provider().can(tool))
@@ -431,6 +455,42 @@ mod tests {
         let call = p.search("x", 5, SearchOpts::default(), None).await.unwrap();
         assert_eq!((call.source, call.notes), (Some(Provider::Firecrawl), vec!["Serper is out of credits".to_string()]));
         assert_eq!(cool.resting("sv"), Some("is out of credits"));
+    }
+
+    #[test]
+    fn the_pool_is_made_from_the_accounts_that_may_be_used_in_the_saved_order() {
+        use crate::secrets::{Account, Accounts, Kind};
+        let acct = |id: &str, kind: Kind, key: &str, flows: bool| Account {
+            id: id.into(),
+            name: id.into(),
+            kind,
+            base_url: "http://x.test".into(),
+            key: key.into(),
+            use_in_orchestrator: flows,
+            models: vec![],
+            prefs: Default::default(),
+            usd_per_credit: (id == "sv").then_some(0.5),
+        };
+        let mut a = Accounts {
+            accounts: vec![
+                acct("fc", Kind::Firecrawl, "k", true),
+                acct("tv", Kind::Tavily, "k", true),
+                acct("sv", Kind::Serper, "k", true),
+                acct("nokey", Kind::Tavily, "", true),
+                acct("off", Kind::Firecrawl, "k", false),
+                acct("or", Kind::Openrouter, "k", true),
+            ],
+            ..Default::default()
+        };
+        let p = Pool::from_accounts(&a, Arc::default());
+        assert_eq!(p.members.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["fc", "tv", "sv"], "only web accounts with a key, allowed in flows");
+        assert_eq!(p.members[2].usd_per_credit, 0.5);
+        assert_eq!(p.members[0].usd_per_credit, 0.00083, "the list price where none is set");
+        let orders = p.orders();
+        assert_eq!(orders["search"], ["sv", "tv", "fc"]);
+        assert_eq!(orders["crawl"], ["fc", "tv"]);
+        a.set_web_order([("search".to_string(), vec!["fc".to_string()])].into()).unwrap();
+        assert_eq!(Pool::from_accounts(&a, Arc::default()).orders()["search"], ["fc", "sv", "tv"], "what is listed comes first, the rest follow the default");
     }
 
     #[test]

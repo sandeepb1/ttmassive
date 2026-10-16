@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn an_openrouter_key_becomes_dollars_and_a_failure_stays_on_its_account() {
-        let a = crate::secrets::Account { id: "a1".into(), name: "Main".into(), kind: crate::secrets::Kind::Openrouter, base_url: String::new(), key: "k".into(), use_in_orchestrator: true, models: Vec::new(), prefs: Default::default() };
+        let a = crate::secrets::Account { id: "a1".into(), name: "Main".into(), kind: crate::secrets::Kind::Openrouter, base_url: String::new(), key: "k".into(), use_in_orchestrator: true, models: Vec::new(), prefs: Default::default(), usd_per_credit: None };
         let ok = crate::openrouter::catalog::Remote { usage: Some(12.5), usage_daily: Some(0.4), usage_monthly: Some(7.0), limit: Some(50.0), remaining: Some(37.5), ..Default::default() };
         let u = or_usage(&a, Ok(ok), 100);
         assert_eq!((u.spent, u.daily, u.monthly, u.limit, u.remaining, u.error.clone()), (Some(12.5), Some(0.4), Some(7.0), Some(50.0), Some(37.5), None));

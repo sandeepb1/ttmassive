@@ -217,6 +217,15 @@ pub async fn remote(account: &Account) -> Result<Remote> {
             let b = crate::web::client::Client::new(account)?.credits().await?;
             Ok(Remote { usage: Some(b.plan.saturating_sub(b.remaining) as f64), limit: Some(b.plan as f64), remaining: Some(b.remaining as f64), unit: Some("credits"), ..Default::default() })
         }
+        Kind::Tavily => {
+            let u = crate::web::tavily::Client::new(account)?.usage().await?;
+            let remaining = u.limit.map(|l| l.saturating_sub(u.used) as f64);
+            Ok(Remote { usage: Some(u.used as f64), limit: u.limit.map(|l| l as f64), remaining, unit: Some("credits"), ..Default::default() })
+        }
+        Kind::Serper => {
+            let balance = crate::web::serper::Client::new(account)?.balance().await?;
+            Ok(Remote { remaining: Some(balance as f64), unit: Some("credits"), ..Default::default() })
+        }
         Kind::OpenaiCompatible => {
             let res = get(format!("{}/models", account.base_url)).await.context("asking the endpoint for its models")?;
             if !res.status().is_success() {

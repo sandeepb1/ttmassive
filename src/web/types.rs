@@ -112,6 +112,16 @@ impl Provider {
         }
     }
 
+    /// What one credit costs on the service's list price, in dollars: Firecrawl's Standard plan, Tavily's pay as you
+    /// go, and Serper's starter pack.
+    pub fn default_usd_per_credit(self) -> f64 {
+        match self {
+            Provider::Firecrawl => 0.00083,
+            Provider::Tavily => 0.008,
+            Provider::Serper => 0.001,
+        }
+    }
+
     pub fn can(self, tool: Tool) -> bool {
         match self {
             Provider::Firecrawl | Provider::Tavily => true,
@@ -130,6 +140,22 @@ pub enum Tool {
 }
 
 impl Tool {
+    pub const ALL: [Tool; 4] = [Tool::Search, Tool::Scrape, Tool::Map, Tool::Crawl];
+
+    /// How the tool is named in saved settings.
+    pub fn key(self) -> &'static str {
+        match self {
+            Tool::Search => "search",
+            Tool::Scrape => "scrape",
+            Tool::Map => "map",
+            Tool::Crawl => "crawl",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Tool> {
+        Tool::ALL.into_iter().find(|t| t.key() == key)
+    }
+
     /// For "No web account could …".
     pub fn verb(self) -> &'static str {
         match self {

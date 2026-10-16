@@ -175,7 +175,7 @@ pub fn check_accounts<'a>(accounts: &Accounts, nodes: impl IntoIterator<Item = O
         let Some(a) = accounts.get(account) else {
             return Err(format!("{name} runs on an account that no longer exists"));
         };
-        let why = if a.kind == Kind::Firecrawl {
+        let why = if a.kind.is_web() {
             Some("is a web account, not one that has models")
         } else if a.kind == Kind::OpenaiCompatible && !direct {
             // No CLI can run a model on a plain OpenAI-compatible endpoint, so such an agent must call it itself.
@@ -292,6 +292,7 @@ mod tests {
             use_in_orchestrator: flows,
             models: models.iter().map(|m| secrets::PinnedModel { id: (*m).into(), price_in: Some(1.0), price_out: None, tools: true }).collect(),
             prefs: secrets::Prefs::default(),
+            usd_per_credit: None,
         }
     }
 
@@ -301,6 +302,7 @@ mod tests {
             helpers: Default::default(),
             drivers: Default::default(),
             intel_urls: Default::default(),
+            web_order: Default::default(),
             accounts: vec![
                 account("ok", Kind::Openrouter, "k", true, &["anthropic/claude-haiku-5.5", "openai/gpt-6-luna"]),
                 account("off", Kind::Openrouter, "k", false, &["x/hidden"]),
@@ -322,6 +324,7 @@ mod tests {
             helpers: Default::default(),
             drivers: Default::default(),
             intel_urls: Default::default(),
+            web_order: Default::default(),
             accounts: vec![
                 account("ok", Kind::Openrouter, "k", true, &[]),
                 account("off", Kind::Openrouter, "k", false, &[]),

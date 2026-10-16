@@ -27,6 +27,27 @@ pub enum Kind {
     OpenaiCompatible,
     /// Web search and scraping for agents. Has no models.
     Firecrawl,
+    /// Web search, page reading, site maps and crawls. Has no models.
+    Tavily,
+    /// Google search and news. Has no models.
+    Serper,
+}
+
+impl Kind {
+    /// The web service an account of this kind is, if it is one.
+    pub fn web(self) -> Option<crate::web::types::Provider> {
+        use crate::web::types::Provider;
+        match self {
+            Kind::Firecrawl => Some(Provider::Firecrawl),
+            Kind::Tavily => Some(Provider::Tavily),
+            Kind::Serper => Some(Provider::Serper),
+            Kind::Openrouter | Kind::OpenaiCompatible => None,
+        }
+    }
+
+    pub fn is_web(self) -> bool {
+        self.web().is_some()
+    }
 }
 
 /// A model pinned to the shortlist. Prices are dollars per million tokens and optional: without
@@ -88,6 +109,9 @@ pub struct Account {
     pub models: Vec<PinnedModel>,
     #[serde(default)]
     pub prefs: Prefs,
+    /// What one of a web account's credits costs, in dollars, when the list price is not what is paid.
+    #[serde(default)]
+    pub usd_per_credit: Option<f64>,
 }
 
 /// What the page may see of an account: everything but the key.
@@ -103,6 +127,10 @@ pub struct AccountView {
     pub use_in_orchestrator: bool,
     pub models: Vec<PinnedModel>,
     pub prefs: Prefs,
+    /// What a credit is taken to cost: the account's own figure or its service's list price. `None` for a model account.
+    pub usd_per_credit: Option<f64>,
+    /// Whether `usd_per_credit` is the account's own rather than the list price.
+    pub usd_per_credit_set: bool,
 }
 
 /// A create or update from the page. A missing `key` keeps the stored one.
@@ -120,6 +148,9 @@ pub struct AccountInput {
     pub models: Vec<PinnedModel>,
     #[serde(default)]
     pub prefs: Prefs,
+    /// Dollars per credit for a web account; left out, the list price is used.
+    #[serde(default)]
+    pub usd_per_credit: Option<f64>,
 }
 
 /// A model on one of the accounts, chosen for a job.
@@ -142,6 +173,9 @@ pub struct Accounts {
     pub drivers: BTreeMap<String, crate::openrouter::launch::Driver>,
     /// Pages (a leaderboard, a price comparison) read now and then to tell the router how models compare.
     pub intel_urls: Vec<String>,
+    /// Which web accounts to ask first for each tool (`search`, `scrape`, `map`, `crawl`), by account id. A tool left
+    /// out, or an account not listed, falls back to the built-in order.
+    pub web_order: BTreeMap<String, Vec<String>>,
 }
 
 impl Account {
@@ -157,7 +191,14 @@ impl Account {
             use_in_orchestrator: self.use_in_orchestrator,
             models: self.models.clone(),
             prefs: self.prefs.clone(),
+            usd_per_credit: self.kind.web().map(|_| self.credit_usd()),
+            usd_per_credit_set: self.usd_per_credit.is_some(),
         }
+    }
+
+    /// What one of this account's credits costs, in dollars.
+    pub fn credit_usd(&self) -> f64 {
+        self.usd_per_credit.or(self.kind.web().map(|p| p.default_usd_per_credit())).unwrap_or(0.0)
     }
 }
 
@@ -183,10 +224,21 @@ impl Accounts {
             Kind::Openrouter => OPENROUTER_URL.to_owned(),
             Kind::OpenaiCompatible => normalise_url(&input.base_url)?,
             // Blank means the hosted service; a self-hosted one is named by its address.
-            Kind::Firecrawl if input.base_url.trim().is_empty() => crate::web::client::DEFAULT_URL.to_owned(),
-            Kind::Firecrawl => normalise_url(&input.base_url)?,
+            Kind::Firecrawl | Kind::Tavily | Kind::Serper if input.base_url.trim().is_empty() => match input.kind {
+                Kind::Tavily => crate::web::tavily::DEFAULT_URL,
+                Kind::Serper => crate::web::serper::DEFAULT_URL,
+                _ => crate::web::client::DEFAULT_URL,
+            }
+            .to_owned(),
+            Kind::Firecrawl | Kind::Tavily | Kind::Serper => normalise_url(&input.base_url)?,
         };
-        let models = if input.kind == Kind::Firecrawl { Vec::new() } else { check_models(input.models)? };
+        let models = if input.kind.is_web() { Vec::new() } else { check_models(input.models)? };
+        let usd_per_credit = match input.usd_per_credit {
+            Some(_) if !input.kind.is_web() => None,
+            Some(x) if x.is_finite() && x > 0.0 && x <= 1.0 => Some(x),
+            Some(_) => return Err("cost per credit must be more than zero, and at most one dollar"),
+            None => None,
+        };
         input.prefs.check()?;
         let old = match id {
             Some(id) => Some(self.get(id).ok_or("no such account")?.clone()),
@@ -215,6 +267,7 @@ impl Accounts {
             use_in_orchestrator: input.use_in_orchestrator,
             models,
             prefs: input.prefs,
+            usd_per_credit,
         };
         let id = account.id.clone();
         match self.accounts.iter_mut().find(|a| a.id == id) {
@@ -229,6 +282,10 @@ impl Accounts {
         self.accounts.retain(|a| a.id != id);
         // A helper that used the account has nothing to call any more.
         self.helpers.retain(|_, r| r.account != id);
+        for list in self.web_order.values_mut() {
+            list.retain(|a| a != id);
+        }
+        self.web_order.retain(|_, list| !list.is_empty());
         self.accounts.len() != before
     }
 
@@ -243,7 +300,7 @@ impl Accounts {
             if !HELPERS.contains(&name.as_str()) {
                 return Err("unknown helper");
             }
-            if self.usable(&r.account).is_none_or(|a| a.kind == Kind::Firecrawl) {
+            if self.usable(&r.account).is_none_or(|a| a.kind.is_web()) {
                 return Err("a helper's account has no key, is not allowed in flows, or has no models");
             }
             if !crate::openrouter::launch::valid_model(&r.model) {
@@ -269,6 +326,29 @@ impl Accounts {
         }
         self.intel_urls = urls;
         Ok(())
+    }
+
+    /// Choose which web accounts are asked first for each tool. Each must be a web account that can do the tool.
+    pub fn set_web_order(&mut self, order: BTreeMap<String, Vec<String>>) -> Result<(), &'static str> {
+        for (key, ids) in &order {
+            let tool = crate::web::types::Tool::from_key(key).ok_or("unknown web tool")?;
+            for (i, id) in ids.iter().enumerate() {
+                let can = self.get(id).and_then(|a| a.kind.web()).is_some_and(|p| p.can(tool));
+                if !can {
+                    return Err("an account in the order is not a web account that can do that");
+                }
+                if ids[..i].contains(id) {
+                    return Err("an account is listed twice");
+                }
+            }
+        }
+        self.web_order = order.into_iter().filter(|(_, ids)| !ids.is_empty()).collect();
+        Ok(())
+    }
+
+    /// The web accounts agents may use: they have a key and are allowed in flows.
+    pub fn web_accounts(&self) -> impl Iterator<Item = &Account> {
+        self.accounts.iter().filter(|a| a.kind.is_web() && !a.key.is_empty() && a.use_in_orchestrator)
     }
 
     /// The Firecrawl account agents use: the first with a key that is allowed in flows.
@@ -431,6 +511,7 @@ mod tests {
             use_in_orchestrator: true,
             models: vec![PinnedModel { id: "anthropic/claude-sonnet-5".into(), ..Default::default() }],
             prefs: Prefs::default(),
+            usd_per_credit: None,
         }
     }
 
@@ -583,6 +664,90 @@ mod tests {
         own.base_url = "http://localhost:3002/".into();
         let id2 = a.upsert(None, own).unwrap();
         assert_eq!(a.get(&id2).unwrap().base_url, "http://localhost:3002");
+    }
+
+    fn web(a: &mut Accounts, name: &str, kind: Kind) -> String {
+        let mut i = input(name, kind);
+        i.base_url = String::new();
+        a.upsert(None, i).unwrap()
+    }
+
+    #[test]
+    fn tavily_and_serper_accounts_get_their_own_addresses_and_list_prices() {
+        let mut a = Accounts::default();
+        let (fc, tv, sv) = (web(&mut a, "Fc", Kind::Firecrawl), web(&mut a, "Tv", Kind::Tavily), web(&mut a, "Sv", Kind::Serper));
+        assert_eq!(a.get(&tv).unwrap().base_url, crate::web::tavily::DEFAULT_URL);
+        assert_eq!(a.get(&sv).unwrap().base_url, crate::web::serper::DEFAULT_URL);
+        assert!(a.get(&tv).unwrap().models.is_empty() && a.get(&sv).unwrap().models.is_empty());
+        let rates: Vec<f64> = [&fc, &tv, &sv].iter().map(|id| a.get(id).unwrap().credit_usd()).collect();
+        assert_eq!(rates, [0.00083, 0.008, 0.001]);
+        assert_eq!(a.web_accounts().count(), 3);
+        let v = a.get(&tv).unwrap().view();
+        assert_eq!((v.usd_per_credit, v.usd_per_credit_set), (Some(0.008), false), "the page is shown the price in use, and that it is the list price");
+        let mut own = input("Tv2", Kind::Tavily);
+        own.base_url = "http://localhost:9/".into();
+        let id = a.upsert(None, own).unwrap();
+        assert_eq!(a.get(&id).unwrap().base_url, "http://localhost:9", "a named address is kept, without its trailing slash");
+    }
+
+    #[test]
+    fn a_web_accounts_own_price_per_credit_is_kept_and_checked() {
+        let mut a = Accounts::default();
+        let mut i = input("Tv", Kind::Tavily);
+        i.base_url = String::new();
+        i.usd_per_credit = Some(0.005);
+        let id = a.upsert(None, i.clone()).unwrap();
+        assert_eq!(a.get(&id).unwrap().credit_usd(), 0.005);
+        let v = a.get(&id).unwrap().view();
+        assert_eq!((v.usd_per_credit, v.usd_per_credit_set), (Some(0.005), true));
+        for bad in [0.0, -1.0, 1.5, f64::NAN, f64::INFINITY] {
+            i.usd_per_credit = Some(bad);
+            assert!(a.upsert(Some(&id), i.clone()).is_err(), "{bad}");
+        }
+        i.usd_per_credit = None;
+        a.upsert(Some(&id), i).unwrap();
+        assert_eq!(a.get(&id).unwrap().credit_usd(), 0.008, "cleared, it is the list price again");
+        let mut model = input("OR", Kind::Openrouter);
+        model.usd_per_credit = Some(0.5);
+        let m = a.upsert(None, model).unwrap();
+        assert_eq!((a.get(&m).unwrap().usd_per_credit, a.get(&m).unwrap().view().usd_per_credit), (None, None), "a model account has no credits");
+    }
+
+    #[test]
+    fn web_accounts_are_not_offered_as_model_accounts() {
+        let mut a = Accounts::default();
+        let tv = web(&mut a, "Tv", Kind::Tavily);
+        let helpers = BTreeMap::from([("suggest".to_string(), ModelRef { account: tv, model: "x/y".into() })]);
+        assert!(a.set_settings(helpers, BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn the_order_of_web_accounts_is_per_tool_and_only_names_accounts_that_can_do_it() {
+        let mut a = Accounts::default();
+        let (fc, tv, sv) = (web(&mut a, "Fc", Kind::Firecrawl), web(&mut a, "Tv", Kind::Tavily), web(&mut a, "Sv", Kind::Serper));
+        let order = |pairs: &[(&str, &[&String])]| pairs.iter().map(|(k, ids)| (k.to_string(), ids.iter().map(|i| (*i).clone()).collect())).collect::<BTreeMap<String, Vec<String>>>();
+        assert_eq!(a.set_web_order(order(&[("search", &[&fc, &sv]), ("scrape", &[&tv])])), Ok(()));
+        assert_eq!(a.web_order["search"], [fc.clone(), sv.clone()]);
+        assert!(a.set_web_order(order(&[("scrape", &[&sv])])).is_err(), "Serper cannot scrape");
+        assert!(a.set_web_order(order(&[("search", &[&fc, &fc])])).is_err(), "listed twice");
+        assert!(a.set_web_order(order(&[("search", &[&"nope".to_string()])])).is_err());
+        assert!(a.set_web_order(order(&[("browse", &[&fc])])).is_err(), "no such tool");
+        assert_eq!(a.web_order["search"], [fc.clone(), sv.clone()], "a refused change leaves it as it was");
+        assert_eq!(a.set_web_order(order(&[("map", &[])])), Ok(()));
+        assert!(a.web_order.is_empty(), "an empty list is the built-in order");
+        a.set_web_order(order(&[("search", &[&fc, &sv]), ("crawl", &[&tv, &fc])])).unwrap();
+        assert!(a.remove(&sv));
+        assert_eq!(a.web_order["search"], [fc.clone()], "a removed account leaves the order");
+        assert!(a.remove(&fc) && a.remove(&tv));
+        assert!(a.web_order.is_empty());
+    }
+
+    #[test]
+    fn accounts_saved_before_the_price_and_the_order_still_load() {
+        let old = r#"{"accounts":[{"id":"a1","name":"Web","kind":"firecrawl","baseUrl":"https://api.firecrawl.dev","key":"k","useInOrchestrator":true,"models":[]}]}"#;
+        let a: Accounts = serde_json::from_str(old).unwrap();
+        assert_eq!((a.accounts[0].usd_per_credit, a.web_order.len()), (None, 0));
+        assert_eq!(a.accounts[0].credit_usd(), 0.00083);
     }
 
     #[test]

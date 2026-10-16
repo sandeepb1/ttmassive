@@ -901,7 +901,7 @@ mod tests {
     }
 
     fn account(base: &str, prefs: Prefs) -> Account {
-        Account { id: "acct".into(), name: "OR".into(), kind: Kind::Openrouter, base_url: base.into(), key: "sk-real-key".into(), use_in_orchestrator: true, models: vec![], prefs }
+        Account { id: "acct".into(), name: "OR".into(), kind: Kind::Openrouter, base_url: base.into(), key: "sk-real-key".into(), use_in_orchestrator: true, models: vec![], prefs, usd_per_credit: None }
     }
 
     async fn body_text(r: Response) -> String {

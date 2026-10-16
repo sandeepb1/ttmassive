@@ -327,6 +327,9 @@ struct AccountSettings {
     /// Pages the router reads about how models compare. Left out, they stay as they were.
     #[serde(default)]
     intel: Option<Vec<String>>,
+    /// Which web accounts to ask first for each tool. Left out, it stays as it was.
+    #[serde(default)]
+    web_order: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 /// Which model makes each of ttm's own calls, and which CLI runs each vendor's OpenRouter models.
@@ -334,13 +337,16 @@ async fn get_account_settings(State(st): State<Arc<AppState>>) -> impl IntoRespo
     let a = secrets::load(&st.data_dir).await;
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Json(serde_json::json!({ "helpers": a.helpers, "drivers": a.drivers, "intel": a.intel_urls, "helperNames": secrets::HELPERS })),
+        Json(serde_json::json!({ "helpers": a.helpers, "drivers": a.drivers, "intel": a.intel_urls, "helperNames": secrets::HELPERS, "webOrder": a.web_order, "webPool": crate::web::pool::Pool::from_accounts(&a, Default::default()).orders() })),
     )
 }
 
 async fn put_account_settings(State(st): State<Arc<AppState>>, Json(b): Json<AccountSettings>) -> Response {
     match secrets::update(&st.data_dir, |a| {
         a.set_settings(b.helpers, b.drivers)?;
+        if let Some(order) = b.web_order {
+            a.set_web_order(order)?;
+        }
         match b.intel {
             Some(urls) => a.set_intel(urls),
             None => Ok(()),
@@ -378,7 +384,7 @@ async fn chat_direct(State(st): State<Arc<AppState>>, Json(b): Json<DirectChat>)
         Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
     };
     let accounts = secrets::load(&st.data_dir).await;
-    let Some(account) = accounts.get(&b.account).filter(|a| a.kind != secrets::Kind::Firecrawl && !a.key.is_empty()) else {
+    let Some(account) = accounts.get(&b.account).filter(|a| !a.kind.is_web() && !a.key.is_empty()) else {
         return (StatusCode::BAD_REQUEST, "that account has no key, or has no models").into_response();
     };
     let endpoint = chat::endpoint_for(account, &b.model);
