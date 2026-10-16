@@ -253,11 +253,15 @@ textarea.mc-field {
   align-items: center;
   gap: 1rem;
   min-width: 0;
+  flex-shrink: 0;
 }
 .mc-meter {
   display: grid;
   gap: 0.2rem;
   min-width: 7.5rem;
+}
+.mc-meter[data-kind='api'] {
+  min-width: 9rem;
 }
 .mc-meter-head {
   display: flex;

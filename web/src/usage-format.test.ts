@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  dollars,
+  orLines,
+  orStrip,
+  orUsedPct,
+  type OrUsage,
   ago,
   compact,
   countdown,
@@ -107,4 +112,34 @@ test('every source the server can send has a label', () => {
   }
   assert.equal(SOURCE_LABEL.team_claude, 'Team Claude pool');
   assert.deepEqual(stripSegments(usage({ source: 'team_claude', five_hour: { used_pct: 97, resets_at: null } })).items.map((i) => i.text), ['5h 97%']);
+});
+
+const or = (o: Partial<OrUsage> = {}): OrUsage => ({ id: 'a', name: 'Main', spent: 12.5, daily: 0.4, monthly: 7, limit: null, remaining: null, error: null, fetchedAt: 100, ...o });
+
+test('dollars read naturally from tenths of a cent to thousands', () => {
+  assert.equal(dollars(0), '$0');
+  assert.equal(dollars(0.0042), '$0.004');
+  assert.equal(dollars(0.5), '$0.50');
+  assert.equal(dollars(12.345), '$12.35');
+  assert.equal(dollars(250.4), '$250');
+  assert.equal(dollars(1234.5), '$1235');
+});
+
+test('a key with a limit shows what is left, coloured by how much is used; one without shows today or the total', () => {
+  const limited = or({ limit: 50, remaining: 37.5 });
+  assert.equal(orUsedPct(limited), 25);
+  assert.deepEqual(orStrip(limited), { text: '$37.50 left', level: 'ok' });
+  assert.equal(orStrip(or({ limit: 50, remaining: 4 })).level, 'crit');
+  assert.equal(orUsedPct(or()), null, 'no limit, no percentage');
+  assert.deepEqual(orStrip(or()), { text: '$0.40 today', level: 'ok' });
+  assert.deepEqual(orStrip(or({ daily: null })), { text: '$12.50 spent', level: 'ok' });
+  assert.deepEqual(orStrip(or({ daily: null, spent: null })), { text: '–', level: 'ok' });
+  assert.deepEqual(orStrip(or({ error: 'OpenRouter answered 401' })), { text: '⚠', level: 'warn' });
+  assert.equal(orUsedPct(or({ limit: 10, remaining: 12 })), 0, 'never below zero');
+});
+
+test('the panel lists what is known and skips what is not', () => {
+  assert.deepEqual(orLines(or({ limit: 50, remaining: 37.5 })), ['$37.50 left of $50.00', '$0.40 today', '$7.00 this month', '$12.50 in all']);
+  assert.deepEqual(orLines(or({ daily: null, monthly: null })), ['$12.50 in all']);
+  assert.deepEqual(orLines(or({ spent: null, daily: null, monthly: null })), []);
 });

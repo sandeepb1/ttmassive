@@ -780,6 +780,61 @@ pub struct Snapshot {
     pub claude: ToolUsage,
     pub codex: ToolUsage,
     pub sessions: BTreeMap<String, SessionTokens>,
+    /// One per OpenRouter account that has a key. Filled by `with_openrouter`, because it asks over the network.
+    pub openrouter: Vec<OrUsage>,
+}
+
+/// What an OpenRouter key has spent and has left, in dollars.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrUsage {
+    pub id: String,
+    pub name: String,
+    /// Spent in all, and today and this month when OpenRouter says.
+    pub spent: Option<f64>,
+    pub daily: Option<f64>,
+    pub monthly: Option<f64>,
+    /// The key's credit limit and what is left of it; none for a key with no limit.
+    pub limit: Option<f64>,
+    pub remaining: Option<f64>,
+    pub error: Option<String>,
+    pub fetched_at: i64,
+}
+
+/// How long an account's numbers are reused, so the page's polling does not become a request to OpenRouter each time.
+const OR_MAX_AGE_SECS: i64 = 45;
+const OR_REFRESH_AGE_SECS: i64 = 8;
+
+static OR_CACHE: std::sync::Mutex<Option<BTreeMap<String, OrUsage>>> = std::sync::Mutex::new(None);
+
+/// The snapshot with each OpenRouter account's balance added. A failure is kept on the account, not raised.
+pub async fn with_openrouter(st: &Arc<AppState>, mut snap: Snapshot, refresh: bool) -> Snapshot {
+    let accounts = crate::secrets::load(&st.data_dir).await;
+    let max_age = if refresh { OR_REFRESH_AGE_SECS } else { OR_MAX_AGE_SECS };
+    let now = now_secs();
+    let mut out = Vec::new();
+    for a in accounts.accounts.iter().filter(|a| a.kind == crate::secrets::Kind::Openrouter && !a.key.is_empty()) {
+        let held = OR_CACHE.lock().unwrap().as_ref().and_then(|m| m.get(&a.id).cloned());
+        let u = match held {
+            Some(u) if now - u.fetched_at < max_age && u.error.is_none() => u,
+            _ => {
+                let got = crate::openrouter::catalog::remote(a).await;
+                let u = or_usage(a, got, now);
+                OR_CACHE.lock().unwrap().get_or_insert_with(BTreeMap::new).insert(a.id.clone(), u.clone());
+                u
+            }
+        };
+        out.push(u);
+    }
+    snap.openrouter = out;
+    snap
+}
+
+fn or_usage(a: &crate::secrets::Account, got: anyhow::Result<crate::openrouter::catalog::Remote>, now: i64) -> OrUsage {
+    match got {
+        Ok(r) => OrUsage { id: a.id.clone(), name: a.name.clone(), spent: r.usage, daily: r.usage_daily, monthly: r.usage_monthly, limit: r.limit, remaining: r.remaining, error: None, fetched_at: now },
+        Err(e) => OrUsage { id: a.id.clone(), name: a.name.clone(), spent: None, daily: None, monthly: None, limit: None, remaining: None, error: Some(format!("{e:#}")), fetched_at: now },
+    }
 }
 
 fn pool_window(bucket: &Value) -> Option<Window> {
@@ -823,7 +878,7 @@ pub async fn snapshot(st: &Arc<AppState>, refresh: bool) -> Snapshot {
         current(st, Tool::Codex, max_age),
         session_tokens(st),
     );
-    Snapshot { claude, codex, sessions }
+    Snapshot { claude, codex, sessions, openrouter: Vec::new() }
 }
 
 // ---------------------------------------------------------------- statusline
@@ -856,6 +911,18 @@ mod tests {
     use serde_json::json;
 
     const NOW: i64 = 1_791_500_000;
+
+    #[test]
+    fn an_openrouter_key_becomes_dollars_and_a_failure_stays_on_its_account() {
+        let a = crate::secrets::Account { id: "a1".into(), name: "Main".into(), kind: crate::secrets::Kind::Openrouter, base_url: String::new(), key: "k".into(), use_in_orchestrator: true, models: Vec::new(), prefs: Default::default() };
+        let ok = crate::openrouter::catalog::Remote { usage: Some(12.5), usage_daily: Some(0.4), usage_monthly: Some(7.0), limit: Some(50.0), remaining: Some(37.5), ..Default::default() };
+        let u = or_usage(&a, Ok(ok), 100);
+        assert_eq!((u.spent, u.daily, u.monthly, u.limit, u.remaining, u.error.clone()), (Some(12.5), Some(0.4), Some(7.0), Some(50.0), Some(37.5), None));
+        assert_eq!((u.id.as_str(), u.name.as_str(), u.fetched_at), ("a1", "Main", 100));
+        let bad = or_usage(&a, Err(anyhow::anyhow!("OpenRouter answered 401")), 100);
+        assert_eq!((bad.spent, bad.remaining), (None, None));
+        assert!(bad.error.unwrap().contains("401"));
+    }
 
     #[test]
     fn team_claudes_pool_becomes_claude_usage() {

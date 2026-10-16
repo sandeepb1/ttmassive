@@ -669,7 +669,8 @@ struct UsageQuery {
 }
 
 async fn get_usage(State(st): State<Arc<AppState>>, Query(q): Query<UsageQuery>) -> Response {
-    Json(usage::snapshot(&st, q.refresh.unwrap_or(0) != 0).await).into_response()
+    let refresh = q.refresh.unwrap_or(0) != 0;
+    Json(usage::with_openrouter(&st, usage::snapshot(&st, refresh).await, refresh).await).into_response()
 }
 
 /// Claude Code's statusLine reports plan-limit usage here while it runs inside a session.

@@ -1,3 +1,4 @@
+import type { OrUsage } from '../usage-format.ts';
 // The server's orchestrator JSON, as the page sees it. Field names are the ones src/orch/*.rs write.
 
 /** A built-in role's id, or `custom`. The server's catalog (`/api/orch/roles`) says which exist. */
@@ -326,4 +327,6 @@ export interface ToolUsage {
 export interface UsageSnapshot {
   claude: ToolUsage;
   codex: ToolUsage;
+  /** One per OpenRouter account with a key. */
+  openrouter?: OrUsage[];
 }

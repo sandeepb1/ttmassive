@@ -3,6 +3,7 @@
 // The server checks everything again; these rules exist so the page can say no before asking.
 
 import { DEFAULT_ITERATIONS, DEFAULT_LIMITS } from './types.ts';
+import { orLines, orStrip, orUsedPct } from '../usage-format.ts';
 import type {
   Budget, Capability, CustomRole, EdgeKind, Flow, Turn, Routing, Rung, FlowEdge, FlowModel, OnCap, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
@@ -593,6 +594,40 @@ export function modelPatch(key: string, models: Models): Partial<FlowNode> {
   return known ? { model, account, direct: known.direct, ...(known.direct ? {} : { engine: known.driver }) } : { model, account };
 }
 
+/** Where an agent can run: your plan's CLI, or an account (OpenRouter, or a direct call on an OpenAI-compatible one). */
+export interface Provider {
+  key: string;
+  label: string;
+  direct: boolean;
+}
+
+/** The places an agent can run, with the one it is on first if its account is no longer on offer. */
+export function providersFor(node: Pick<FlowNode, 'account' | 'direct'>, models: Models): Provider[] {
+  const out: Provider[] = [{ key: 'plan', label: 'My Claude / Codex plan', direct: false }];
+  const seen = new Set<string>();
+  for (const m of models.openrouter) {
+    if (seen.has(m.account)) continue;
+    seen.add(m.account);
+    out.push({ key: `or:${m.account}`, label: `${m.direct ? 'API' : 'OpenRouter'} · ${m.accountName}${m.direct ? ' (direct call, no tools)' : ''}`, direct: m.direct });
+  }
+  if (node.account && !seen.has(node.account)) out.push({ key: `or:${node.account}`, label: 'An account that is no longer available', direct: !!node.direct });
+  return out;
+}
+
+/** The provider key an agent is on. */
+export const providerOf = (node: Pick<FlowNode, 'account'>): string => (node.account ? `or:${node.account}` : 'plan');
+
+/** Moving an agent to another place: its model becomes the first one there, and it keeps its engine where the CLI is its own. */
+export function providerPatch(key: string, node: Pick<FlowNode, 'engine'>, models: Models): Partial<FlowNode> {
+  if (key === 'plan') {
+    const list = node.engine === 'claude' ? models.claude : models.codex;
+    return { account: null, direct: false, model: list[0] ?? '' };
+  }
+  const account = key.slice(3);
+  const first = models.openrouter.find((m) => m.account === account);
+  return first ? modelPatch(`or:${account}:${first.id}`, models) : { account };
+}
+
 /** The pinned OpenRouter models, with the node's own first if it is no longer on offer (its account was changed or removed). */
 export function openRouterChoices(node: FlowNode, models: Models): { key: string; label: string; offered: boolean; direct: boolean }[] {
   // The account's name only helps when there is more than one to tell apart.
@@ -606,6 +641,37 @@ export function openRouterChoices(node: FlowNode, models: Models): { key: string
 /** Dollars OpenRouter charged for the run: only the agents on it, since the others were not billed. */
 export function runCost(run: Run): number {
   return run.flow.nodes.filter((n) => n.account).reduce((sum, n) => sum + (run.nodes[n.id]?.costUsd ?? 0), 0);
+}
+
+/** One OpenRouter account's meter in the top bar: what the key has left (or has spent), and this run's part of it. */
+export interface OrGauge {
+  id: string;
+  label: string;
+  /** How much of the key's limit is used, 0 to 100; null for a key with no limit. */
+  used: number | null;
+  /** The figure shown: what is left, or what was spent today. */
+  text: string;
+  /** What this run has spent on API models in all, shown beside it. */
+  runUsd: number | null;
+  tone: Tone;
+  title: string;
+}
+
+/** The accounts the flow's agents run on (or, with no agent on one, none), as meters. */
+export function orGauges(flow: Flow, run: Run | null, usage: UsageSnapshot | null, b: Budget): OrGauge[] {
+  const used = new Set(flow.nodes.map((n) => n.account).filter((a): a is string => !!a));
+  const keys = (usage?.openrouter ?? []).filter((u) => used.has(u.id));
+  const spent = run ? runCost(run) : 0;
+  return keys.map((u) => {
+    const pct = orUsedPct(u);
+    const strip = orStrip(u);
+    let tone: Tone = strip.level === 'crit' ? 'bad' : strip.level === 'warn' ? 'warn' : 'ok';
+    if (b.runUsd && spent >= b.runUsd) tone = 'bad';
+    else if (b.runUsd && spent >= b.runUsd * 0.8 && tone === 'ok') tone = 'warn';
+    const lines = u.error ? [u.error] : orLines(u);
+    if (b.runUsd) lines.push(`this run may spend ${usdLabel(b.runUsd)}`);
+    return { id: u.id, label: `OpenRouter${keys.length > 1 ? ` · ${u.name}` : ''}`, used: pct, text: strip.text, runUsd: run ? spent : null, tone, title: lines.join(' · ') };
+  });
 }
 
 /** Dollars as a person reads them. A flow's agents often cost fractions of a cent, so small amounts keep their digits. */
@@ -695,9 +761,9 @@ export const turnsOf = (turns: Turn[], node: string | null): Turn[] => (node ? t
 // ---------------------------------------------------------------------------- choosing models per turn
 
 export const ROUTING_TEXT: Record<Routing, string> = {
-  pinned: 'Always the model above',
-  ladder: 'A rung of its ladder, by rules',
-  auto: 'A rung of its ladder, chosen by a small model',
+  pinned: 'Fixed: always this model',
+  ladder: 'Ladder: rules move it up and down',
+  auto: 'Auto: a small model picks each turn',
 };
 
 export const DIAL_TEXT = ['Strongly prefer low cost', 'Lean toward low cost', 'Balance cost and quality', 'Lean toward quality', 'Strongly prefer quality'] as const;

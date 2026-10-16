@@ -32,10 +32,26 @@ export interface SessionTokens {
   cache_write: number;
 }
 
+/** What one OpenRouter key has spent and has left, in dollars. */
+export interface OrUsage {
+  id: string;
+  name: string;
+  spent: number | null;
+  daily: number | null;
+  monthly: number | null;
+  /** The key's credit limit and what is left; null for a key with no limit. */
+  limit: number | null;
+  remaining: number | null;
+  error: string | null;
+  fetchedAt: number;
+}
+
 export interface UsageSnapshot {
   claude: ToolUsage;
   codex: ToolUsage;
   sessions: Record<string, SessionTokens>;
+  /** One per OpenRouter account with a key; absent from an older server. */
+  openrouter?: OrUsage[];
 }
 
 export type Level = 'ok' | 'warn' | 'crit';
@@ -111,3 +127,38 @@ export const SOURCE_LABEL: Record<ToolUsage['source'], string> = {
   session_log: 'from codex log',
   team_claude: 'Team Claude pool',
 };
+
+/** Dollars: cents when it is a few, whole dollars when it is many. */
+export function dollars(n: number): string {
+  if (n >= 1000) return `$${Math.round(n)}`;
+  if (n >= 100) return `$${n.toFixed(0)}`;
+  if (n >= 0.1) return `$${n.toFixed(2)}`;
+  return n > 0 ? `$${n.toFixed(3)}` : '$0';
+}
+
+/** How much of a key's limit is used, 0 to 100, or null when it has no limit. */
+export function orUsedPct(u: OrUsage): number | null {
+  if (u.limit === null || u.limit <= 0) return null;
+  const left = u.remaining ?? u.limit - (u.spent ?? 0);
+  return Math.min(100, Math.max(0, ((u.limit - left) / u.limit) * 100));
+}
+
+/** The strip's one figure for a key: what is left when it has a limit, else what was spent today (or in all). */
+export function orStrip(u: OrUsage): { text: string; level: Level } {
+  if (u.error) return { text: '⚠', level: 'warn' };
+  const pct = orUsedPct(u);
+  if (pct !== null && u.remaining !== null) return { text: `${dollars(u.remaining)} left`, level: level(pct) };
+  if (u.daily !== null) return { text: `${dollars(u.daily)} today`, level: 'ok' };
+  if (u.spent !== null) return { text: `${dollars(u.spent)} spent`, level: 'ok' };
+  return { text: '–', level: 'ok' };
+}
+
+/** The lines the panel shows for a key. */
+export function orLines(u: OrUsage): string[] {
+  const out: string[] = [];
+  if (u.limit !== null && u.remaining !== null) out.push(`${dollars(u.remaining)} left of ${dollars(u.limit)}`);
+  if (u.daily !== null) out.push(`${dollars(u.daily)} today`);
+  if (u.monthly !== null) out.push(`${dollars(u.monthly)} this month`);
+  if (u.spent !== null) out.push(`${dollars(u.spent)} in all`);
+  return out;
+}

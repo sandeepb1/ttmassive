@@ -8,9 +8,13 @@ import {
   countdown,
   isStale,
   level,
+  orLines,
+  orStrip,
+  orUsedPct,
   stripSegments,
   tokenLine,
   type LimitWindow,
+  type OrUsage,
   type ToolUsage,
   type UsageSnapshot,
 } from './usage-format';
@@ -20,6 +24,7 @@ const POLL_MS = 60_000;
 const TICK_MS = 15_000;
 
 const now = () => Math.floor(Date.now() / 1000);
+const snapOr = (s: UsageSnapshot): OrUsage[] => s.openrouter ?? [];
 
 export function meter(label: string, w: LimitWindow): HTMLElement {
   const lvl = level(w.used_pct);
@@ -136,6 +141,15 @@ export class UsageView {
         parts.push(tool);
         summary += `${name}: ${unavailable ? (u.error ?? 'no data') : items.map((i) => i.text).join(', ')}. `;
       }
+      for (const o of this.snap.openrouter ?? []) {
+        if (parts.length) parts.push(el('span', 'u-sep', '│'));
+        const { text, level: lvl } = orStrip(o);
+        const tool = el('span', 'u-tool');
+        tool.title = o.error ?? orLines(o).join(' · ');
+        tool.append(el('span', 'u-name', (snapOr(this.snap).length > 1 ? o.name : 'OR').slice(0, 10)), el('span', `u-item lvl-${lvl}`, text));
+        parts.push(tool);
+        summary += `OpenRouter ${o.name}: ${o.error ?? orLines(o).join(', ')}. `;
+      }
       this.strip.title = summary.trim();
     }
     this.strip.replaceChildren(...parts);
@@ -149,6 +163,7 @@ export class UsageView {
       sections.push(el('div', 'drawer-empty', 'Loading…'));
     } else {
       sections.push(this.toolSection('Claude Code', snap.claude), this.toolSection('Codex', snap.codex));
+      for (const o of snap.openrouter ?? []) sections.push(this.openrouterSection(o));
       sections.push(this.sessionSection(snap));
     }
     this.body.replaceChildren(...sections);
@@ -167,6 +182,19 @@ export class UsageView {
     for (const m of u.per_model) sec.append(meter(`${m.name.replaceAll('_', ' ')} weekly`, m));
     if (!u.five_hour && !u.seven_day) sec.append(el('div', 'drawer-empty', 'No numbers yet'));
     if (u.error) sec.append(el('div', 'u-err', `⚠ ${u.error}`));
+    return sec;
+  }
+
+  private openrouterSection(o: OrUsage): HTMLElement {
+    const sec = el('section', 'u-tool-sec');
+    const head = el('div', 'u-tool-head');
+    head.append(el('strong', undefined, `OpenRouter · ${o.name}`), el('span', isStale({ fetched_at: o.fetchedAt } as ToolUsage, now()) ? 'u-age stale' : 'u-age', ago(o.fetchedAt, now())));
+    sec.append(head);
+    const pct = orUsedPct(o);
+    if (pct !== null) sec.append(meter('Credit limit', { used_pct: pct, resets_at: null }));
+    for (const line of orLines(o)) sec.append(el('div', 'u-win-sub', line));
+    if (orLines(o).length === 0 && !o.error) sec.append(el('div', 'drawer-empty', 'No numbers yet'));
+    if (o.error) sec.append(el('div', 'u-err', `⚠ ${o.error}`));
     return sec;
   }
 

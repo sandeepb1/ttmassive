@@ -16,7 +16,7 @@ import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
 import { Sidebar } from './Sidebar';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, orGauges, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
 import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
 const PHONE = '(max-width: 699px)';
@@ -340,6 +340,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const showTimeline = !!run && runView === 'timeline';
   const showList = !showTimeline && (phone || view === 'list');
   const meters = useMemo(() => gauges(shown, run, usage, limits), [shown, run, usage, limits]);
+  const apiMeters = useMemo(() => orGauges(shown, run, usage, limits), [shown, run, usage, limits]);
 
   /** Leaving a flow that has been changed asks first; returns whether to go on. */
   const mayLeave = () => !edited.current || confirm(`Discard your unsaved changes to “${flow.name}”?`);
@@ -618,7 +619,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           </span>
         )}
         <span className="mc-spacer" />
-        <UsageMeters gauges={meters} />
+        <UsageMeters gauges={meters} api={apiMeters} />
         <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon mc-hide-narrow" aria-label="Settings and plan limits" title="Plan limits and flow settings" onClick={openLimits}>
           <Icon name="sliders" />
         </button>

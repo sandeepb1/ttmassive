@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import { Icon, iconFor, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, DIAL_TEXT, ON_CAP_TEXT, OUTPUT_TEXT, ROUTING_TEXT, nextRung, rungFromKey, rungKey, withRoutingChange, asks, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
+import { CAPABILITY_SHORT, DIAL_TEXT, ON_CAP_TEXT, OUTPUT_TEXT, ROUTING_TEXT, nextRung, providerOf, providerPatch, providersFor, rungFromKey, rungKey, withRoutingChange, asks, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
 import { DEFAULT_DIAL, DEFAULT_ITERATIONS, EFFORTS, type Answerer, type Budget, type Capability, type Engine, type Flow, type FlowEdge, type FlowNode, type Models, type NodeRun, type OnCap, type Output, type Routing, type Rung, type Run } from './types';
 
 interface Props {
@@ -195,17 +195,17 @@ function RungModelOptions({ models, current }: { models: Models; current: string
           ))}
         </optgroup>
       )}
-      {models.openrouter.some((m) => !m.direct) && (
-        <optgroup label="OpenRouter">
-          {models.openrouter
-            .filter((m) => !m.direct)
-            .map((m) => (
-              <option key={`${m.account}:${m.id}`} value={`or:${m.account}:${m.id}`}>
-                {m.id}
-              </option>
-            ))}
-        </optgroup>
-      )}
+      {[...new Set(models.openrouter.filter((m) => !m.direct).map((m) => m.account))].map((acct) => (
+          <optgroup key={acct} label={`OpenRouter · ${models.openrouter.find((m) => m.account === acct)!.accountName}`}>
+            {models.openrouter
+              .filter((m) => !m.direct && m.account === acct)
+              .map((m) => (
+                <option key={m.id} value={`or:${m.account}:${m.id}`}>
+                  {m.id}
+                </option>
+              ))}
+          </optgroup>
+        ))}
     </>
   );
 }
@@ -224,7 +224,7 @@ function RoutingEditor({ node, models, editable, onNode }: { node: FlowNode; mod
   };
   return (
     <>
-      <Field label="Which model it uses" hint={routing === 'pinned' ? 'It can instead move up and down a ladder of models as the run goes: higher after work is sent back, lower as your plan fills up.' : undefined}>
+      <Field label="Model selection" hint={routing === 'pinned' ? 'Instead of one model, give it a ladder of models and efforts, each on any account you have, that it moves along as the run goes: higher after work is sent back, lower as your plan fills up. A small model can choose the rung each turn.' : undefined}>
         <select className="mc-field" disabled={!editable || !!node.direct} value={routing} onChange={(e) => onNode(node.id, withRoutingChange(node, e.target.value as Routing, models))}>
           {(Object.keys(ROUTING_TEXT) as Routing[]).map((r) => (
             <option key={r} value={r}>
@@ -289,6 +289,68 @@ function RoutingEditor({ node, models, editable, onNode }: { node: FlowNode; mod
           </p>
         </div>
       )}
+    </>
+  );
+}
+
+/** Where an agent runs, which CLI runs it, and which model. */
+function ModelFields({ node, models, editable, options, onNode, setEngine }: { node: FlowNode; models: Models; editable: boolean; options: string[]; onNode: (id: string, patch: Partial<FlowNode>) => void; setEngine: (e: Engine) => void }) {
+  const providers = providersFor(node, models);
+  const here = providerOf(node);
+  const account = node.account ? here.slice(3) : null;
+  const mine = models.openrouter.filter((m) => m.account === account);
+  const known = mine.some((m) => m.id === node.model);
+  const offerOnly = models.openrouter.length === 0;
+  return (
+    <>
+      <Field
+        label="Runs on"
+        hint={
+          offerOnly
+            ? 'Your Claude or Codex plan. To use OpenRouter, add an account and pin some models in Settings, under Account; turn on "Use in orchestrator flows".'
+            : here === 'plan'
+              ? 'Counts against your plan. Pick an account to pay per token instead.'
+              : 'Billed per token by the account, not your plan.'
+        }
+      >
+        <select className="mc-field" disabled={!editable || offerOnly} value={here} aria-label="Runs on" onChange={(e) => onNode(node.id, providerPatch(e.target.value, node, models))}>
+          {providers.map((p) => (
+            <option key={p.key} value={p.key} disabled={p.direct && !canCallDirectly(node) && p.key !== here}>
+              {p.label}
+              {p.direct && !canCallDirectly(node) && p.key !== here ? ' (this role needs tools)' : ''}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <div className="mc-grid2">
+        <Field label={account ? 'Runs through' : 'Engine'}>
+          <select className="mc-field" disabled={!editable || !!node.direct} value={node.direct ? 'direct' : node.engine} onChange={(e) => setEngine(e.target.value as Engine)}>
+            {node.direct && <option value="direct">Direct call</option>}
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex</option>
+          </select>
+        </Field>
+        <Field label="Model">
+          <select className="mc-field mc-mono" disabled={!editable} value={account ? node.model : `plan:${node.model}`} onChange={(e) => onNode(node.id, account ? modelPatch(`or:${account}:${e.target.value}`, models) : modelPatch(e.target.value, models))}>
+            {account ? (
+              <>
+                {!known && <option value={node.model}>{node.model} (not pinned)</option>}
+                {mine.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.id}
+                  </option>
+                ))}
+              </>
+            ) : (
+              options.map((m) => (
+                <option key={m} value={`plan:${m}`}>
+                  {m}
+                </option>
+              ))
+            )}
+          </select>
+        </Field>
+      </div>
     </>
   );
 }
@@ -392,49 +454,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
       <Field label="Name">
         <input className="mc-field" disabled={!editable} value={node.name} maxLength={60} onChange={(e) => onNode(node.id, { name: e.target.value })} />
       </Field>
-      <div className="mc-grid2">
-        <Field label="Engine">
-          <select className="mc-field" disabled={!editable || !!node.direct} value={node.direct ? 'direct' : node.engine} onChange={(e) => setEngine(e.target.value as Engine)}>
-            {node.direct && <option value="direct">Direct call</option>}
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
-          </select>
-        </Field>
-        <Field label="Model">
-          <select className="mc-field mc-mono" disabled={!editable} value={modelKey(node)} onChange={(e) => onNode(node.id, modelPatch(e.target.value, models))}>
-            <optgroup label={node.engine === 'claude' ? 'Your Claude plan' : 'Your Codex plan'}>
-              {options.map((m) => (
-                <option key={m} value={`plan:${m}`}>
-                  {m}
-                </option>
-              ))}
-            </optgroup>
-            {choices.some((c) => !c.direct) && (
-              <optgroup label="OpenRouter">
-                {choices
-                  .filter((c) => !c.direct)
-                  .map((c) => (
-                    <option key={c.key} value={c.key}>
-                      {c.label}
-                    </option>
-                  ))}
-              </optgroup>
-            )}
-            {choices.some((c) => c.direct) && (
-              <optgroup label="Direct call, no tools">
-                {choices
-                  .filter((c) => c.direct)
-                  .map((c) => (
-                    <option key={c.key} value={c.key} disabled={!canCallDirectly(node) && c.key !== modelKey(node)}>
-                      {c.label}
-                      {canCallDirectly(node) ? '' : ' (this role needs tools)'}
-                    </option>
-                  ))}
-              </optgroup>
-            )}
-          </select>
-        </Field>
-      </div>
+      <ModelFields node={node} models={models} editable={editable} options={options} onNode={onNode} setEngine={setEngine} />
       <RoutingEditor node={node} models={models} editable={editable} onNode={onNode} />
       {node.account && node.direct && (
         <p className="mc-hint">

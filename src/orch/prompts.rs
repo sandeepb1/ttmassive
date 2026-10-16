@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::Outcome;
 use super::claude::{self, Access};
-use super::graph::{Budget, CustomRole, Edge, EdgeKind, Engine, Flow, Node, Role};
+use super::graph::{Budget, CustomRole, EFFORTS, Edge, EdgeKind, Engine, Flow, Node, Role};
 use super::roles::{Capability, Output};
 use super::run::{Qa, Question};
 use super::starters;
@@ -59,7 +59,7 @@ fn suggest_system(or: bool) -> String {
 goes to which (edges), and a system prompt for each agent.\n\
 Roles:\n{}\n\
 Engines: claude (models opus, sonnet, haiku) or codex (models are given with the goal).\n\
-{DESIGN_RULES}{}",
+{DESIGN_RULES}{}{ROUTING_RULES}",
         role_lines(),
         if or { OPENROUTER_RULES } else { NO_OPENROUTER }
     )
@@ -68,11 +68,22 @@ Engines: claude (models opus, sonnet, haiku) or codex (models are given with the
 /// How the designer may use the user's OpenRouter models. They are paid per token, unlike the user's own plan, so
 /// they are for where they are clearly the better buy.
 const OPENROUTER_RULES: &str = "\nOpenRouter: the user has also pinned some OpenRouter models, listed with the goal with their prices per \
-million tokens. They cost real money per token, while claude and codex models come from the user's plan, so give an agent \
-an OpenRouter model only when it is cheaper than the plan model you would have used and good enough for that role, or when \
-the user asks for it. To do that set openrouter to true, set model to the exact id from the list, set engine to the one the list \
+million tokens. They cost real money per token, while claude and codex models use up the user's plan windows, which are limited. The user \
+pinned these models on purpose, so treat them as ones they trust. Give agents an OpenRouter model where it spares the plan \
+and is good enough: the read-only and high-volume roles (searching, researching, reviewing, judging) first, and a builder \
+when the task is simple. Keep the plan for the hardest planning and building. Always give an agent one when the user asks \
+for it or names a model. To do that set openrouter to true, set model to the exact id from the list, set engine to the one the list \
 says runs it, and put one short sentence in model_reason saying why (the price or the fit). For every other agent set \
 openrouter to false and model_reason to an empty string. Never use an OpenRouter model that is not in the list.";
+
+/// How the designer may give agents an effort and a ladder of models. Pinned is the common case.
+const ROUTING_RULES: &str = "\nEffort and ladders: give every agent an effort: low for searching and simple checks, medium for planning, high \
+for building and for judging hard work, or an empty string for the tool's own default. An agent whose work may be sent \
+back, a builder most of all, should get routing \"ladder\" and a ladder of 2 or 3 rungs, cheapest and lightest first, so \
+that a retry runs on something stronger. Each rung is a model from the lists above with an effort; for an OpenRouter \
+model set openrouter to true and use the exact listed id. Rungs may mix your plan's models and OpenRouter ones. For every \
+other agent set routing \"pinned\" and an empty ladder. Use routing \"auto\", where a small model picks the rung each turn, \
+only when the user asks for that, and give it a ladder too.";
 
 /// Said when there are no OpenRouter models, so the model does not invent any.
 const NO_OPENROUTER: &str = "\nThe user has no OpenRouter models: set openrouter to false and model_reason to an empty string on every agent.";
@@ -160,10 +171,16 @@ fn suggest_schema() -> Value {
             "name": text(),
             "nodes": {"type": "array", "items": {
                 "type": "object", "additionalProperties": false,
-                "required": ["id", "name", "role", "engine", "model", "system_prompt", "checkpoint", "openrouter", "model_reason"],
+                "required": ["id", "name", "role", "engine", "model", "system_prompt", "checkpoint", "openrouter", "model_reason", "effort", "routing", "ladder"],
                 "properties": {"id": text(), "name": text(), "role": role, "engine": engine, "model": text(),
                                "system_prompt": text(), "checkpoint": {"type": "boolean"},
-                               "openrouter": {"type": "boolean"}, "model_reason": text()}}},
+                               "openrouter": {"type": "boolean"}, "model_reason": text(),
+                               "effort": {"type": "string", "enum": ["", "low", "medium", "high", "xhigh", "max"]},
+                               "routing": {"type": "string", "enum": ["pinned", "ladder", "auto"]},
+                               "ladder": {"type": "array", "items": {
+                                   "type": "object", "additionalProperties": false, "required": ["model", "openrouter", "effort"],
+                                   "properties": {"model": text(), "openrouter": {"type": "boolean"},
+                                                  "effort": {"type": "string", "enum": ["", "low", "medium", "high", "xhigh", "max"]}}}}}}},
             "edges": {"type": "array", "items": {
                 "type": "object", "additionalProperties": false, "required": ["from", "to", "retry"],
                 "properties": {"from": text(), "to": text(), "retry": {"type": "boolean"}}}},
@@ -233,6 +250,8 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
         let id = format!("n{}", i + 1);
         ids.insert(s("id"), id.clone());
         let prompt = s("system_prompt");
+        let effort = Some(s("effort")).filter(|e| EFFORTS.contains(&e.as_str()));
+        let (routing, ladder) = suggested_ladder(n, codex_models, or_models);
         nodes.push(Node {
             id,
             name: if s("name").is_empty() { format!("{role:?}") } else { s("name") },
@@ -247,14 +266,17 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
             account: pick.map(|m| m.account.clone()),
             direct: false,
             web: super::roles::web_default(role),
-            effort: None,
-            routing: crate::orch::graph::Routing::Pinned,
-            ladder: Vec::new(),
+            effort,
+            routing,
+            ladder,
             x: 0.0,
             y: 0.0,
         });
         if let Some(m) = pick {
             notes.push(or_note(&nodes.last().expect("just pushed").name, m, &s("model_reason")));
+        }
+        if let Some(n) = nodes.last().filter(|n| n.routing != crate::orch::graph::Routing::Pinned) {
+            notes.push(format!("{} moves along {} models by {}.", n.name, n.ladder.len(), if n.routing == crate::orch::graph::Routing::Auto { "a small model's choice" } else { "rules" }));
         }
     }
     let mut edges = Vec::new();
@@ -278,6 +300,35 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
     flow.validate().map_err(anyhow::Error::msg).context("the suggested flow is not valid")?;
     lay_out(&mut flow);
     Ok((flow, notes))
+}
+
+/// The ladder a designer asked for, kept only as far as its rungs are models that exist: a rung that names something unknown is
+/// dropped, and an agent left with no rungs is pinned.
+fn suggested_ladder(n: &Value, codex_models: &[String], or_models: &[FlowModel]) -> (crate::orch::graph::Routing, Vec<crate::orch::graph::Rung>) {
+    use crate::orch::graph::{Routing, Rung, MAX_RUNGS};
+    let routing = match n.get("routing").and_then(Value::as_str) {
+        Some("ladder") => Routing::Ladder,
+        Some("auto") => Routing::Auto,
+        _ => return (Routing::Pinned, Vec::new()),
+    };
+    let mut ladder: Vec<Rung> = Vec::new();
+    for r in n.get("ladder").and_then(Value::as_array).into_iter().flatten().take(MAX_RUNGS) {
+        let model = r.get("model").and_then(Value::as_str).unwrap_or("").trim();
+        let effort = r.get("effort").and_then(Value::as_str).filter(|e| EFFORTS.contains(e)).map(str::to_owned);
+        let rung = if r.get("openrouter").and_then(Value::as_bool) == Some(true) {
+            or_models.iter().find(|m| m.id == model).map(|m| Rung { engine: engine_of(m.driver), model: m.id.clone(), account: Some(m.account.clone()), effort })
+        } else if CLAUDE_MODELS.contains(&model) {
+            Some(Rung { engine: Engine::Claude, model: model.into(), account: None, effort })
+        } else if codex_models.iter().any(|m| m == model) {
+            Some(Rung { engine: Engine::Codex, model: model.into(), account: None, effort })
+        } else {
+            None
+        };
+        if let Some(rung) = rung.filter(|r| !ladder.iter().any(|l| l.engine == r.engine && l.model == r.model && l.account == r.account && l.effort == r.effort)) {
+            ladder.push(rung);
+        }
+    }
+    if ladder.is_empty() { (Routing::Pinned, Vec::new()) } else { (routing, ladder) }
 }
 
 /// Left to right by when each agent can start, top to bottom within a column.
@@ -1124,7 +1175,7 @@ mod tests {
         assert!(with.contains("- openai/gpt-6-luna (engine codex; $0.2 in, $1.2 out)"), "{with}");
         assert!(with.contains("- anthropic/claude-haiku-5.5 (engine claude;"));
         assert!(!suggest_prompt("Do a thing", &models(), &[]).contains("OpenRouter"));
-        assert!(suggest_system(true).contains("cheaper than the plan model") && suggest_system(true).contains("model_reason"));
+        assert!(suggest_system(true).contains("spares the plan") && suggest_system(true).contains("model_reason"));
         assert!(suggest_system(false).contains("no OpenRouter models"), "so it does not invent any");
         let p = edit_prompt(&base(), "x", &models(), &pinned());
         assert!(p.contains("# OpenRouter models available") && p.find("# OpenRouter").unwrap() < p.find("# The user's request").unwrap());
@@ -1134,6 +1185,46 @@ mod tests {
             assert!(req.contains(&json!("openrouter")) && req.contains(&json!("model_reason")));
         }
         assert_eq!(edit_view(&base())["nodes"][0]["openrouter"], false);
+    }
+
+    #[test]
+    fn a_designer_can_give_an_agent_an_effort_and_a_ladder_that_mixes_the_plan_and_openrouter() {
+        let mut v = suggestion();
+        v["nodes"][1]["effort"] = json!("high");
+        v["nodes"][1]["routing"] = json!("ladder");
+        v["nodes"][1]["ladder"] = json!([
+            {"model": "anthropic/claude-haiku-5.5", "openrouter": true, "effort": "low"},
+            {"model": "sonnet", "openrouter": false, "effort": "medium"},
+            {"model": "gpt-6.1-sol", "openrouter": false, "effort": "high"},
+        ]);
+        let (f, notes) = flow_from_suggestion_with(&v, "f", &models(), &pinned()).unwrap();
+        let n = &f.nodes[1];
+        assert_eq!((n.routing, n.effort.as_deref()), (crate::orch::graph::Routing::Ladder, Some("high")));
+        let rungs: Vec<_> = n.ladder.iter().map(|r| (r.engine, r.model.as_str(), r.account.as_deref(), r.effort.as_deref())).collect();
+        assert_eq!(rungs, [(Engine::Claude, "anthropic/claude-haiku-5.5", Some("acct"), Some("low")), (Engine::Claude, "sonnet", None, Some("medium")), (Engine::Codex, "gpt-6.1-sol", None, Some("high"))]);
+        assert!(notes.iter().any(|x| x == "Builder moves along 3 models by rules."), "{notes:?}");
+    }
+
+    #[test]
+    fn rungs_that_name_nothing_real_are_dropped_and_an_empty_ladder_means_pinned() {
+        let mut v = suggestion();
+        v["nodes"][1]["routing"] = json!("auto");
+        v["nodes"][1]["ladder"] = json!([
+            {"model": "made-up-model", "openrouter": false, "effort": "low"},
+            {"model": "meta/llama-9-giant", "openrouter": true, "effort": "low"},
+            {"model": "haiku", "openrouter": false, "effort": "bogus"},
+            {"model": "haiku", "openrouter": false, "effort": "bogus"},
+        ]);
+        let (f, _) = flow_from_suggestion_with(&v, "f", &models(), &pinned()).unwrap();
+        let n = &f.nodes[1];
+        assert_eq!(n.ladder.len(), 1, "one real rung, and the repeat is not added twice");
+        assert_eq!((n.ladder[0].model.as_str(), n.ladder[0].effort.clone()), ("haiku", None), "an effort that is not one is left at the default");
+        let mut v = suggestion();
+        v["nodes"][1]["routing"] = json!("ladder");
+        v["nodes"][1]["effort"] = json!("turbo");
+        v["nodes"][1]["ladder"] = json!([{"model": "nope", "openrouter": false, "effort": "low"}]);
+        let (f, _) = flow_from_suggestion_with(&v, "f", &models(), &pinned()).unwrap();
+        assert_eq!((f.nodes[1].routing, f.nodes[1].ladder.len(), f.nodes[1].effort.clone()), (crate::orch::graph::Routing::Pinned, 0, None));
     }
 
     #[test]

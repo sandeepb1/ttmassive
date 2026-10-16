@@ -57,6 +57,9 @@ pub struct Remote {
     pub limit: Option<f64>,
     pub remaining: Option<f64>,
     pub free_tier: Option<bool>,
+    /// OpenRouter only: spend so far today and this month, when it says.
+    pub usage_daily: Option<f64>,
+    pub usage_monthly: Option<f64>,
     /// OpenAI-compatible only: the endpoint's own model ids.
     pub models: Vec<String>,
     /// What `usage`, `limit` and `remaining` count, when not dollars: Firecrawl's credits.
@@ -208,7 +211,7 @@ pub async fn remote(account: &Account) -> Result<Remote> {
             let v: Value = res.json().await?;
             let d = v.get("data").unwrap_or(&Value::Null);
             let num = |k: &str| d.get(k).and_then(Value::as_f64);
-            Ok(Remote { usage: num("usage"), limit: num("limit"), remaining: num("limit_remaining"), free_tier: d.get("is_free_tier").and_then(Value::as_bool), models: Vec::new(), unit: None })
+            Ok(Remote { usage: num("usage"), limit: num("limit"), remaining: num("limit_remaining"), free_tier: d.get("is_free_tier").and_then(Value::as_bool), usage_daily: num("usage_daily"), usage_monthly: num("usage_monthly"), models: Vec::new(), unit: None })
         }
         Kind::Firecrawl => {
             let b = crate::firecrawl::client::Client::new(account)?.credits().await?;

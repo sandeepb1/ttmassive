@@ -6,8 +6,9 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
+import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
 const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'], openrouter: [] };
@@ -703,4 +704,31 @@ test('a goal with a web address offers to read it', () => {
   assert.equal(hasLink('see http://a.test'), true);
   assert.equal(hasLink('no link, only example.com and the word http'), false);
   assert.equal(hasLink('https://'), false);
+});
+
+test('an OpenRouter meter appears for each account the flow uses, with the run share and a warning near its dollar cap', () => {
+  const key = (id: string, name: string, remaining: number | null) => ({ id, name, spent: 5, daily: 0.5, monthly: 3, limit: remaining === null ? null : 50, remaining, error: null, fetchedAt: 1 });
+  const usage = { claude: {} as never, codex: {} as never, openrouter: [key('a1', 'Main', 40), key('z9', 'Spare', null)] };
+  const flow = { ...emptyFlow('f', 'F'), nodes: [{ ...newNode(emptyFlow('f', 'F'), def('builder'), models, at), account: 'a1' }] };
+  const g = orGauges(flow, null, usage, { ...DEFAULT_LIMITS });
+  assert.equal(g.length, 1, 'an account no agent uses has no meter');
+  assert.deepEqual([g[0]!.label, g[0]!.text, g[0]!.used, g[0]!.runUsd, g[0]!.tone], ['OpenRouter', '$40.00 left', 20, null, 'ok']);
+  assert.deepEqual(orGauges(emptyFlow('f', 'F'), null, usage, { ...DEFAULT_LIMITS }), [], 'a flow with no API agent shows none');
+  assert.deepEqual(orGauges(flow, null, { claude: {} as never, codex: {} as never }, { ...DEFAULT_LIMITS }), [], 'an older server says nothing');
+});
+
+test('an agent can be moved between your plan and each account, and lands on that places first model', () => {
+  const node = { ...newNode(emptyFlow('f', 'F'), def('builder'), rungModels, at), engine: 'claude' as const, model: 'sonnet', account: null as string | null, direct: false };
+  const here = providersFor(node, rungModels);
+  assert.deepEqual(here.map((p) => p.key), ['plan', 'or:a1', 'or:z9']);
+  assert.deepEqual(here.map((p) => p.label), ['My Claude / Codex plan', 'OpenRouter · Main', 'API · Plain (direct call, no tools)']);
+  assert.equal(providerOf(node), 'plan');
+  assert.deepEqual(providerPatch('or:a1', node, rungModels), { model: 'anthropic/claude-haiku-5.5', account: 'a1', direct: false, engine: 'claude' });
+  assert.deepEqual(providerPatch('or:z9', node, rungModels), { model: 'vendor/think', account: 'z9', direct: true });
+  assert.deepEqual(providerPatch('plan', { engine: 'codex' }, rungModels), { account: null, direct: false, model: 'gpt-6-luna' });
+  assert.deepEqual(providerPatch('plan', node, rungModels), { account: null, direct: false, model: 'opus' });
+  const gone = { ...node, account: 'dead' };
+  assert.equal(providerOf(gone), 'or:dead');
+  assert.equal(providersFor(gone, rungModels).at(-1)!.label, 'An account that is no longer available', 'an agent on a removed account still shows where it is');
+  assert.deepEqual(providersFor(node, { ...rungModels, openrouter: [] }).map((p) => p.key), ['plan'], 'with no accounts there is only the plan');
 });
