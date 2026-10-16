@@ -20,6 +20,8 @@ interface Props {
   /** Which view of the run is open, and a way to change it. */
   view: 'timeline' | 'chart';
   onView: (v: 'timeline' | 'chart') => void;
+  /** Start a run like this one. */
+  onRerun: () => void;
 }
 
 /**
@@ -80,7 +82,7 @@ function GitNotice({ run, busy, onFixed }: { run: Run; busy: boolean; onFixed: (
   );
 }
 
-export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimits, onCancel, onCopy, view, onView }: Props) {
+export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimits, onCancel, onCopy, view, onView, onRerun }: Props) {
   const info = pauseInfo(run);
   const tokens = runTokens(run);
   const hit = cacheHit(tokens);
@@ -143,6 +145,11 @@ export function RunBar({ run, busy, link, onApprove, onResume, onAnswer, onLimit
             </button>
           ))}
         </span>
+        {!live && run.status.state !== 'grilling' && (
+          <button type="button" className="mc-btn mc-btn-sm" disabled={busy} title="Run it again, with the same agents and brief" onClick={onRerun}>
+            <Icon name="retry" /> Run again
+          </button>
+        )}
         {live && (
           <button type="button" className="mc-btn mc-btn-sm mc-btn-danger" disabled={busy} onClick={onCancel}>
             <Icon name="stop" /> Stop

@@ -178,6 +178,9 @@ struct CreateBody {
     /// Documentation sites to crawl into each builder's folder to read.
     #[serde(default)]
     docs: Vec<String>,
+    /// The brief to start from, with `skip_grill`: running an earlier run again keeps the brief it was given.
+    #[serde(default)]
+    brief: Option<String>,
 }
 
 fn yes() -> bool {
@@ -185,7 +188,7 @@ fn yes() -> bool {
 }
 
 async fn create_run(State(st): St, Json(b): Json<CreateBody>) -> Result<Response, Fail> {
-    let run = st.orch.create_run(&st, b.flow, b.goal, &b.project, b.skip_grill, b.read_links, b.docs).await?;
+    let run = st.orch.create_run(&st, b.flow, b.goal, &b.project, b.skip_grill, b.read_links, b.docs, b.brief).await?;
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 

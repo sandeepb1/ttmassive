@@ -215,6 +215,8 @@ export interface Run {
   turns?: Turn[];
   /** Pages fetched from the links in the goal. */
   references?: { url: string; text: string; credits: number; failed?: boolean }[];
+  /** Documentation sites crawled for the builders. */
+  docs?: { url: string; text: string; credits: number; failed?: boolean }[];
   /** Dollars spent outside the agents, such as on choosing their models. */
   overheadUsd?: number;
   /** How many entries the run's log has ever had; it holds only the latest. */

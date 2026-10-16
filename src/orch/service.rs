@@ -282,6 +282,7 @@ impl Service {
         skip_grill: bool,
         read_links: bool,
         docs: Vec<String>,
+        brief: Option<String>,
     ) -> Result<Run, Fail> {
         flow.validate().map_err(Fail::Bad)?;
         // An agent on OpenRouter needs its account to be there and allowed, so say so now rather than mid-run.
@@ -333,7 +334,7 @@ impl Service {
         }
         run.status = RunStatus::Grilling;
         run.grill = Some(Grill {
-            brief: skip_grill.then(|| goal.trim().to_string()),
+            brief: skip_grill.then(|| brief.as_deref().map(str::trim).filter(|b| !b.is_empty()).unwrap_or_else(|| goal.trim()).to_string()),
             ..Grill::default()
         });
         self.persist(&run);

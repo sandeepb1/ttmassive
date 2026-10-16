@@ -31,6 +31,8 @@ interface Props {
   onOpenRun: (id: string) => void;
   onNewRun: () => void;
   onDeleteRun: (r: RunSummary) => void;
+  /** Start a run like this one, with the same flow and brief. */
+  onRerun: (r: RunSummary) => void;
   /** Right-click or long-press menus. */
   openMenu: (m: MenuState) => void;
   flowMenu: (e: FlowEntry) => MenuItem[];
@@ -174,6 +176,9 @@ function FlowPanel(p: Props) {
                     </span>
                     <StatusPill status={r.status} />
                   </span>
+                </button>
+                <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Run “${r.goal}” again`} disabled={r.status.state === 'running' || r.status.state === 'grilling'} title={r.status.state === 'running' ? 'It is running' : 'Run it again, with the same agents and brief'} onClick={() => p.onRerun(r)}>
+                  <Icon name="retry" />
                 </button>
                 <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Delete the execution “${r.goal}”`} disabled={r.status.state === 'running'} title={r.status.state === 'running' ? 'Stop it first' : 'Delete this execution'} onClick={() => p.onDeleteRun(r)}>
                   <Icon name="trash" />

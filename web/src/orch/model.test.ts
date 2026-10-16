@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -743,4 +743,14 @@ test('the questions a run waits on come with their choices, without a number in 
   const old = waitingQuestions({ questions: ['3. Old one?'] });
   assert.deepEqual(old, [{ text: 'Old one?', recommended: '', options: [], multiple: false }], 'a pause from before there were choices is a text box');
   assert.equal(waitingQuestions({ questions: ['A?'], details: [] }).length, 1, 'details that do not match are ignored');
+});
+
+test('running a run again keeps its flow, brief and project, and fetches pages only if it had some', () => {
+  const flow = { ...emptyFlow('f', 'F'), nodes: [newNode(emptyFlow('f', 'F'), def('builder'), models, at)] };
+  const run = { flow, goal: 'Do X, see https://a.test', project: '/p', brief: 'The grilled brief', references: [{ url: 'https://a.test', text: 't', credits: 1 }], docs: [{ url: 'https://docs.test', text: 'd', credits: 10 }] } as unknown as Run;
+  const req = rerunRequest(run);
+  assert.deepEqual([req.goal, req.project, req.brief, req.skipGrill, req.readLinks, req.docs], ['Do X, see https://a.test', '/p', 'The grilled brief', true, true, ['https://docs.test']]);
+  assert.equal(req.flow, flow, 'the agents and settings it ran with');
+  const plain = rerunRequest({ ...run, brief: '', references: [], docs: undefined } as unknown as Run);
+  assert.deepEqual([plain.brief, plain.readLinks, plain.docs], [undefined, false, []]);
 });

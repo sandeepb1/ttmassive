@@ -818,3 +818,17 @@ export const ladderSummary = (n: Pick<FlowNode, 'routing' | 'ladder'>): string |
 
 /** Whether a goal contains a web address, which a web account can read for the agents. */
 export const hasLink = (text: string): boolean => /https?:\/\/[^\s<>"'`]{4,}/.test(text);
+
+/** What it takes to start a run like an earlier one: the same agents and settings as it ran with, the same brief and
+ *  project. Pages and documentation it had are fetched again only if it had some. */
+export function rerunRequest(r: Run): { flow: Flow; goal: string; project: string; skipGrill: true; brief?: string; readLinks: boolean; docs: string[] } {
+  return {
+    flow: r.flow,
+    goal: r.goal,
+    project: r.project,
+    skipGrill: true,
+    brief: r.brief || undefined,
+    readLinks: (r.references?.length ?? 0) > 0,
+    docs: (r.docs ?? []).map((d) => d.url),
+  };
+}

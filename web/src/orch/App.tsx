@@ -16,7 +16,7 @@ import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
 import { Sidebar } from './Sidebar';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, orGauges, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
 import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
 const PHONE = '(max-width: 699px)';
@@ -500,6 +500,27 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       },
     );
 
+  /** Start a run like an earlier one, with the flow and brief it had. It waits to be started like any new run. */
+  const rerun = (id: string) =>
+    void act(
+      async () => {
+        const old = await orch.getRun(id);
+        if (!old.ok) return old;
+        const made = await orch.createRun(rerunRequest(old.data));
+        if (!made.ok) return made;
+        // It runs at once: the brief and everything else is the earlier run's, so there is nothing to confirm.
+        return orch.start(made.data.id);
+      },
+      (r) => {
+        setRun(r);
+        setRunId(r.id);
+        setSelected(null);
+        setRunView('timeline');
+        void refreshLists();
+        say('Running it again');
+      },
+    );
+
   /** Put an older execution's design back in the editor, as the flow's current design. */
   // ------------------------------------------------------------------ deleting and quick actions
   const [logOpen, setLogOpen] = useState(() => {
@@ -689,6 +710,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             onOpenRun={openRun}
             onNewRun={() => (setSideOpen(false), setDialog(true))}
             onDeleteRun={removeRun}
+            onRerun={(r) => rerun(r.id)}
             openMenu={setMenu}
             flowMenu={flowMenu}
             runMenu={runMenu}
@@ -697,7 +719,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         </aside>
 
         <main className="mc-stage" data-list={showList || showTimeline}>
-          {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} view={runView} onView={setRunView} />}
+          {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} view={runView} onView={setRunView} onRerun={() => rerun(run.id)} />}
           {showTimeline ? (
             <Timeline run={run!} selected={selected} />
           ) : showList ? (
