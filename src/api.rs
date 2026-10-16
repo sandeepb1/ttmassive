@@ -327,8 +327,8 @@ struct AccountSettings {
     /// Pages the router reads about how models compare. Left out, they stay as they were.
     #[serde(default)]
     intel: Option<Vec<String>>,
-    /// Which web accounts to ask first for each tool. Left out, it stays as it was.
-    #[serde(default)]
+    /// Which web accounts to ask first for each tool. Left out, it stays as it was. The page names it in camelCase.
+    #[serde(default, rename = "webOrder")]
     web_order: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
@@ -1607,5 +1607,18 @@ async fn start_group(State(st): State<Arc<AppState>>, Path(name): Path<String>) 
     match ops::start_group(&st, &name).await {
         Ok(ids) => (StatusCode::CREATED, Json(serde_json::json!({ "ids": ids }))).into_response(),
         Err(e) => server_error(&e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_settings_the_page_sends_name_the_web_order_in_camel_case() {
+        let b: AccountSettings = serde_json::from_str(r#"{"helpers":{},"drivers":{},"webOrder":{"search":["a","b"]}}"#).unwrap();
+        assert_eq!(b.web_order.unwrap()["search"], ["a", "b"]);
+        let none: AccountSettings = serde_json::from_str(r#"{"helpers":{},"drivers":{}}"#).unwrap();
+        assert!(none.web_order.is_none(), "left out, the order stays as it was");
     }
 }

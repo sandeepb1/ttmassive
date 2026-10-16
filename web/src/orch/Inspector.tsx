@@ -486,7 +486,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
             disabled={!editable}
             onChange={(v) => onNode(node.id, { web: v })}
             label="Web search and page fetching"
-            hint={models.web ? 'Through your Firecrawl account. Each search or page uses credits, counted toward this run’s cap. Agents that look things up have it on by default.' : 'There is no Firecrawl account to give it with: add one in Settings, under Account.'}
+            hint={models.web ? 'Through your web accounts. Each search or page uses credits, priced in dollars and counted toward this run’s cap. Agents that look things up have it on by default.' : 'There is no web account to give it with: add Firecrawl, Tavily or Serper in Settings, under Account.'}
           />
         )}
         <Switch on={!!node.keepModel} disabled={!editable} onChange={(v) => onNode(node.id, { keepModel: v })} label="Always use this model" hint="Never switch it to a cheaper one. Only matters when the flow uses cheaper models as the plan fills up." />

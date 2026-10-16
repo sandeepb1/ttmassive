@@ -55,7 +55,7 @@ export interface FlowNode {
   routing?: Routing;
   /** The models and efforts it may run on, cheapest and lightest first. */
   ladder?: Rung[];
-  /** Given web search and page fetching (Firecrawl), when there is an account for it. */
+  /** Given web search and page fetching, through the web accounts (Firecrawl, Tavily, Serper), when there is one. */
   web?: boolean;
   systemPrompt: string;
   checkpoint: boolean;

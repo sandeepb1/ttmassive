@@ -2,6 +2,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_PREFS,
+  KIND_LABEL,
+  LIST_CREDIT_USD,
+  WEB_KINDS,
+  creditPriceLabel,
+  isWeb,
+  moveInOrder,
+  parseCreditPrice,
+  webBalanceLine,
+  webPoolRows,
+  withWebOrder,
+  withoutWebOrder,
   cleanVendor,
   intelFromText,
   withIntel,
@@ -254,4 +265,92 @@ test('the router pages are one address a line', () => {
   const s: AccountSettings = { helpers: {}, drivers: {}, helperNames: [] };
   assert.deepEqual(withIntel(s, 'https://a.test').intel, ['https://a.test']);
   assert.equal(s.intel, undefined, 'the original is untouched');
+});
+
+// ---- web accounts ----
+
+const web = (id: string, kind: Account['kind'], o: Partial<Account> = {}): Account => ({
+  id,
+  name: id,
+  kind,
+  baseUrl: '',
+  hasKey: true,
+  last4: '1234',
+  useInOrchestrator: true,
+  models: [],
+  prefs: { ...DEFAULT_PREFS },
+  usdPerCredit: LIST_CREDIT_USD[kind as 'firecrawl'],
+  usdPerCreditSet: false,
+  ...o,
+});
+
+test('Firecrawl, Tavily and Serper are the web kinds, and the others are not', () => {
+  assert.deepEqual(WEB_KINDS, ['firecrawl', 'tavily', 'serper']);
+  assert.ok(isWeb('tavily') && isWeb('serper') && isWeb('firecrawl'));
+  assert.ok(!isWeb('openrouter') && !isWeb('openai-compatible'));
+  assert.equal(KIND_LABEL.tavily, 'Tavily');
+  assert.equal(KIND_LABEL.serper, 'Serper');
+});
+
+test('a price per credit is blank for the list price, or a dollar amount above nothing and at most one', () => {
+  assert.equal(parseCreditPrice(''), null);
+  assert.equal(parseCreditPrice('  '), null);
+  assert.equal(parseCreditPrice('$0.005'), 0.005);
+  assert.equal(parseCreditPrice('0.00083'), 0.00083);
+  assert.equal(parseCreditPrice('1'), 1);
+  for (const bad of ['0', '-1', '1.5', 'cheap', 'NaN', 'Infinity']) assert.equal(parseCreditPrice(bad), 'bad', bad);
+  assert.equal(creditPriceLabel(0.008), '$0.008 per credit');
+  assert.equal(creditPriceLabel(0.00083), '$0.00083 per credit');
+});
+
+test('an account keeps a price of its own, and the list price stays the list price', () => {
+  assert.equal(inputOf(web('t', 'tavily')).usdPerCredit, null, 'the list price is not copied into the account');
+  assert.equal(inputOf(web('t', 'tavily', { usdPerCredit: 0.005, usdPerCreditSet: true })).usdPerCredit, 0.005);
+  assert.equal(emptyInput('serper').usdPerCredit, null);
+});
+
+test('the list prices match what the server assumes', () => {
+  assert.deepEqual(LIST_CREDIT_USD, { firecrawl: 0.00083, tavily: 0.008, serper: 0.001 });
+});
+
+test('Tavily and Serper balances say they are counted a little late; Firecrawl is exact', () => {
+  const r = { usage: 40, limit: 1000, remaining: 960, unit: 'credits' as const };
+  assert.equal(webBalanceLine('firecrawl', r), '960 of 1000 credits left');
+  assert.equal(webBalanceLine('tavily', r), '960 of 1000 credits left (counted a little late)');
+  assert.equal(webBalanceLine('serper', { usage: null, limit: null, remaining: 2465, unit: 'credits' }), '2465 credits left (counted a little late)');
+  assert.equal(webBalanceLine('tavily', { usage: null, limit: null, remaining: null, unit: 'credits' }), null);
+});
+
+test('an account moves one place at a time and stays put at the ends', () => {
+  assert.deepEqual(moveInOrder(['a', 'b', 'c'], 'b', -1), ['b', 'a', 'c']);
+  assert.deepEqual(moveInOrder(['a', 'b', 'c'], 'b', 1), ['a', 'c', 'b']);
+  assert.deepEqual(moveInOrder(['a', 'b', 'c'], 'a', -1), ['a', 'b', 'c']);
+  assert.deepEqual(moveInOrder(['a', 'b', 'c'], 'c', 1), ['a', 'b', 'c']);
+  assert.deepEqual(moveInOrder(['a', 'b'], 'x', 1), ['a', 'b'], 'an account that is not listed does not move anything');
+});
+
+test('a changed order is saved whole for its tool, and a reset drops it', () => {
+  const s: AccountSettings = { helpers: {}, drivers: {}, helperNames: [], webPool: { search: ['sv', 'tv', 'fc'], scrape: ['fc', 'tv'] } };
+  const set = withWebOrder(s, 'search', ['tv', 'sv', 'fc']);
+  assert.deepEqual(set.webOrder, { search: ['tv', 'sv', 'fc'] });
+  assert.deepEqual(set.webPool?.search, ['tv', 'sv', 'fc'], 'the card shows the new order at once');
+  assert.deepEqual(set.webPool?.scrape, ['fc', 'tv'], 'the other tools are left alone');
+  const both = withWebOrder(set, 'scrape', ['tv', 'fc']);
+  assert.deepEqual(both.webOrder, { search: ['tv', 'sv', 'fc'], scrape: ['tv', 'fc'] });
+  assert.deepEqual(withoutWebOrder(both, 'search').webOrder, { scrape: ['tv', 'fc'] });
+  assert.deepEqual(s.webOrder, undefined, 'the settings it was given are not changed');
+});
+
+test('the pool card lists only the tools that have accounts to put in order', () => {
+  const accounts = [web('fc', 'firecrawl', { name: 'Firecrawl' }), web('tv', 'tavily', { name: 'Tavily' }), web('sv', 'serper', { name: 'Serper' })];
+  const s: AccountSettings = { helpers: {}, drivers: {}, helperNames: [], webPool: { search: ['sv', 'tv', 'fc'], scrape: ['fc', 'tv'], map: ['fc', 'tv'], crawl: ['fc', 'tv'] }, webOrder: { scrape: ['fc', 'tv'] } };
+  const rows = webPoolRows(s, accounts);
+  assert.deepEqual(rows.map((r) => r.key), ['search', 'scrape', 'map', 'crawl']);
+  assert.deepEqual(rows[0]!.accounts.map((a) => a.name), ['Serper', 'Tavily', 'Firecrawl']);
+  assert.deepEqual(rows.map((r) => r.custom), [false, true, false, false], 'a tool with an order of its own is marked, so it can be reset');
+  const one = webPoolRows({ ...s, webPool: { search: ['sv'] } }, accounts);
+  assert.deepEqual(one, [], 'a single account has nothing to order');
+  const gone = webPoolRows({ ...s, webPool: { search: ['sv', 'removed'] } }, accounts);
+  assert.deepEqual(gone, [], 'an account that no longer exists is not shown');
+  assert.deepEqual(webPoolRows({ helpers: {}, drivers: {}, helperNames: [] }, accounts), [], 'an older server sends no pool');
 });

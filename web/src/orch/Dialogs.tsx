@@ -183,7 +183,7 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, onCreate
         </Field>
       )}
       {web && hasLink(goal) && (
-        <Switch on={readLinks} onChange={setReadLinks} label="Read the links in it" hint="Fetches up to three pages through your Firecrawl account (about a credit each) and gives their text to every agent." />
+        <Switch on={readLinks} onChange={setReadLinks} label="Read the links in it" hint="Fetches up to three pages through your web accounts (about a credit each) and gives their text to every agent." />
       )}
       <p className="mc-hint">
         Stops at {b.stopWindowPct}% of any plan window, or when the run has used {b.claudePct}% of Claude’s or {b.codexPct}% of Codex’s 5-hour window. Change them any time in Settings.

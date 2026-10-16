@@ -7,11 +7,20 @@ import {
   DRIVER_LABEL,
   HELPER_LABEL,
   KIND_LABEL,
+  LIST_CREDIT_USD,
   SORTS,
+  WEB_KIND_NOTE,
   SORT_CHOICES,
   ageLabel,
-  balanceLine,
   cleanVendor,
+  creditPriceLabel,
+  isWeb,
+  moveInOrder,
+  parseCreditPrice,
+  webBalanceLine,
+  webPoolRows,
+  withWebOrder,
+  withoutWebOrder,
   helperChoices,
   helperValue,
   withDriver,
@@ -39,6 +48,7 @@ import {
   type Prefs,
   type Remote,
   type SortKey,
+  type WebKind,
 } from './accounts-model';
 import { el } from './dom';
 import { Sheet } from './sheet';
@@ -82,7 +92,7 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
     for (const a of r.data) {
       if (a.kind === 'openai-compatible' || !a.hasKey) continue;
       void getJson<Remote>(`${ACCOUNTS}/${encodeURIComponent(a.id)}/remote`, onUnauthorized).then((b) => {
-        const line = b.ok ? balanceLine(b.data) : null;
+        const line = b.ok ? webBalanceLine(a.kind, b.data) : null;
         if (line && balances.get(a.id) !== line) {
           balances.set(a.id, line);
           render(r.data);
@@ -97,29 +107,33 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
     const list = sheetBlock();
     for (const a of accounts) {
       const bits = [a.hasKey ? `key …${a.last4}` : 'no key'];
-      if (a.kind !== 'firecrawl') bits.push(`${a.models.length} model${a.models.length === 1 ? '' : 's'}`);
+      const web = isWeb(a.kind);
+      if (!web) bits.push(`${a.models.length} model${a.models.length === 1 ? '' : 's'}`);
       const bal = balances.get(a.id);
       if (bal) bits.push(bal);
-      if (!a.useInOrchestrator) bits.push(a.kind === 'firecrawl' ? 'agents do not get it' : 'not in flows');
+      if (web && a.usdPerCredit != null) bits.push(`${creditPriceLabel(a.usdPerCredit)}${a.usdPerCreditSet ? '' : ' (list price)'}`);
+      if (!a.useInOrchestrator) bits.push(web ? 'agents do not get it' : 'not in flows');
       const r = row(a.name, { hint: bits.join(' · '), mark: KIND_LABEL[a.kind] });
       r.addEventListener('click', () => edit(a, a.kind));
       list.append(r);
     }
-    if (!accounts.length) list.append(sheetHint('No accounts yet. Add an OpenRouter or OpenAI-compatible account to use its models.'));
+    if (!accounts.length) list.append(sheetHint('No accounts yet. Add an OpenRouter or OpenAI-compatible account to use its models, or Firecrawl, Tavily or Serper to give agents web access.'));
     const add = el('div', 'flex flex-wrap gap-2');
     add.append(
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'openrouter') }, 'Add OpenRouter'),
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'openai-compatible') }, 'Add OpenAI-compatible'),
       button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'firecrawl') }, 'Add Firecrawl'),
+      button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'tavily') }, 'Add Tavily'),
+      button({ variant: 'secondary', size: 'sm', onClick: () => edit(null, 'serper') }, 'Add Serper'),
     );
-    root.replaceChildren(sheetLabel('Provider accounts'), list, add, ...(accounts.length ? [helpersBlock(), driversBlock(), intelBlock()] : []));
+    root.replaceChildren(sheetLabel('Provider accounts'), list, add, ...(accounts.length ? [...webPoolBlock(), helpersBlock(), driversBlock(), intelBlock()] : []));
   };
 
   /** Save the settings, then redraw from what the server kept (it refuses a model whose account can no longer be used). */
   const save = async (next: AccountSettings, note: HTMLElement) => {
     const r = await callJson<unknown>(
       `${ACCOUNTS}/settings`,
-      { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ helpers: next.helpers, drivers: next.drivers, intel: next.intel }) },
+      { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ helpers: next.helpers, drivers: next.drivers, intel: next.intel, webOrder: next.webOrder }) },
       onUnauthorized,
     );
     // The server answers 204 with no body, which callJson reports as unreadable; the status says what happened.
@@ -130,6 +144,46 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
     settings = next;
     note.textContent = 'Saved';
     window.setTimeout(() => (note.textContent = ''), 1500);
+  };
+
+  /** Which web account is asked first for each tool. Only tools with more than one account to put in order get a card. */
+  const webPoolBlock = (): HTMLElement[] => {
+    const rows = webPoolRows(settings, accountList);
+    if (!rows.length) return [];
+    const note = el('div', 'min-h-4 text-xs text-muted-foreground');
+    // Saving reorders on the server, which also knows the built-in order a reset goes back to, so draw again from it.
+    const change = async (next: typeof settings) => {
+      await save(next, note);
+      const st = await getJson<AccountSettings>(`${ACCOUNTS}/settings`, onUnauthorized);
+      if (st.ok) settings = st.data;
+      render(accountList);
+    };
+    const cards = rows.map((r) => {
+      const ids = r.accounts.map((a) => a.id);
+      const lines = r.accounts.map((a, i) => {
+        const move = (by: -1 | 1) => () => void change(withWebOrder(settings, r.key, moveInOrder(ids, a.id, by)));
+        const actions = el('div', 'flex items-center gap-1');
+        actions.append(
+          button({ variant: 'ghost', size: 'sm', label: `Ask ${a.name} sooner for ${r.label}`, disabled: i === 0, onClick: move(-1) }, '↑'),
+          button({ variant: 'ghost', size: 'sm', label: `Ask ${a.name} later for ${r.label}`, disabled: i === ids.length - 1, onClick: move(1) }, '↓'),
+        );
+        const line = el('div', 'flex items-center justify-between gap-3');
+        line.append(el('span', 'text-md', `${i + 1}. ${a.name === KIND_LABEL[a.kind] ? a.name : `${a.name} · ${KIND_LABEL[a.kind]}`}`), actions);
+        return line;
+      });
+      const head = el('div', 'flex items-center justify-between gap-3');
+      head.append(el('span', 'text-md font-semibold', r.label));
+      if (r.custom) head.append(button({ variant: 'ghost', size: 'sm', label: `Put ${r.label} back on the built-in order`, onClick: () => void change(withoutWebOrder(settings, r.key)) }, 'Reset'));
+      return sheetBlock(head, ...lines);
+    });
+    return [
+      sheetBlock(
+        sheetLabel('Web access'),
+        sheetHint('For each thing an agent can do on the web, the first account is asked first. If it fails, is out of credits or finds nothing, the next is tried, and each attempt counts toward the run’s web cost cap.'),
+        ...cards,
+        note,
+      ),
+    ];
   };
 
   /** Which model makes each of ttm's own calls. */
@@ -162,7 +216,7 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
     box.addEventListener('change', () => void save(withIntel(settings, box.value), note));
     return sheetBlock(
       sheetLabel('How models compare'),
-      sheetHint('Up to three pages (a leaderboard, a price comparison). When an agent’s model is chosen by the router, it reads a trimmed copy, fetched with your Firecrawl account at most once a day.'),
+      sheetHint('Up to three pages (a leaderboard, a price comparison). When an agent’s model is chosen by the router, it reads a trimmed copy, fetched with your web accounts at most once a day.'),
       box,
       note,
     );
@@ -214,6 +268,7 @@ export function accountsBlock(host: HTMLElement, onUnauthorized: () => void): HT
 class AccountSheet extends Sheet {
   private draft: AccountInput;
   private keyField = input({ type: 'password', mono: true, label: 'API key' });
+  private priceField = input({ mono: true, label: 'Price per credit' });
   private error = el('div', 'min-h-5 text-sm text-danger-text');
   private models = sheetBlock();
 
@@ -231,20 +286,23 @@ class AccountSheet extends Sheet {
   open() {
     this.tall();
     const d = this.draft;
-    const name = input({ value: d.name, placeholder: d.kind === 'openrouter' ? 'OpenRouter' : d.kind === 'firecrawl' ? 'Firecrawl' : 'Haimaker', label: 'Account name' });
+    const web = isWeb(d.kind);
+    const name = input({ value: d.name, placeholder: web || d.kind === 'openrouter' ? KIND_LABEL[d.kind] : 'Haimaker', label: 'Account name' });
     name.addEventListener('input', () => (d.name = name.value));
 
     const parts: HTMLElement[] = [sheetBlock(sheetLabel('Name'), name)];
 
+    if (web) parts.push(sheetHint(WEB_KIND_NOTE[d.kind as WebKind]));
+
     if (d.kind !== 'openrouter') {
-      const web = d.kind === 'firecrawl';
-      const url = input({ value: d.baseUrl, placeholder: web ? 'https://api.firecrawl.dev' : 'https://api.example.com/v1', mono: true, label: 'Base URL' });
+      const own = { firecrawl: 'https://api.firecrawl.dev', tavily: 'https://api.tavily.com', serper: 'https://google.serper.dev' } as Record<string, string>;
+      const url = input({ value: d.baseUrl, placeholder: web ? own[d.kind] : 'https://api.example.com/v1', mono: true, label: 'Base URL' });
       url.addEventListener('input', () => (d.baseUrl = url.value));
       parts.push(
         sheetBlock(
           sheetLabel(web ? 'Address (optional)' : 'Base URL'),
           url,
-          sheetHint(web ? 'Leave empty for Firecrawl’s own service, or give the address of one you run yourself.' : 'Where /chat/completions and /models live, usually ending in /v1.'),
+          sheetHint(web ? `Leave empty for ${KIND_LABEL[d.kind]}’s own service, or give the address of one you run yourself.` : 'Where /chat/completions and /models live, usually ending in /v1.'),
         ),
       );
     }
@@ -253,6 +311,20 @@ class AccountSheet extends Sheet {
     this.keyField.placeholder = this.existing?.hasKey ? `Saved, ending ${this.existing.last4}. Leave blank to keep it` : 'API key';
     parts.push(sheetBlock(sheetLabel('API key'), this.keyField, sheetHint('Stored on this server, readable only by you. It is never sent back to the page.')));
 
+    if (web) {
+      const list = LIST_CREDIT_USD[d.kind as WebKind];
+      this.priceField.placeholder = `${list}`;
+      this.priceField.value = d.usdPerCredit != null ? `${d.usdPerCredit}` : '';
+      this.priceField.inputMode = 'decimal';
+      parts.push(
+        sheetBlock(
+          sheetLabel('Price per credit (dollars)'),
+          this.priceField,
+          sheetHint(`Used to count what a run’s web access costs against its cap. Leave empty for ${KIND_LABEL[d.kind]}’s list price, ${creditPriceLabel(list)}; enter what you actually pay if your plan is cheaper.`),
+        ),
+      );
+    }
+
     const flows = chip({ on: d.useInOrchestrator }, d.useInOrchestrator ? 'On' : 'Off');
     flows.addEventListener('click', () => {
       d.useInOrchestrator = !d.useInOrchestrator;
@@ -260,20 +332,20 @@ class AccountSheet extends Sheet {
       setChipOn(flows, d.useInOrchestrator);
     });
     const flowRow = el('div', 'flex items-center justify-between gap-3');
-    flowRow.append(el('span', 'text-md', d.kind === 'firecrawl' ? 'Give agents web access' : 'Use in orchestrator flows'), flows);
+    flowRow.append(el('span', 'text-md', web ? 'Give agents web access' : 'Use in orchestrator flows'), flows);
     parts.push(
       sheetBlock(
         flowRow,
         sheetHint(
-          d.kind === 'firecrawl'
-            ? 'Off stops agents being given web search and page fetching with this account. Each call uses Firecrawl credits.'
+          web
+            ? 'Off stops agents being given web search and page fetching with this account. Each call uses its credits.'
             : 'Off hides this account’s models from flow pickers, Suggest and Ask AI, and automatic model choice. Single sessions can still use it.',
         ),
       ),
     );
 
     if (d.kind === 'openrouter') parts.push(this.routingBlock());
-    if (d.kind !== 'firecrawl') {
+    if (!web) {
       parts.push(this.models);
       this.renderModels();
     }
@@ -428,6 +500,11 @@ class AccountSheet extends Sheet {
     const key = this.keyField.value.trim();
     if (key) body.key = key;
     if (!body.name) return this.fail('Give the account a name');
+    if (isWeb(d.kind)) {
+      const price = parseCreditPrice(this.priceField.value);
+      if (price === 'bad') return this.fail('The price per credit must be a dollar amount above 0 and at most 1, or empty for the list price');
+      body.usdPerCredit = price;
+    }
     btn.disabled = true;
     const url = this.existing ? `${ACCOUNTS}/${encodeURIComponent(this.existing.id)}` : ACCOUNTS;
     const r = await callJson<Account>(

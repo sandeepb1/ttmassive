@@ -2,7 +2,7 @@
 // what to start in it (Claude, Codex, a shell or another preset) and go. It is the one way in for
 // the sidebar's `+`, a project's own `+` and the command bar's "New session…".
 
-import { DRIVER_LABEL, driverFor, orAccounts, shortModel, priceLine, type Account, type Driver } from './accounts-model';
+import { DRIVER_LABEL, driverFor, isWeb, orAccounts, shortModel, priceLine, type Account, type Driver } from './accounts-model';
 import { getJson } from './api-json';
 import { DirectChatSheet } from './direct-chat-sheet';
 import { el } from './dom';
@@ -139,7 +139,7 @@ export class NewSessionSheet extends Sheet {
     const r = await getJson<Account[]>('/api/accounts', this.signedOut);
     if (this.gone) return;
     this.accounts = r.ok ? orAccounts(r.data) : [];
-    this.chatAccounts = r.ok && r.data.some((a) => a.kind !== 'firecrawl' && a.hasKey && a.models.length > 0);
+    this.chatAccounts = r.ok && r.data.some((a) => !isWeb(a.kind) && a.hasKey && a.models.length > 0);
     if (this.choice === OR_CHOICE && this.accounts.length === 0) this.choice = this.fallbackChoice();
     this.syncOrPick();
     this.syncAgents();

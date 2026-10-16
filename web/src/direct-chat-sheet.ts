@@ -1,9 +1,9 @@
 // Talk to a model on one of your accounts with no agent CLI: for an OpenAI-compatible endpoint, which no CLI can run.
 // The conversation lives in this browser (it is the page that keeps it); each message sends it whole, and each reply says what
-// it cost. A model can be given web search through your Firecrawl account.
+// it cost. A model can be given web search through your web accounts.
 
 import { callJson, getJson } from './api-json';
-import { type Account } from './accounts-model';
+import { isWeb, type Account } from './accounts-model';
 import { KEEP, chatKey, parseSaved, push, spentLine, toWire, type ChatMsg } from './direct-chat-model';
 import { el } from './dom';
 import { Sheet } from './sheet';
@@ -19,6 +19,8 @@ interface Reply {
   costUsd: number | null;
   tools: { name: string }[];
   credits: number;
+  /** What those credits cost, in dollars. */
+  webUsd?: number;
 }
 
 function load(key: string): ChatMsg[] {
@@ -60,7 +62,7 @@ export class DirectChatSheet extends Sheet {
     this.show();
     const [accts, models] = await Promise.all([getJson<Account[]>('/api/accounts', this.unauthorized), getJson<{ web?: boolean }>('/api/orch/models', this.unauthorized)]);
     if (this.gone) return;
-    this.accounts = accts.ok ? accts.data.filter((a) => a.kind !== 'firecrawl' && a.hasKey && a.models.length > 0) : [];
+    this.accounts = accts.ok ? accts.data.filter((a) => !isWeb(a.kind) && a.hasKey && a.models.length > 0) : [];
     this.hasWeb = !!(models.ok && models.data.web);
     if (this.accounts.length === 0) return this.message('No account with pinned models and a key. Add one in Settings, under Account, and pin a model.');
     this.account = this.accounts[0]!.id;

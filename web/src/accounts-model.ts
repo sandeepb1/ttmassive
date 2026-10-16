@@ -1,7 +1,14 @@
 // Provider accounts and the model lists behind their pickers: the shapes the server sends, and the
 // sorting, filtering and formatting the pickers need. No DOM here, so it can be tested on its own.
 
-export type AccountKind = 'openrouter' | 'openai-compatible' | 'firecrawl';
+export type AccountKind = 'openrouter' | 'openai-compatible' | 'firecrawl' | 'tavily' | 'serper';
+
+/** The kinds that give agents web access rather than models. */
+export type WebKind = 'firecrawl' | 'tavily' | 'serper';
+
+export const WEB_KINDS: WebKind[] = ['firecrawl', 'tavily', 'serper'];
+
+export const isWeb = (kind: AccountKind): kind is WebKind => (WEB_KINDS as string[]).includes(kind);
 
 /** How OpenRouter routes an account's requests. Sent to it as the request's `provider` object. */
 export interface Prefs {
@@ -42,6 +49,10 @@ export interface Account {
   useInOrchestrator: boolean;
   models: PinnedModel[];
   prefs: Prefs;
+  /** For a web account: what one of its credits costs, in dollars (its own figure, or the list price). */
+  usdPerCredit?: number | null;
+  /** Whether `usdPerCredit` was set on the account rather than being the list price. */
+  usdPerCreditSet?: boolean;
 }
 
 /** What the server accepts when an account is added or changed. A missing `key` keeps the stored one. */
@@ -53,6 +64,8 @@ export interface AccountInput {
   useInOrchestrator: boolean;
   models: PinnedModel[];
   prefs: Prefs;
+  /** Dollars per credit for a web account; null puts it back on the list price. */
+  usdPerCredit?: number | null;
 }
 
 export interface CatalogModel {
@@ -81,18 +94,45 @@ export interface Remote {
   remaining: number | null;
   freeTier: boolean | null;
   models: string[];
-  /** What the numbers count when they are not dollars: Firecrawl's credits. */
+  /** What the numbers count when they are not dollars: a web service's credits. */
   unit?: 'credits' | null;
 }
 
-export const KIND_LABEL: Record<AccountKind, string> = { openrouter: 'OpenRouter', 'openai-compatible': 'OpenAI-compatible', firecrawl: 'Firecrawl' };
+export const KIND_LABEL: Record<AccountKind, string> = { openrouter: 'OpenRouter', 'openai-compatible': 'OpenAI-compatible', firecrawl: 'Firecrawl', tavily: 'Tavily', serper: 'Serper' };
+
+/** What each service charges for a credit at its list price, as the server assumes until an account says otherwise. */
+export const LIST_CREDIT_USD: Record<WebKind, number> = { firecrawl: 0.00083, tavily: 0.008, serper: 0.001 };
+
+/** What each web service does, for the editor. */
+export const WEB_KIND_NOTE: Record<WebKind, string> = {
+  firecrawl: 'Search, read pages (including ones that need JavaScript), list a site’s pages and crawl.',
+  tavily: 'Search, read pages, list a site’s pages and crawl.',
+  serper: 'Google search and news only. It cannot read pages.',
+};
+
+/** The tools an agent has, in the order the pool card shows them. */
+export const WEB_TOOLS: { key: string; label: string }[] = [
+  { key: 'search', label: 'Search' },
+  { key: 'scrape', label: 'Read a page' },
+  { key: 'map', label: 'List a site’s pages' },
+  { key: 'crawl', label: 'Crawl a site' },
+];
 
 export function emptyInput(kind: AccountKind): AccountInput {
-  return { name: '', kind, baseUrl: '', useInOrchestrator: true, models: [], prefs: { ...DEFAULT_PREFS } };
+  return { name: '', kind, baseUrl: '', useInOrchestrator: true, models: [], prefs: { ...DEFAULT_PREFS }, usdPerCredit: null };
 }
 
 export function inputOf(a: Account): AccountInput {
-  return { name: a.name, kind: a.kind, baseUrl: a.baseUrl, useInOrchestrator: a.useInOrchestrator, models: a.models.map((m) => ({ ...m })), prefs: { ...a.prefs } };
+  return {
+    name: a.name,
+    kind: a.kind,
+    baseUrl: a.baseUrl,
+    useInOrchestrator: a.useInOrchestrator,
+    models: a.models.map((m) => ({ ...m })),
+    prefs: { ...a.prefs },
+    // Only a price the account was given is kept as its own; the list price stays the list price.
+    usdPerCredit: a.usdPerCreditSet ? (a.usdPerCredit ?? null) : null,
+  };
 }
 
 /** Dollars per million tokens as a person reads them: $0.30, $15, free. */
@@ -207,6 +247,25 @@ export function parsePrice(text: string): number | null | 'bad' {
   return Number.isFinite(n) && n >= 0 && n < 1e6 ? n : 'bad';
 }
 
+/** A price per credit typed into a field: blank is the list price, anything else a dollar amount above 0 up to 1. */
+export function parseCreditPrice(text: string): number | null | 'bad' {
+  const t = text.trim().replace(/^\$/, '');
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : 'bad';
+}
+
+/** Dollars per credit as a person reads them: $0.008, $0.00083. */
+export function creditPriceLabel(usd: number): string {
+  return `$${+usd.toPrecision(2)} per credit`;
+}
+
+/** The balance of a web account for the list. Tavily and Serper report their usage a little behind, so it says so. */
+export function webBalanceLine(kind: AccountKind, r: Pick<Remote, 'usage' | 'limit' | 'remaining'> & { unit?: 'credits' | null }): string | null {
+  const line = balanceLine(r);
+  return line && (kind === 'tavily' || kind === 'serper') ? `${line} (counted a little late)` : line;
+}
+
 /** Remaining credit as a line for the account list, or null when OpenRouter did not say. */
 export function balanceLine(r: Pick<Remote, 'usage' | 'limit' | 'remaining'> & { unit?: 'credits' | null }): string | null {
   if (r.unit === 'credits') return r.remaining === null ? null : `${Math.round(r.remaining)}${r.limit !== null ? ` of ${Math.round(r.limit)}` : ''} credits left`;
@@ -298,6 +357,10 @@ export interface AccountSettings {
   /** Pages the router reads about how models compare. */
   intel?: string[];
   helperNames: string[];
+  /** Which web accounts are asked first for each tool, as saved by hand. A tool that is not here uses the built-in order. */
+  webOrder?: Record<string, string[]>;
+  /** For each tool some account can do, the accounts in the order they are asked, built-in order included. */
+  webPool?: Record<string, string[]>;
 }
 
 /** What a helper's picker offers: a pinned model of any account that has a key and is allowed in flows. */
@@ -343,3 +406,35 @@ export const intelFromText = (text: string): string[] => text.split('\n').map((l
 
 /** The settings with the router's pages replaced. */
 export const withIntel = (s: AccountSettings, text: string): AccountSettings => ({ ...s, intel: intelFromText(text) });
+
+/** The order with `id` moved one place earlier (-1) or later (1); the same order when it cannot move. */
+export function moveInOrder(order: string[], id: string, by: -1 | 1): string[] {
+  const at = order.indexOf(id);
+  const to = at + by;
+  if (at < 0 || to < 0 || to >= order.length) return order;
+  const next = [...order];
+  [next[at], next[to]] = [next[to]!, next[at]!];
+  return next;
+}
+
+/** The settings with the order for one tool set. Saving an order pins the whole of it. */
+export function withWebOrder(s: AccountSettings, tool: string, order: string[]): AccountSettings {
+  return { ...s, webOrder: { ...(s.webOrder ?? {}), [tool]: order }, webPool: { ...(s.webPool ?? {}), [tool]: order } };
+}
+
+/** The settings with one tool put back on the built-in order. The server fills in what that order is. */
+export function withoutWebOrder(s: AccountSettings, tool: string): AccountSettings {
+  const webOrder = { ...(s.webOrder ?? {}) };
+  delete webOrder[tool];
+  return { ...s, webOrder };
+}
+
+/** The tools worth showing a card for, with the accounts that serve each in the order they are asked. Tools with fewer than
+ *  two accounts have nothing to order. */
+export function webPoolRows(s: AccountSettings, accounts: Account[]): { key: string; label: string; accounts: Account[]; custom: boolean }[] {
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  return WEB_TOOLS.flatMap((t) => {
+    const list = (s.webPool?.[t.key] ?? []).flatMap((id) => byId.get(id) ?? []);
+    return list.length > 1 ? [{ key: t.key, label: t.label, accounts: list, custom: (s.webOrder?.[t.key]?.length ?? 0) > 0 }] : [];
+  });
+}
