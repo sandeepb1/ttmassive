@@ -1,7 +1,7 @@
 // Calls to /api/orch. A failure comes back as a message to show; a 401 reloads the page to the login.
 
 import { fetchRecentDirs, type RecentDir } from '../dirs';
-import type { Budget, Capability, CustomRole, Flow, FlowLists, Models, Output, Role, RepoState, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
+import type { TurnDetail, Budget, Capability, CustomRole, Flow, FlowLists, Models, Output, Role, RepoState, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -53,6 +53,8 @@ export const orch = {
   createRun: (req: { flow: Flow; goal: string; project: string; skipGrill: boolean }) => send<Run>('POST', `${base}/runs`, req),
   grill: (id: string, answers: string[]) => send<Run>('POST', `${run(id)}/grill`, { answers }),
   start: (id: string, brief?: string) => send<Run>('POST', `${run(id)}/start`, { brief }),
+  /** The full record of one turn: what the agent was asked, said, ran, and handed on. */
+  turn: (id: string, n: number) => send<TurnDetail>('GET', `${run(id)}/turns/${n}`),
   approve: (id: string, node: string) => send<Run>('POST', `${run(id)}/approve`, { node }),
   /** The user's answers to the questions a paused run is waiting on. */
   answers: (id: string, answers: string[]) => send<Run>('POST', `${run(id)}/answers`, { answers }),

@@ -14,6 +14,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, broadcast, oneshot};
 
+use super::trace::{Kind, Trace, clip, compact};
 use super::usage::Tokens;
 use super::{Outcome, Proxy};
 
@@ -349,6 +350,43 @@ pub fn describe(note: &Value) -> Option<String> {
     }
 }
 
+/// Record what a notification shows into a turn's trace. What the agent said and its reasoning are kept as text; every
+/// other finished item (a command, a file change, a web search, a tool call) is kept as the item itself, which holds the
+/// command, its output and its exit status whatever the item is called.
+pub fn trace_note(note: &Value, out: &mut Trace) {
+    match note.get("method").and_then(Value::as_str) {
+        Some("item/completed") => {
+            let Some(item) = note.pointer("/params/item") else { return };
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or("item");
+            match kind {
+                "agentMessage" => out.push(Kind::Say, "", item.get("text").and_then(Value::as_str).unwrap_or("")),
+                "reasoning" => {
+                    let text = item.get("summary").map(compact).filter(|t| !t.is_empty() && t != "[]").unwrap_or_default();
+                    if !text.is_empty() {
+                        out.push(Kind::Note, "reasoning", &text);
+                    }
+                }
+                "userMessage" => {}
+                _ => {
+                    let title = item.get("tool").and_then(Value::as_str).or_else(|| item.get("command").and_then(Value::as_str)).unwrap_or(kind);
+                    let mut shown = item.clone();
+                    if let Some(o) = shown.as_object_mut() {
+                        for noise in ["id", "type", "status"] {
+                            o.remove(noise);
+                        }
+                    }
+                    out.push(Kind::Tool, clip(title, 80), &compact(&shown));
+                }
+            }
+        }
+        Some("error") => {
+            let msg = note.pointer("/params/error/message").and_then(Value::as_str).unwrap_or("an error");
+            out.push(Kind::Note, "error", msg);
+        }
+        _ => {}
+    }
+}
+
 /// One Codex node's conversation.
 pub struct Thread {
     pub id: String,
@@ -386,6 +424,31 @@ mod tests {
 
     fn completed(status: &str) -> Value {
         note("turn/completed", json!({"threadId": "t1", "turn": {"id": "u1", "items": [], "status": status}}))
+    }
+
+    #[test]
+    fn the_trace_keeps_what_codex_said_and_every_item_it_finished() {
+        let done = |item: Value| json!({"method": "item/completed", "params": {"threadId": "t", "item": item}});
+        let mut t = Trace::default();
+        for n in [
+            done(json!({"type": "agentMessage", "id": "1", "text": "Checking the file."})),
+            done(json!({"type": "commandExecution", "id": "2", "status": "completed", "command": "ls -la", "aggregatedOutput": "total 0", "exitCode": 0})),
+            done(json!({"type": "mcpToolCall", "id": "3", "tool": "scrape", "arguments": {"url": "https://x.test"}})),
+            done(json!({"type": "reasoning", "id": "4", "summary": []})),
+            done(json!({"type": "userMessage", "text": "the prompt"})),
+            json!({"method": "error", "params": {"error": {"message": "rate limited"}, "willRetry": true}}),
+            json!({"method": "thread/tokenUsage/updated", "params": {}}),
+        ] {
+            trace_note(&n, &mut t);
+        }
+        let e = t.into_entries();
+        assert_eq!(e.len(), 4, "{e:?}");
+        assert_eq!((e[0].kind, e[0].body.as_str()), (Kind::Say, "Checking the file."));
+        assert_eq!((e[1].kind, e[1].title.as_str()), (Kind::Tool, "ls -la"));
+        assert!(e[1].body.contains("total 0") && e[1].body.contains("\"exitCode\":0") && !e[1].body.contains("\"id\""), "{}", e[1].body);
+        assert_eq!(e[2].title, "scrape");
+        assert!(e[2].body.contains("https://x.test"));
+        assert_eq!((e[3].kind, e[3].body.as_str()), (Kind::Note, "rate limited"));
     }
 
     #[test]

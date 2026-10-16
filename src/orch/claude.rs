@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
+use super::trace::{Kind, Trace, compact, result_text};
 use super::usage::Tokens;
 use super::{Outcome, Proxy};
 
@@ -225,6 +226,34 @@ pub fn parse(line: &str) -> Event {
     }
 }
 
+/// Record what one line of the agent's output stream shows into a turn's trace: what it said, each tool call with its
+/// input, and what came back.
+pub fn trace_line(line: &str, out: &mut Trace) {
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+    let nested = v.get("parent_tool_use_id").is_some_and(|p| !p.is_null());
+    let blocks = v.pointer("/message/content").and_then(Value::as_array);
+    match v.get("type").and_then(Value::as_str) {
+        Some("assistant") => {
+            for b in blocks.into_iter().flatten() {
+                let text = |k: &str| b.get(k).and_then(Value::as_str).unwrap_or("").trim();
+                match b.get("type").and_then(Value::as_str) {
+                    Some("text") if !text("text").is_empty() => out.push(Kind::Say, if nested { "sub-agent" } else { "" }, text("text")),
+                    Some("thinking") if !text("thinking").is_empty() => out.push(Kind::Note, "thinking", text("thinking")),
+                    Some("tool_use") => out.push(Kind::Tool, if nested { format!("sub-agent: {}", text("name")) } else { text("name").to_owned() }, &compact(b.get("input").unwrap_or(&Value::Null))),
+                    _ => {}
+                }
+            }
+        }
+        Some("user") => {
+            for b in blocks.into_iter().flatten().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
+                let failed = b.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                out.push(Kind::Result, if failed { "error" } else { "result" }, &result_text(b.get("content").unwrap_or(&Value::Null)));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The line to write to stdin for one prompt.
 pub fn user_line(prompt: &str) -> String {
     json!({"type": "user", "message": {"role": "user", "content": prompt}}).to_string()
@@ -271,11 +300,17 @@ impl Agent {
 
     /// Send one prompt and read events until the turn is done. `on_event` sees every event, so the
     /// page can show progress. Fails if the process ends before it answers.
-    pub async fn turn(&mut self, prompt: &str, mut on_event: impl FnMut(&Event)) -> Result<Outcome> {
+    pub async fn turn(&mut self, prompt: &str, on_event: impl FnMut(&Event)) -> Result<Outcome> {
+        self.turn_traced(prompt, on_event, &mut Trace::default()).await
+    }
+
+    /// Like `turn`, and records what the agent does into `trace` as it goes.
+    pub async fn turn_traced(&mut self, prompt: &str, mut on_event: impl FnMut(&Event), trace: &mut Trace) -> Result<Outcome> {
         self.stdin.write_all(user_line(prompt).as_bytes()).await?;
         self.stdin.write_all(b"\n").await?;
         self.stdin.flush().await?;
         while let Some(line) = self.lines.next_line().await? {
+            trace_line(&line, trace);
             let ev = parse(&line);
             if let Event::Init { session_id, .. } = &ev {
                 self.session = Some(session_id.clone());
@@ -361,6 +396,33 @@ mod tests {
         }
         assert!(!has(&args(&spec(Access::Write)), "--settings"), "an agent on your own plan gets no settings it does not need");
         assert!(has(&args(&spec(Access::Inspect)), "--settings"));
+    }
+
+    #[test]
+    fn the_trace_keeps_what_was_said_each_tool_call_and_what_came_back() {
+        let mut t = Trace::default();
+        for line in [
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Looking."},{"type":"tool_use","name":"Read","input":{"file_path":"a.rs"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x","content":[{"type":"text","text":"fn main() {}"}]}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"no such file","is_error":true}]}}"#,
+            r#"{"type":"assistant","parent_tool_use_id":"p","message":{"content":[{"type":"text","text":"deep"},{"type":"thinking","thinking":"hmm"}]}}"#,
+            r#"{"type":"system","subtype":"init"}"#,
+            "not json",
+        ] {
+            trace_line(line, &mut t);
+        }
+        let e: Vec<(Kind, String, String)> = t.into_entries().into_iter().map(|e| (e.kind, e.title, e.body)).collect();
+        assert_eq!(
+            e,
+            vec![
+                (Kind::Say, "".into(), "Looking.".into()),
+                (Kind::Tool, "Read".into(), "{\"file_path\":\"a.rs\"}".into()),
+                (Kind::Result, "result".into(), "fn main() {}".into()),
+                (Kind::Result, "error".into(), "no such file".into()),
+                (Kind::Say, "sub-agent".into(), "deep".into()),
+                (Kind::Note, "thinking".into(), "hmm".into()),
+            ]
+        );
     }
 
     #[test]

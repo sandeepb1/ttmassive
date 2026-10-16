@@ -184,6 +184,10 @@ export interface Run {
   approved: string[];
   feedback: Record<string, string>;
   retriesUsed: number;
+  /** Every turn the agents have taken, oldest first. */
+  turns?: Turn[];
+  /** How many entries the run's log has ever had; it holds only the latest. */
+  logTotal?: number;
   /** How many times each send-back edge has been used, by edge id. */
   iterations?: Record<string, number>;
   /** What agents that ask questions have asked, with the answers, by node id. */
@@ -224,6 +228,45 @@ export interface FlowModel {
   tools: boolean;
   /** Called directly, with no CLI and no tools: every model of a plain OpenAI-compatible endpoint is. */
   direct: boolean;
+}
+
+/** One turn of one agent, in brief. The full record is fetched when the turn is opened. */
+export interface Turn {
+  n: number;
+  node: string;
+  attempt: number;
+  /** How many send-backs had happened when it started. */
+  round: number;
+  started: number;
+  ended: number;
+  engine: 'claude' | 'codex' | 'direct';
+  model: string;
+  account?: string | null;
+  tokens: Tokens;
+  costUsd: number;
+  credits: number;
+  session?: string | null;
+  failed?: string | null;
+  decision?: string | null;
+  commit?: string | null;
+  effort?: string | null;
+  reason?: string | null;
+}
+
+export type TraceKind = 'prompt' | 'say' | 'tool' | 'result' | 'note';
+
+export interface TraceEntry {
+  kind: TraceKind;
+  title: string;
+  body: string;
+}
+
+/** What a turn left besides its summary. */
+export interface TurnDetail {
+  n: number;
+  output: unknown;
+  error: string | null;
+  trace: TraceEntry[];
 }
 
 export interface Models {

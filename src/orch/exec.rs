@@ -15,12 +15,18 @@ use super::downshift;
 use super::graph::{Engine, Node};
 use super::handoff::{self, Verdict};
 use super::graph::{Answerer, Edge, OnCap};
-use super::run::{Asked, FeedbackKind, LogKind, NodeStatus, Pause, PendingQuestions, Run, RunStatus, SKILL_PREFIX, SUBAGENT_PREFIX, now_secs};
+use super::run::{Asked, FeedbackKind, LogKind, MAX_TURNS, NodeStatus, Pause, PendingQuestions, Run, RunStatus, SKILL_PREFIX, SUBAGENT_PREFIX, Turn, TurnDetail, now_millis, now_secs};
+use super::trace::TurnMeta;
 
 /// Whatever actually runs a node: the Claude or Codex driver in production, a script in tests.
 pub trait NodeRunner {
     /// `log` receives short progress lines for the node's live transcript.
     async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> anyhow::Result<Outcome>;
+
+    /// What the node's last turn left besides its outcome: the record of what it did. Taken once.
+    fn take_meta(&self, _node_id: &str) -> TurnMeta {
+        TurnMeta::default()
+    }
 }
 
 pub struct Control<'a> {
@@ -31,6 +37,8 @@ pub struct Control<'a> {
     pub limit: &'a (dyn Fn(&Run) -> Option<String> + Sync),
     /// How close the run is to stopping on an engine's plan windows: 0 is far, 1 is a limit reached.
     pub pressure: &'a (dyn Fn(&Run, Engine) -> f64 + Sync),
+    /// Called with the full record of each turn as it finishes, to keep it. Not called while the run is locked.
+    pub record: &'a (dyn Fn(&str, &TurnDetail) + Sync),
 }
 
 fn edit<T>(shared: &Mutex<Run>, ctl: &Control, f: impl FnOnce(&mut Run) -> T) -> T {
@@ -237,6 +245,54 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
     None
 }
 
+/// Finish a turn and write it down: the run's decision about the answer, a short record on the run, and the full one to keep.
+fn finish_turn(run: &mut Run, done: Finished) -> (Option<Pause>, TurnDetail) {
+    let Finished { node, result, started, ended, meta } = done;
+    let logged = run.log_total;
+    let round = run.retries_used;
+    let attempt = run.nodes.get(&node.id).map_or(1, |n| n.attempts);
+    let (tokens, cost_usd, credits, session, output, error) = match &result {
+        Ok(o) => (o.tokens, o.cost_usd, o.credits, o.session.clone(), o.structured.clone(), None),
+        Err(e) => (Default::default(), 0.0, 0, None, None, Some(e.to_string())),
+    };
+    let pause = finish(run, &node, result);
+    // What the run decided is what it wrote in its log while it dealt with the answer.
+    let new = (run.log_total - logged) as usize;
+    let decision = run.log[run.log.len().saturating_sub(new)..]
+        .iter()
+        .filter(|e| matches!(e.kind, LogKind::Decision | LogKind::Error))
+        .map(|e| e.title.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
+    // A turn whose answer could not be used failed even though the agent finished.
+    let failed = error.clone().or_else(|| run.nodes.get(&node.id).filter(|n| n.status == NodeStatus::Failed).and_then(|n| n.error.clone()));
+    let n = run.turns.last().map_or(1, |t| t.n + 1);
+    run.turns.push(Turn {
+        n,
+        node: node.id.clone(),
+        attempt,
+        round,
+        started,
+        ended,
+        engine: if node.direct { "direct" } else if node.engine == Engine::Claude { "claude" } else { "codex" }.into(),
+        model: node.model.clone(),
+        account: node.account.clone(),
+        tokens,
+        cost_usd,
+        credits,
+        session,
+        failed: failed.clone(),
+        decision: Some(decision).filter(|d| !d.is_empty()),
+        commit: meta.commit,
+        effort: None,
+        reason: None,
+    });
+    // Normally one too many at most; a run saved with a longer list is trimmed all the way.
+    let extra = run.turns.len().saturating_sub(MAX_TURNS);
+    run.turns.drain(..extra);
+    (pause, TurnDetail { n, output, error: failed, trace: meta.trace })
+}
+
 /// A judge has answered: either carry on, or send work back to the builder it points at.
 fn judged(run: &mut Run, judge: &Node, output: &serde_json::Value) -> Option<Pause> {
     match handoff::verdict(output) {
@@ -402,7 +458,17 @@ fn feedback_for_log(run: &Run, target: &str) -> String {
     run.feedback.get(target).cloned().unwrap_or_default()
 }
 
-async fn run_node<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control<'_>, node: Node, prompt: String) -> (Node, anyhow::Result<Outcome>) {
+/// A finished turn: who, how it went, when it started and ended, and what it left behind.
+struct Finished {
+    node: Node,
+    result: anyhow::Result<Outcome>,
+    started: i64,
+    ended: i64,
+    meta: TurnMeta,
+}
+
+async fn run_node<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control<'_>, node: Node, prompt: String) -> Finished {
+    let started = now_millis();
     let result = runner
         .run(&node, &prompt, &mut |line| {
             edit(shared, ctl, |r| {
@@ -418,7 +484,8 @@ async fn run_node<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control<
             })
         })
         .await;
-    (node, result)
+    let meta = runner.take_meta(&node.id);
+    Finished { node, result, started, ended: now_millis(), meta }
 }
 
 /// Run until the flow is done or something needs the user. Call again after approving or resuming.
@@ -455,8 +522,14 @@ pub async fn drive<R: NodeRunner>(shared: &Mutex<Run>, runner: &R, ctl: &Control
             edit(shared, ctl, |r| settle(r, halt, waiting));
             return;
         }
-        let (node, result) = running.next().await.expect("something is running");
-        if let Some(pause) = edit(shared, ctl, |r| finish(r, &node, result)) {
+        let done = running.next().await.expect("something is running");
+        let (pause, run_id, detail) = edit(shared, ctl, |r| {
+            let (pause, detail) = finish_turn(r, done);
+            (pause, r.id.clone(), detail)
+        });
+        // The full record goes to disk after the run is unlocked, so the page can keep reading it.
+        (ctl.record)(&run_id, &detail);
+        if let Some(pause) = pause {
             halt.get_or_insert(pause);
         }
     }
@@ -606,7 +679,7 @@ mod tests {
 
     async fn go_limited(run: &Mutex<Run>, fake: &Fake, limit: &(dyn Fn(&Run) -> Option<String> + Sync)) {
         let cancelled = AtomicBool::new(false);
-        drive(run, fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit, pressure: &|_, _| 0.0 }).await;
+        drive(run, fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit, pressure: &|_, _| 0.0, record: &|_, _| {} }).await;
     }
 
     fn new_run(f: Flow) -> Mutex<Run> {
@@ -821,7 +894,7 @@ mod tests {
         let run = new_run(flow());
         let fake = Fake::default();
         let cancelled = AtomicBool::new(true);
-        drive(&run, &fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure: &|_, _| 0.0 }).await;
+        drive(&run, &fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure: &|_, _| 0.0, record: &|_, _| {} }).await;
         assert_eq!(status(&run), RunStatus::Cancelled);
         assert!(fake.ran().is_empty());
     }
@@ -835,7 +908,7 @@ mod tests {
         let changed = |_: &Run| {
             count.fetch_add(1, Ordering::Relaxed);
         };
-        drive(&run, &fake, &Control { cancelled: &cancelled, changed: &changed, limit: &|_| None, pressure: &|_, _| 0.0 }).await;
+        drive(&run, &fake, &Control { cancelled: &cancelled, changed: &changed, limit: &|_| None, pressure: &|_, _| 0.0, record: &|_, _| {} }).await;
         // At least a start and a finish for each of the four nodes.
         assert!(count.load(Ordering::Relaxed) >= 8);
     }
@@ -935,7 +1008,7 @@ mod tests {
 
     async fn go_at(run: &Mutex<Run>, fake: &Fake, pressure: &(dyn Fn(&Run, Engine) -> f64 + Sync)) {
         let cancelled = AtomicBool::new(false);
-        drive(run, fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure }).await;
+        drive(run, fake, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure, record: &|_, _| {} }).await;
     }
 
     /// orch (opus) -> res (sonnet) -> build (opus) -> judge (sonnet), downshift on.
@@ -1018,7 +1091,7 @@ mod tests {
         assert!(run.lock().unwrap().finished.is_some());
         let run = new_run(fan());
         let cancelled = AtomicBool::new(true);
-        drive(&run, &Fake::default(), &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure: &|_, _| 0.0 }).await;
+        drive(&run, &Fake::default(), &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure: &|_, _| 0.0, record: &|_, _| {} }).await;
         assert!(run.lock().unwrap().finished.is_some(), "a cancelled run has finished too");
         // One that merely paused has not.
         let run = new_run(flow());
@@ -1287,6 +1360,107 @@ mod tests {
         let run = new_run(f);
         go(&run, &Fake::with(vec![("grill", asks(&["still unclear?"]))])).await;
         assert_eq!(status(&run), RunStatus::Done, "questions with nowhere to go do not stop the flow");
+    }
+
+    // ---- turn records ----
+
+    /// A fake that leaves a trace and a commit for the node's turn, like the real runner does.
+    struct Traced(Fake);
+
+    impl NodeRunner for Traced {
+        async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> anyhow::Result<Outcome> {
+            self.0.run(node, prompt, log).await
+        }
+
+        fn take_meta(&self, node_id: &str) -> TurnMeta {
+            let mut t = crate::orch::trace::Trace::default();
+            t.push(crate::orch::trace::Kind::Prompt, "prompt", "the prompt");
+            t.push(crate::orch::trace::Kind::Say, "", &format!("{node_id} says hi"));
+            TurnMeta { trace: t.into_entries(), commit: (node_id == "build").then(|| "abc1234".to_string()) }
+        }
+    }
+
+    async fn go_recording(run: &Mutex<Run>, runner: &Traced) -> Vec<(String, TurnDetail)> {
+        let kept = Mutex::new(Vec::new());
+        let cancelled = AtomicBool::new(false);
+        let record = |id: &str, d: &TurnDetail| kept.lock().unwrap().push((id.to_string(), d.clone()));
+        drive(run, runner, &Control { cancelled: &cancelled, changed: &|_| {}, limit: &|_| None, pressure: &|_, _| 0.0, record: &record }).await;
+        kept.into_inner().unwrap()
+    }
+
+    #[tokio::test]
+    async fn every_turn_is_written_down_with_when_what_it_used_and_what_the_run_made_of_it() {
+        let run = new_run(flow());
+        let runner = Traced(Fake::with(vec![("judge", reject("No tests")), ("judge", approve())]));
+        let kept = go_recording(&run, &runner).await;
+        let r = run.lock().unwrap();
+        // orch, res, build, judge (rejects), build again, judge (approves)
+        assert_eq!(r.turns.iter().map(|t| t.node.as_str()).collect::<Vec<_>>(), ["orch", "res", "build", "judge", "build", "judge"]);
+        assert_eq!(r.turns.iter().map(|t| t.n).collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6], "numbered in the order they finished");
+        let build2 = &r.turns[4];
+        assert_eq!((build2.attempt, build2.round), (2, 1), "the second go, in the round after the first send-back");
+        assert_eq!(r.turns[2].round, 0);
+        assert!(build2.ended >= build2.started && build2.started > 0);
+        assert_eq!((build2.engine.as_str(), build2.model.as_str()), ("claude", "sonnet"));
+        assert_eq!(build2.tokens, Tokens { input: 10, output: 10, cache_read: 0, cache_write: 0 });
+        assert_eq!((r.turns[2].commit.as_deref(), r.turns[0].commit.as_deref()), (Some("abc1234"), None), "only a builder commits");
+        // The turn in which the judge rejected carries what the run did about it.
+        let reject = r.turns[3].decision.clone().expect("a decision");
+        assert!(reject.contains("rejected the work and sent it back to build"), "{reject}");
+        assert!(r.turns[5].decision.clone().unwrap().contains("approved the work"));
+        assert!(r.turns[0].decision.is_none() || !r.turns[0].decision.clone().unwrap().contains("rejected"));
+        // The full record of each turn was handed over to be kept, by the turn's number.
+        assert_eq!(kept.len(), 6);
+        assert!(kept.iter().all(|(id, _)| id == "r"));
+        let d = &kept[3].1;
+        assert_eq!(d.n, 4);
+        assert_eq!(d.trace.len(), 2);
+        assert_eq!(d.trace[1].body, "judge says hi");
+        assert_eq!(d.output.as_ref().and_then(|o| o["verdict"].as_str()), Some("reject"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_is_recorded_with_why() {
+        let run = new_run(flow());
+        let runner = Traced(Fake::with(vec![("res", Err(anyhow::anyhow!("claude exited")))]));
+        let kept = go_recording(&run, &runner).await;
+        let r = run.lock().unwrap();
+        let t = r.turns.iter().find(|t| t.node == "res").unwrap();
+        assert_eq!(t.failed.as_deref(), Some("claude exited"));
+        assert!(t.decision.clone().unwrap().contains("res failed"), "{:?}", t.decision);
+        assert_eq!(kept.iter().find(|(_, d)| d.n == t.n).unwrap().1.error.as_deref(), Some("claude exited"));
+        assert!(kept.iter().find(|(_, d)| d.n == t.n).unwrap().1.output.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_cannot_be_used_is_a_failed_turn_though_the_agent_finished() {
+        let run = new_run(flow());
+        let runner = Traced(Fake::with(vec![("orch", Ok(Outcome { structured: None, text: "just words".into(), tokens: Tokens::default(), cost_usd: 0.0, credits: 0, is_error: false, session: None }))]));
+        go_recording(&run, &runner).await;
+        let r = run.lock().unwrap();
+        assert!(r.turns[0].failed.clone().unwrap().contains("required shape"), "{:?}", r.turns[0].failed);
+    }
+
+    #[tokio::test]
+    async fn the_list_of_turns_is_capped_and_a_questions_pause_is_part_of_the_record() {
+        let mut r = Run::new("r".into(), flow(), "b".into(), 0);
+        for i in 1..=(MAX_TURNS as u32 + 5) {
+            r.turns.push(Turn { n: i, node: "orch".into(), attempt: 1, round: 0, started: 0, ended: 0, engine: "claude".into(), model: "m".into(), account: None, tokens: Tokens::default(), cost_usd: 0.0, credits: 0, session: None, failed: None, decision: None, commit: None, effort: None, reason: None });
+        }
+        let first_n = r.turns[0].n;
+        let run = Mutex::new(r);
+        let runner = Traced(Fake::default());
+        go_recording(&run, &runner).await;
+        let r = run.lock().unwrap();
+        assert_eq!(r.turns.len(), MAX_TURNS, "the oldest dropped off as new ones were added");
+        assert!(r.turns[0].n > first_n, "it is the oldest that went");
+        assert!(r.turns.windows(2).all(|w| w[1].n == w[0].n + 1), "numbering carries on without a gap");
+        assert!(r.turns.last().unwrap().n > MAX_TURNS as u32 + 5, "and from the last one that was there");
+
+        let run = new_run(grilled(Answerer::User, 3, OnCap::Pause));
+        go_recording(&run, &Traced(Fake::with(vec![("grill", asks(&["Which database?"]))]))).await;
+        let t = run.lock().unwrap().turns.iter().find(|t| t.node == "grill").cloned().unwrap();
+        assert!(t.decision.unwrap().contains("asked 1 question"), "the pause that waits for the user is in the turn that caused it");
     }
 
     #[tokio::test]

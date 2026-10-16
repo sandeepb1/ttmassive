@@ -270,6 +270,69 @@ pub struct Run {
     /// What happened and why, oldest first: requests, answers, decisions, skills and sub-agents.
     #[serde(default)]
     pub log: Vec<LogEntry>,
+    /// How many entries have ever been added to `log`, which holds only the latest.
+    #[serde(default)]
+    pub log_total: u64,
+    /// Every turn the agents have taken, oldest first.
+    #[serde(default)]
+    pub turns: Vec<Turn>,
+}
+
+/// Unix time in milliseconds.
+pub fn now_millis() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// Most turns kept on a run; the oldest drop off. Each is small: the full record of a turn is in its own file.
+pub const MAX_TURNS: usize = 500;
+
+/// One turn of one agent, in brief: when, on what, what it used, and what the run did with the answer. The full
+/// record of what it did is read separately (`TurnDetail`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Turn {
+    /// Counts from 1 across the whole run, in the order turns finished.
+    pub n: u32,
+    pub node: String,
+    /// Which time this agent has started.
+    pub attempt: u32,
+    /// How many send-backs had happened when it started: the round of the run it belongs to.
+    pub round: u8,
+    /// Unix milliseconds.
+    pub started: i64,
+    pub ended: i64,
+    /// `claude`, `codex`, or `direct`.
+    pub engine: String,
+    pub model: String,
+    /// The account it ran on, when not your own plan.
+    pub account: Option<String>,
+    pub tokens: Tokens,
+    pub cost_usd: f64,
+    pub credits: u64,
+    /// The agent's own conversation id, when it keeps one.
+    pub session: Option<String>,
+    /// Why the turn failed, when it did.
+    pub failed: Option<String>,
+    /// What the run decided on seeing the answer: carried on, sent work back, asked questions.
+    pub decision: Option<String>,
+    /// The commit a builder's work was saved in.
+    pub commit: Option<String>,
+    /// Reasoning effort it ran at, when one was set.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// Why this model and effort were chosen, when the run chose them.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// What a turn left besides its summary, kept in a file of its own and read when someone opens the turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnDetail {
+    pub n: u32,
+    /// The answer it handed on.
+    pub output: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub trace: Vec<super::trace::Entry>,
 }
 
 pub fn now_secs() -> i64 {
@@ -301,6 +364,8 @@ impl Run {
             finished: None,
             waived: false,
             log: Vec::new(),
+            log_total: 0,
+            turns: Vec::new(),
         }
     }
 
@@ -329,6 +394,7 @@ impl Run {
             }
         });
         self.log.push(LogEntry { at: now_secs(), node: node.map(String::from), kind, title: title.into(), body });
+        self.log_total += 1;
     }
 
     /// Use by every node so far, and by the grilling.

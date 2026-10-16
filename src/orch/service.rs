@@ -158,6 +158,12 @@ impl Service {
         Ok(live)
     }
 
+    /// The full record of one turn of a run.
+    pub fn turn(&self, id: &str, n: u32) -> Result<super::run::TurnDetail, Fail> {
+        self.live(id)?;
+        self.store.read_turn(id, n).ok_or(Fail::NotFound)
+    }
+
     pub fn get(&self, id: &str) -> Result<Run, Fail> {
         Ok(self.live(id)?.shared.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
@@ -469,7 +475,12 @@ impl Service {
                 gate::pressure(r, &windows.lock().unwrap_or_else(|x| x.into_inner()), &b, e)
             };
             let changed = |r: &Run| svc.persist(r);
-            let ctl = Control { cancelled: &live.cancelled, changed: &changed, limit: &limit, pressure: &pressure };
+            let record = |id: &str, d: &super::run::TurnDetail| {
+                if let Err(e) = svc.store.append_turn(id, d) {
+                    tracing::warn!("orchestrator: keeping turn {} of run {id}: {e:#}", d.n);
+                }
+            };
+            let ctl = Control { cancelled: &live.cancelled, changed: &changed, limit: &limit, pressure: &pressure, record: &record };
             tokio::select! {
                 _ = exec::drive(&live.shared, &live.runner, &ctl) => {}
                 _ = live.cancel.notified() => {

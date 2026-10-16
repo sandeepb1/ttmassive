@@ -15,6 +15,7 @@ pub mod runner;
 pub mod service;
 pub mod starters;
 pub mod store;
+pub mod trace;
 pub mod usage;
 pub mod worktree;
 

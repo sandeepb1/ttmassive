@@ -90,6 +90,11 @@ pub async fn commit_all(dir: &Path, message: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// The short id of the commit `dir` is on, if it has one.
+pub async fn head(dir: &Path) -> Option<String> {
+    git(dir, &["rev-parse", "--short", "HEAD"]).await.ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+}
+
 /// The worktree for `node_id` in `run_id`, created from the project's current commit. Asking again
 /// for one that exists returns it, which is how a resumed run finds its builder's work.
 pub async fn ensure(project: &Path, base: &Path, run_id: &str, node_id: &str) -> Result<PathBuf> {

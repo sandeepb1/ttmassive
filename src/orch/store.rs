@@ -111,7 +111,33 @@ impl Store {
         serde_json::from_slice(&fs::read(self.file("runs", id).ok()?).ok()?).ok()
     }
 
+    fn turns_file(&self, id: &str) -> Result<PathBuf> {
+        if !id_ok(id) {
+            bail!("bad id");
+        }
+        Ok(self.root.join("runs").join(format!("{id}.turns.jsonl")))
+    }
+
+    /// Keep the full record of a finished turn: one line in the run's own file, added to as the run goes on.
+    pub fn append_turn(&self, run_id: &str, d: &super::run::TurnDetail) -> Result<()> {
+        use std::io::Write;
+        let path = self.turns_file(run_id)?;
+        fs::create_dir_all(path.parent().context("no parent")?)?;
+        let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
+        let mut line = serde_json::to_vec(d)?;
+        line.push(b'\n');
+        f.write_all(&line)?;
+        Ok(())
+    }
+
+    /// The full record of turn `n`, if it was kept (a run from before turns were recorded has none).
+    pub fn read_turn(&self, run_id: &str, n: u32) -> Option<super::run::TurnDetail> {
+        let text = fs::read_to_string(self.turns_file(run_id).ok()?).ok()?;
+        text.lines().filter_map(|l| serde_json::from_str::<super::run::TurnDetail>(l).ok()).find(|d| d.n == n)
+    }
+
     pub fn delete_run(&self, id: &str) -> Result<()> {
+        let _ = fs::remove_file(self.turns_file(id)?);
         match fs::remove_file(self.file("runs", id)?) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),

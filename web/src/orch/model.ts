@@ -4,7 +4,7 @@
 
 import { DEFAULT_ITERATIONS, DEFAULT_LIMITS } from './types.ts';
 import type {
-  Budget, Capability, CustomRole, EdgeKind, Flow, FlowEdge, FlowModel, OnCap, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
+  Budget, Capability, CustomRole, EdgeKind, Flow, Turn, FlowEdge, FlowModel, OnCap, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
 // ---------------------------------------------------------------------------- roles
@@ -629,3 +629,65 @@ export const canCallDirectly = (n: Pick<FlowNode, 'role' | 'custom'>): boolean =
 export function runCredits(run: Run): number {
   return Object.values(run.nodes).reduce((n, x) => n + (x.credits ?? 0), 0);
 }
+
+// ---------------------------------------------------------------------------- the timeline of a run
+
+export interface Round {
+  /** How many send-backs had happened when these turns started: 0 is the first pass. */
+  round: number;
+  turns: Turn[];
+  /** Why the next round began, when it did: the decision in the turn that sent work back. */
+  because: string | null;
+}
+
+/** Turns grouped into rounds, in the order they finished. A round starts when work was sent back. */
+export function rounds(turns: Turn[]): Round[] {
+  const out: Round[] = [];
+  for (const t of turns) {
+    let r = out.at(-1);
+    if (!r || r.round !== t.round) {
+      // The turn that ended the round before this one is the one that sent the work back.
+      const prev = out.at(-1)?.turns.at(-1);
+      r = { round: t.round, turns: [], because: null };
+      if (prev) out.at(-1)!.because = prev.decision ?? null;
+      out.push(r);
+    }
+    r.turns.push(t);
+  }
+  return out;
+}
+
+/** "3s", "1m 04s": how long a turn took. */
+export function turnLength(t: Pick<Turn, 'started' | 'ended'>): string {
+  return fmtDuration(Math.max(0, Math.round((t.ended - t.started) / 1000)));
+}
+
+/** The wall-clock time of a turn's start, like 14:03:22. */
+export function turnClock(ms: number): string {
+  const d = new Date(ms);
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+}
+
+export type TurnTone = 'ok' | 'bad' | 'warn' | 'plain';
+
+/** How a turn went, for its marker: failed, sent work back or asked, or just fine. */
+export function turnTone(t: Turn): TurnTone {
+  if (t.failed) return 'bad';
+  if (t.decision && /sent (it|the work) back|asked \d+ question|has questions/i.test(t.decision)) return 'warn';
+  return 'ok';
+}
+
+/** The one line that says what a turn was on and what it cost. */
+export function turnFacts(t: Turn, nodeName: string): string[] {
+  const out = [t.engine === 'direct' ? 'direct call' : t.engine === 'claude' ? 'Claude Code' : 'Codex', t.model];
+  if (t.effort) out.push(`${t.effort} effort`);
+  out.push(turnLength(t), `${fmtTokens(totalTokens(t.tokens))} tok`);
+  if (t.account && t.costUsd > 0) out.push(usdLabel(t.costUsd));
+  if (t.credits > 0) out.push(`${t.credits} web credit${t.credits === 1 ? '' : 's'}`);
+  if (t.attempt > 1) out.push(`${nodeName}, try ${t.attempt}`);
+  return out;
+}
+
+/** Turns of one agent only, or all of them. */
+export const turnsOf = (turns: Turn[], node: string | null): Turn[] => (node ? turns.filter((t) => t.node === node) : turns);

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use tokio::sync::Mutex;
 
+use super::trace::{Kind, Trace, TurnMeta};
 use super::{Outcome, Proxy};
 use crate::openrouter::proxy::Leases;
 use crate::providers::chat::{self, Message};
@@ -46,6 +47,8 @@ pub struct EngineRunner {
     data_dir: PathBuf,
     /// What each direct agent has said and been told so far, so a send-back carries on the same conversation.
     direct: Mutex<HashMap<String, Vec<Message>>>,
+    /// The record of each agent's last turn, until the executor takes it.
+    meta: std::sync::Mutex<HashMap<String, TurnMeta>>,
 }
 
 /// Said to an agent that calls its model directly: what it does not have.
@@ -136,6 +139,7 @@ impl EngineRunner {
             waived: AtomicBool::new(waived),
             data_dir,
             direct: Mutex::default(),
+            meta: std::sync::Mutex::default(),
         }
     }
 
@@ -247,7 +251,7 @@ impl EngineRunner {
     }
 
     /// One turn of an agent that calls its model itself: the conversation so far, plus this prompt.
-    async fn run_direct(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
+    async fn run_direct(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace) -> Result<Outcome> {
         let accounts = crate::secrets::load(&self.data_dir).await;
         let account = node.account.as_deref().and_then(|id| accounts.usable(id)).ok_or_else(|| anyhow::anyhow!("{} has no account it can use", node.name))?;
         let endpoint = chat::endpoint_for(account, &node.model);
@@ -256,12 +260,13 @@ impl EngineRunner {
         history.push(Message::user(prompt));
         log(format!("→ asked {} directly", node.model));
         let reply = chat::complete(&endpoint, &history, Some(&schema)).await?;
+        trace.push(Kind::Say, node.model.clone(), &reply.text);
         history.push(Message::assistant(reply.text.clone()));
         self.direct.lock().await.insert(node.id.clone(), history);
         Ok(Outcome { structured: reply.structured, text: reply.text, tokens: reply.tokens, cost_usd: reply.cost_usd.unwrap_or(0.0), credits: 0, is_error: false, session: None })
     }
 
-    async fn run_claude(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
+    async fn run_claude(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace) -> Result<Outcome> {
         let taken = self.claude.lock().await.remove(&node.id);
         let mut agent = match taken {
             Some(a) => a,
@@ -285,21 +290,21 @@ impl EngineRunner {
             }
         };
         let outcome = agent
-            .turn(prompt, |ev| match ev {
+            .turn_traced(prompt, |ev| match ev {
                 Event::Said(t) => log(preview(t)),
                 Event::Tool(t) => log(format!("→ {t}")),
                 Event::Skill(s) => log(format!("{SKILL_PREFIX}{s}")),
                 Event::Subagent(s) => log(format!("{SUBAGENT_PREFIX}{s}")),
                 Event::Nested(t) => log(format!("    ↳ {}", preview(t))),
                 _ => {}
-            })
+            }, trace)
             .await?;
         // Only a healthy agent is kept; after an error the next attempt starts a fresh one.
         self.claude.lock().await.insert(node.id.clone(), agent);
         Ok(outcome)
     }
 
-    async fn run_codex(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
+    async fn run_codex(&self, node: &Node, cwd: PathBuf, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace) -> Result<Outcome> {
         let server = self.codex.get().await?;
         let taken = self.threads.lock().await.remove(&node.id);
         let mut thread = match taken {
@@ -320,6 +325,7 @@ impl EngineRunner {
         self.active.lock().unwrap_or_else(|e| e.into_inner()).insert(thread.id.clone());
         let result = server
             .turn(&mut thread, prompt, &schema, |note| {
+                codex::trace_note(note, trace);
                 if let Some(line) = codex::describe(note) {
                     log(line);
                 }
@@ -339,17 +345,35 @@ pub fn lease_tag(run_id: &str, node_id: &str) -> String {
 
 impl NodeRunner for EngineRunner {
     async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
+        let mut trace = Trace::default();
+        let mut commit = None;
+        let result = self.run_turn(node, prompt, log, &mut trace, &mut commit).await;
+        self.meta.lock().unwrap_or_else(|e| e.into_inner()).insert(node.id.clone(), TurnMeta { trace: trace.into_entries(), commit });
+        result
+    }
+
+    fn take_meta(&self, node_id: &str) -> TurnMeta {
+        self.meta.lock().unwrap_or_else(|e| e.into_inner()).remove(node_id).unwrap_or_default()
+    }
+}
+
+impl EngineRunner {
+    /// One turn of a node, recording what happened into `trace` (and the commit a builder's work was saved in) even if it fails.
+    async fn run_turn(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send), trace: &mut Trace, commit: &mut Option<String>) -> Result<Outcome> {
         if node.direct {
-            return self.run_direct(node, &format!("{prompt}\n\n{DIRECT_NOTE}"), log).await;
+            let prompt = format!("{prompt}\n\n{DIRECT_NOTE}");
+            trace.push(Kind::Prompt, "prompt", &prompt);
+            return self.run_direct(node, &prompt, log, trace).await;
         }
         let cwd = self.cwd(node).await?;
         let prompt = with_folder_note(prompt, &cwd, limits(node));
+        trace.push(Kind::Prompt, "prompt", &prompt);
         let folder = cwd.clone();
         let before = self.spent(node);
         let credits_before = self.web_spent(node);
         let mut result = match node.engine {
-            Engine::Claude => self.run_claude(node, cwd, &prompt, log).await,
-            Engine::Codex => self.run_codex(node, cwd, &prompt, log).await,
+            Engine::Claude => self.run_claude(node, cwd, &prompt, log, trace).await,
+            Engine::Codex => self.run_codex(node, cwd, &prompt, log, trace).await,
         };
         // On OpenRouter the charge is exact, and it is what the proxy saw: the agent's own estimate is not used.
         if node.account.is_some() {
@@ -365,7 +389,10 @@ impl NodeRunner for EngineRunner {
         if node.writes() {
             let msg = format!("{} (ttm run {})", node.name, self.run_id);
             match worktree::commit_all(&folder, &msg).await {
-                Ok(true) => log(format!("Committed its changes to {}", worktree::branch_name(&self.run_id, &node.id))),
+                Ok(true) => {
+                    log(format!("Committed its changes to {}", worktree::branch_name(&self.run_id, &node.id)));
+                    *commit = worktree::head(&folder).await;
+                }
                 Ok(false) => {}
                 Err(e) => log(format!("Could not commit its changes: {e:#}")),
             }

@@ -1228,6 +1228,239 @@ textarea.mc-field {
   padding-top: 0.75rem;
 }
 
+/* ---- the timeline of a run: turns down a rail, grouped into rounds ---- */
+.mc-timeline {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.mc-tl-chips {
+  flex: none;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  padding: 0.5rem 0.75rem;
+  scrollbar-width: none;
+}
+.mc-tl-chips .mc-chip {
+  flex: none;
+}
+.mc-tl-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.25rem 0.75rem 2rem;
+}
+.mc-tl-list {
+  position: relative;
+  margin: 0;
+  padding: 0 0 0 1.25rem;
+  list-style: none;
+}
+.mc-tl-list::before {
+  content: '';
+  position: absolute;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: 0.4375rem;
+  width: 2px;
+  background: var(--mc-line);
+}
+.mc-tl-roundbox {
+  position: relative;
+}
+.mc-tl-roundbox > .mc-tl-list {
+  padding-left: 1.25rem;
+}
+.mc-tl-round {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0.375rem;
+  color: var(--mc-dim);
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mc-tl-round-mark {
+  position: absolute;
+  left: -1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--mc-bg);
+  color: var(--mc-glow);
+}
+.mc-tl-round-n {
+  color: var(--mc-faint);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.mc-tl-turn {
+  position: relative;
+  margin: 0 0 0.5rem;
+}
+.mc-tl-dot {
+  position: absolute;
+  top: 0.875rem;
+  left: -1.1875rem;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 50%;
+  background: var(--mc-ok);
+  box-shadow: 0 0 0 3px var(--mc-bg);
+}
+.mc-tl-turn[data-tone='bad'] .mc-tl-dot {
+  background: var(--mc-bad);
+}
+.mc-tl-turn[data-tone='warn'] .mc-tl-dot {
+  background: var(--mc-warn);
+}
+.mc-tl-turn[data-tone='live'] .mc-tl-dot {
+  background: var(--mc-live);
+  box-shadow: 0 0 0 3px var(--mc-bg), 0 0 0.5rem var(--mc-live);
+}
+.mc-tl-card {
+  border: 1px solid var(--mc-line-soft);
+  border-radius: 0.625rem;
+  background: var(--mc-panel);
+  overflow: hidden;
+}
+.mc-tl-turn[data-tone='bad'] .mc-tl-card {
+  border-color: color-mix(in oklch, var(--mc-bad) 45%, var(--mc-line-soft));
+}
+.mc-tl-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.625rem;
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  border: 0;
+  background: none;
+  color: var(--mc-fg);
+  font: inherit;
+  text-align: left;
+}
+button.mc-tl-head {
+  cursor: pointer;
+}
+button.mc-tl-head:hover {
+  background: var(--mc-hover);
+}
+.mc-tl-time {
+  color: var(--mc-faint);
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+}
+.mc-tl-name {
+  font-weight: 650;
+}
+.mc-tl-facts {
+  flex: 1;
+  min-width: 0;
+  color: var(--mc-dim);
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.mc-tl-chev {
+  display: inline-flex;
+  color: var(--mc-faint);
+  transition: transform 0.15s;
+}
+.mc-tl-chev[data-open='true'] {
+  transform: rotate(90deg);
+}
+.mc-tl-decision,
+.mc-tl-fail,
+.mc-tl-commit,
+.mc-tl-reason {
+  margin: 0;
+  padding: 0 0.75rem 0.625rem;
+  color: var(--mc-dim);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+.mc-tl-fail {
+  color: var(--mc-bad);
+}
+.mc-tl-commit code {
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+}
+.mc-tl-because {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.125rem 0 0.25rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background: color-mix(in oklch, var(--mc-warn) 12%, transparent);
+  color: var(--mc-dim);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+.mc-tl-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem 0.75rem;
+  border-top: 1px solid var(--mc-line-soft);
+}
+.mc-tl-entry {
+  padding-top: 0.5rem;
+}
+.mc-tl-entry-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.mc-tl-kind {
+  color: var(--mc-faint);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.mc-tl-entry[data-kind='tool'] .mc-tl-kind {
+  color: var(--mc-glow);
+}
+.mc-tl-entry[data-kind='output'] .mc-tl-kind {
+  color: var(--mc-ok);
+}
+.mc-tl-entry[data-kind='error'] .mc-tl-kind {
+  color: var(--mc-bad);
+}
+.mc-tl-entry-title {
+  color: var(--mc-dim);
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+}
+.mc-tl-pre {
+  margin: 0;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.375rem;
+  background: var(--mc-bg);
+  color: var(--mc-fg);
+  font-family: var(--mc-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 24rem;
+  overflow-y: auto;
+}
+
 /* Fingers: 44px targets and 16px input text so iOS does not zoom on focus. */
 @media (pointer: coarse) {
   #orch .mc-btn,

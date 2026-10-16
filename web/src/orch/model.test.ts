@@ -6,9 +6,9 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  asks, edgeLabel, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
-import type { Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
+import type { Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
 
 const models: Models = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-6.1-sol', 'gpt-6-luna'], openrouter: [] };
 const at = { x: 0, y: 0 };
@@ -613,4 +613,49 @@ test('a run waiting for the user\'s answers says so and offers to answer', () =>
   const info = pauseInfo(run)!;
   assert.equal(info.title, 'Griller has questions for you');
   assert.equal(info.primary?.action, 'answer');
+});
+
+const turn = (o: Partial<Turn>): Turn => ({
+  n: 1, node: 'a', attempt: 1, round: 0, started: 1_000_000, ended: 1_004_000, engine: 'claude', model: 'sonnet', account: null,
+  tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 }, costUsd: 0, credits: 0, ...o,
+});
+
+test('turns fall into rounds, and a round says why the next began', () => {
+  const ts = [
+    turn({ n: 1, node: 'plan' }),
+    turn({ n: 2, node: 'build' }),
+    turn({ n: 3, node: 'judge', decision: 'Judge rejected the work and sent it back to Builder (send-back 1 of 2)' }),
+    turn({ n: 4, node: 'build', round: 1, attempt: 2 }),
+    turn({ n: 5, node: 'judge', round: 1, attempt: 2, decision: 'Judge approved the work: carrying on' }),
+  ];
+  const r = rounds(ts);
+  assert.deepEqual(r.map((x) => [x.round, x.turns.length]), [[0, 3], [1, 2]]);
+  assert.match(r[0]!.because ?? '', /sent it back to Builder/);
+  assert.equal(r[1]!.because, null, 'the last round has nothing after it');
+  assert.deepEqual(rounds([]), []);
+  assert.deepEqual(rounds([turn({})]).map((x) => x.turns.length), [1]);
+});
+
+test('a turn says how long it took and how it went', () => {
+  assert.equal(turnLength(turn({ started: 0, ended: 4000 })), '4s');
+  assert.equal(turnLength(turn({ started: 0, ended: 64_000 })), '1m 04s');
+  assert.equal(turnLength(turn({ started: 5000, ended: 1000 })), '0s', 'never negative');
+  assert.equal(turnTone(turn({})), 'ok');
+  assert.equal(turnTone(turn({ failed: 'claude exited' })), 'bad');
+  assert.equal(turnTone(turn({ decision: 'Judge rejected the work and sent it back to Builder' })), 'warn');
+  assert.equal(turnTone(turn({ decision: 'Griller asked 2 questions; waiting for your answers' })), 'warn');
+  assert.equal(turnTone(turn({ decision: 'Judge approved the work: carrying on' })), 'ok');
+});
+
+test('the facts line names the CLI, model, time and tokens, and money only where there was a charge', () => {
+  assert.deepEqual(turnFacts(turn({}), 'Planner'), ['Claude Code', 'sonnet', '4s', '150 tok']);
+  assert.deepEqual(turnFacts(turn({ engine: 'codex', model: 'gpt-6-luna', account: 'a', costUsd: 0.0012, credits: 2, attempt: 3, effort: 'high' }), 'Builder'), ['Codex', 'gpt-6-luna', 'high effort', '4s', '150 tok', '$0.0012', '2 web credits', 'Builder, try 3']);
+  assert.equal(turnFacts(turn({ engine: 'direct' }), 'x')[0], 'direct call');
+  assert.ok(!turnFacts(turn({ costUsd: 0.5 }), 'x').some((f) => f.startsWith('$')), 'an estimate for your own plan is not shown as money');
+});
+
+test('the timeline can be narrowed to one agent', () => {
+  const ts = [turn({ n: 1, node: 'a' }), turn({ n: 2, node: 'b' }), turn({ n: 3, node: 'a' })];
+  assert.deepEqual(turnsOf(ts, 'a').map((t) => t.n), [1, 3]);
+  assert.equal(turnsOf(ts, null).length, 3);
 });

@@ -55,6 +55,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/roles", get(roles))
         .route("/api/orch/runs", get(list_runs).post(create_run))
         .route("/api/orch/runs/{id}", get(get_run).delete(delete_run))
+        .route("/api/orch/runs/{id}/turns/{n}", get(turn))
         .route("/api/orch/runs/{id}/grill", post(grill))
         .route("/api/orch/runs/{id}/start", post(start))
         .route("/api/orch/runs/{id}/approve", post(approve))
@@ -244,6 +245,10 @@ struct RunAnswersBody {
 
 async fn answer(State(st): St, Path(id): Path<String>, Json(b): Json<RunAnswersBody>) -> Result<Response, Fail> {
     Ok(json_nocache(st.orch.answer(&st, &id, b.answers)?))
+}
+
+async fn turn(State(st): St, Path((id, n)): Path<(String, u32)>) -> Result<Response, Fail> {
+    Ok(json_nocache(st.orch.turn(&id, n)?))
 }
 
 async fn cancel(State(st): St, Path(id): Path<String>) -> Result<Response, Fail> {

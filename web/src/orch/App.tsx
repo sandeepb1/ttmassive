@@ -10,6 +10,7 @@ import { Assistant } from './Assistant';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
 import { LogPanel, LogToggle } from './LogPanel';
+import { Timeline } from './Timeline';
 import { Inspector } from './Inspector';
 import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
@@ -144,6 +145,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const [sideOpen, setSideOpen] = useState(false);
   const [inspOpen, setInspOpen] = useState(false);
   const [view, setView] = useState<'canvas' | 'list'>('canvas');
+  // An execution opens on its timeline; the chart is one tap away. A flow being designed has only the chart.
+  const [runView, setRunView] = useState<'timeline' | 'chart'>('timeline');
   const [dialog, setDialog] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [roles, setRoles] = useState<RoleDef[]>(getCatalog());
@@ -334,7 +337,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const problem = useMemo(() => flowProblem(flow), [flow]);
   const selectedNode = shown.nodes.find((n) => n.id === selected) ?? null;
   const selectedEdgeObj = selectedNode ? null : (shown.edges.find((e) => e.id === selectedEdge) ?? null);
-  const showList = phone || view === 'list';
+  const showTimeline = !!run && runView === 'timeline';
+  const showList = !showTimeline && (phone || view === 'list');
   const meters = useMemo(() => gauges(shown, run, usage, limits), [shown, run, usage, limits]);
 
   /** Leaving a flow that has been changed asks first; returns whether to go on. */
@@ -643,7 +647,12 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               </button>
             </>
           )}
-          {!phone && (
+          {run && (
+            <button type="button" className="mc-btn mc-btn-quiet" aria-pressed={showTimeline} aria-label={showTimeline ? 'Show the chart' : 'Show the timeline'} title={showTimeline ? 'Show the chart' : 'Show the timeline'} onClick={() => setRunView(showTimeline ? 'chart' : 'timeline')}>
+              <Icon name={showTimeline ? 'workflow' : 'route'} /> <span className="mc-hide-narrow">{showTimeline ? 'Chart' : 'Timeline'}</span>
+            </button>
+          )}
+          {!phone && !showTimeline && (
             <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={showList ? 'Show the chart' : 'Show a list'} onClick={() => setView(showList ? 'canvas' : 'list')}>
               <Icon name={showList ? 'columns' : 'todo'} />
             </button>
@@ -691,9 +700,11 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           )}
         </aside>
 
-        <main className="mc-stage" data-list={showList}>
+        <main className="mc-stage" data-list={showList || showTimeline}>
           {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} />}
-          {showList ? (
+          {showTimeline ? (
+            <Timeline run={run!} selected={selected} />
+          ) : showList ? (
             <NodeList flow={shown} run={run} selected={selected} onSelect={select} />
           ) : (
             <ReactFlowProvider>
