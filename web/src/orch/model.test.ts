@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, linkedDir, tildePath, ADV, isDefaultAdvanced, advancedCount, parseDuration, formatDuration, parseWhole, parseUsdCap, parseToolNames, feeders, withAdvanced, pruneInputs, fallbackChoices, DESIGN_STEP_TEXT, designReport, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, linkedDir, tildePath, ADV, isDefaultAdvanced, advancedCount, parseDuration, formatDuration, parseWhole, parseUsdCap, parseToolNames, feeders, withAdvanced, pruneInputs, fallbackChoices, DESIGN_STEP_TEXT, designProgress, stopwatch, designReport, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -1083,4 +1083,27 @@ test('executions can be searched by the directory they ran in', () => {
   const runs = [at('a', '/Users/me/alpha'), at('b', '/Users/me/beta'), summary_('c', 'f', 1)];
   assert.deepEqual(filterRuns(runs, 'all', 'ALPHA').map((x) => x.id), ['a']);
   assert.equal(filterRuns(runs, 'all', '').length, 3, 'one with no directory recorded still lists');
+});
+
+// ---- the progress shown while a flow is designed
+
+const dItem = (id: number, step: 1 | 2 | 3, state: 'running' | 'done' | 'failed', began: number): import('./model.ts').DesignItem => ({ id, step, label: `item ${id}`, state, began });
+
+test('designing shows the step under way, the ones done and the ones still to come', () => {
+  const items = [dItem(1, 1, 'done', 0), dItem(0, 1, 'done', 0), dItem(2, 1, 'running', 900)];
+  const at1 = designProgress(items, 1);
+  assert.deepEqual(at1.map((s) => s.state), ['running', 'waiting', 'waiting']);
+  assert.deepEqual(at1[0]!.items.map((i) => i.id), [0, 1, 2], 'in the order they began');
+  const at2 = designProgress([...items, dItem(3, 2, 'running', 5000)], 2);
+  assert.deepEqual(at2.map((s) => s.state), ['done', 'running', 'waiting']);
+});
+
+test('a step that failed is marked and the steps after a skip say so', () => {
+  assert.deepEqual(designProgress([dItem(0, 1, 'done', 0), dItem(1, 2, 'failed', 10), dItem(2, 3, 'done', 20)], null, [2]).map((s) => s.state), ['done', 'failed', 'done']);
+  assert.deepEqual(designProgress([dItem(0, 1, 'done', 0)], 1, [], true).map((s) => s.state), ['running', 'skipped', 'skipped']);
+  assert.deepEqual(designProgress([dItem(0, 1, 'done', 0)], null, [], true).map((s) => s.state), ['done', 'skipped', 'skipped'], 'once over, nothing is marked running');
+});
+
+test('a stopwatch reads in seconds, then minutes', () => {
+  assert.deepEqual([0, 999, 4200, 59_999, 65_000, 600_000].map(stopwatch), ['0s', '0s', '4s', '59s', '1m 05s', '10m 00s']);
 });

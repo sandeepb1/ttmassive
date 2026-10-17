@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
 import { orch } from './api';
 import { Icon, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, tildePath, DESIGN_STEP_TEXT, OUTPUT_TEXT, answersFor, goalHint, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer, type DesignNote, type DesignStep } from './model';
+import { CAPABILITY_SHORT, tildePath, OUTPUT_TEXT, designProgress, stopwatch, answersFor, goalHint, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer, type DesignItem, type DesignNote, type DesignStep } from './model';
 import type { Budget, Capability, Flow, Output, Question, RepoState, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
@@ -143,7 +143,7 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, initialG
         <textarea
           ref={goalRef}
           className="mc-field"
-          rows={5}
+          rows={busy ? 2 : 5}
           value={goal}
           maxLength={4000}
           placeholder="e.g. Add a dark mode toggle to settings and remember the choice"
@@ -370,7 +370,19 @@ export function CustomRoleDialog({ busy, error, draft, onDesign, onAdd, onClose 
   );
 }
 
-export function SuggestDialog({ busy, step, error, onSuggest, onClose }: { busy: boolean; step: DesignStep | null; error: string | null; onSuggest: (goal: string, thenRun: boolean) => void; onClose: () => void }) {
+export function SuggestDialog({ busy, step, activity, failed, skipped, onSkip, error, onSuggest, onClose }: {
+  busy: boolean;
+  step: DesignStep | null;
+  /** What the server has done so far for this design, and how long since it began (ms). */
+  activity: { items: DesignItem[]; now: number };
+  failed: DesignStep[];
+  skipped: boolean;
+  /** Take the design as it is and leave the rest. */
+  onSkip: () => void;
+  error: string | null;
+  onSuggest: (goal: string, thenRun: boolean) => void;
+  onClose: () => void;
+}) {
   const [goal, setGoal] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
@@ -408,11 +420,7 @@ export function SuggestDialog({ busy, step, error, onSuggest, onClose }: { busy:
           onChange={(e) => setGoal(e.target.value)}
         />
       </Field>
-      {busy && (
-        <div className="mc-thinking" role="status">
-          <span className="mc-spinner" /> {step ? DESIGN_STEP_TEXT[step] : 'Designing a team for it'}. Each step can take up to a minute.
-        </div>
-      )}
+      {(busy || (error && activity.items.length > 0)) && <DesignProgress step={step} activity={activity} failed={failed} skipped={skipped} busy={busy} onSkip={onSkip} />}
       {error && <p className="mc-error">{error}</p>}
     </Dialog>
   );
@@ -633,5 +641,57 @@ export function RerunProblemDialog({ message, project, git, busy, onFix, onClose
         </p>
       )}
     </Dialog>
+  );
+}
+
+/** The three steps of designing a flow as they happen: what each is doing, who it is asking, how long it took and what it found. */
+function DesignProgress({ step, activity, failed, skipped, busy, onSkip }: { step: DesignStep | null; activity: { items: DesignItem[]; now: number }; failed: DesignStep[]; skipped: boolean; busy: boolean; onSkip: () => void }) {
+  const stages = designProgress(activity.items, step, failed, skipped);
+  // A step can be left once a design exists to take as it is.
+  const canSkip = busy && !skipped && step !== null && step >= 2;
+  return (
+    <div className="mc-design" role="status" aria-live="polite" aria-label="Progress of the design">
+      <ol className="mc-design-steps">
+        {stages.map((s) => (
+          <li key={s.step} className="mc-design-step" data-state={s.state}>
+            <div className="mc-design-head">
+              <span className="mc-design-mark" aria-hidden="true">
+                {s.state === 'running' ? <span className="mc-spinner" /> : s.state === 'done' ? <Icon name="check" /> : s.state === 'failed' ? <Icon name="alert" /> : s.step}
+              </span>
+              <span className="mc-design-title">{s.title}</span>
+              <span className="mc-design-state">{{ waiting: 'waiting', running: 'working', done: 'done', failed: 'could not run', skipped: 'skipped' }[s.state]}</span>
+            </div>
+            {s.state === 'waiting' && <p className="mc-hint">{s.about}</p>}
+            {s.items.length > 0 && (
+              <ul className="mc-design-calls">
+                {s.items.map((i) => (
+                  <li key={i.id} data-state={i.state}>
+                    <span className="mc-design-dot" aria-hidden="true">
+                      {i.state === 'running' ? <span className="mc-spinner" /> : i.state === 'done' ? <Icon name="check" /> : <Icon name="alert" />}
+                    </span>
+                    <span className="mc-design-what">
+                      {i.label}
+                      {i.target && <span className="mc-design-target mc-mono">{i.target}</span>}
+                      {i.detail && <span className="mc-design-detail">{i.detail}</span>}
+                    </span>
+                    <span className="mc-design-time">{stopwatch((i.ended ?? activity.now) - i.began)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ol>
+      {busy && (
+        <div className="mc-design-foot">
+          <span className="mc-hint">{skipped ? 'Opening the flow as it stands…' : 'Each call to a model can take up to a minute.'}</span>
+          {canSkip && (
+            <button type="button" className="mc-btn" onClick={onSkip} title="Open the design as it is now; what is still being asked is let go">
+              Skip the rest
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

@@ -14,6 +14,7 @@ use tokio::sync::{Notify, broadcast};
 
 use crate::AppState;
 
+use super::activity::Tracker;
 use super::codex;
 use super::exec::{self, Control};
 use super::gate::{self, Windows};
@@ -68,6 +69,21 @@ pub struct Service {
     /// Credentials for agents on OpenRouter, and where they reach the proxy.
     leases: Arc<crate::openrouter::proxy::Leases>,
     origin: String,
+    /// What designing a flow is doing, for the page to show while it waits.
+    activity: Arc<super::activity::Activity>,
+    /// The briefing written for a design, kept for its later steps so what it read is not read again.
+    briefings: Mutex<HashMap<String, String>>,
+}
+
+/// Who a helper call goes to, as the page says it: the model and where it is, or the Claude CLI when none was chosen.
+fn caller(via: Option<&crate::providers::chat::Endpoint>) -> String {
+    match via {
+        None => "claude -p · sonnet".to_owned(),
+        Some(e) => {
+            let host = e.base_url.split("://").nth(1).unwrap_or(&e.base_url).split('/').next().unwrap_or("");
+            format!("{host} · {}", e.model)
+        }
+    }
 }
 
 fn now() -> i64 {
@@ -106,6 +122,8 @@ impl Service {
             windows: Arc::default(),
             leases,
             origin,
+            activity: Arc::default(),
+            briefings: Mutex::default(),
         }
     }
 
@@ -201,21 +219,46 @@ impl Service {
     /// Everything an agent could run on, written for a designer to read: your plans and how full they are, each account's
     /// models with their prices and what is left on it, the web services, the pages about how models compare, and what a run
     /// may spend. A lookup that is slow or fails is left out rather than holding the design up.
-    async fn briefing(&self, st: &Arc<AppState>) -> String {
+    async fn briefing(&self, st: &Arc<AppState>, t: &Tracker, step: u8) -> String {
+        let Some(id) = t.id() else { return self.write_briefing(st, t, step).await };
+        if let Some(b) = self.briefings.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            t.begin(step, "Using what step 1 read about your plans, accounts and models", "").done("");
+            return b.clone();
+        }
+        let b = self.write_briefing(st, t, step).await;
+        let mut kept = self.briefings.lock().unwrap_or_else(|e| e.into_inner());
+        if kept.len() >= 16 {
+            kept.clear();
+        }
+        kept.insert(id.to_owned(), b.clone());
+        b
+    }
+
+    async fn write_briefing(&self, st: &Arc<AppState>, t: &Tracker, step: u8) -> String {
         use super::briefing as b;
         let wait = std::time::Duration::from_secs(5);
         let accounts = crate::secrets::load(&st.data_dir).await;
+        let pct = |w: Option<f64>| w.map_or("unknown".to_owned(), |v| format!("{v:.0}%"));
+        let n = t.begin(step, "Reading how full your Claude and Codex plans are", "plan usage");
         let windows = self.refresh_windows(st).await;
+        n.done(format!("Claude {} of 5 hours, {} of 7 days · Codex {} of 5 hours, {} of 7 days", pct(windows.claude_5h), pct(windows.claude_7d), pct(windows.codex_5h), pct(windows.codex_7d)));
+        let n = t.begin(step, "Asking Codex which models it offers", "codex app-server");
         let codex_info = match self.codex.get().await {
             Ok(s) => s.models_info().await.unwrap_or_default(),
             Err(_) => Vec::new(),
         };
+        if codex_info.is_empty() { n.fail("none answered, using the usual ones") } else { n.done(format!("{} models", codex_info.len())) }
         let codex_models: Vec<b::PlanModel> = if codex_info.is_empty() {
             FALLBACK_CODEX.iter().map(|m| b::PlanModel { id: (*m).into(), note: String::new(), efforts: Vec::new() }).collect()
         } else {
             codex_info.into_iter().map(|m| b::PlanModel { id: m.id, note: m.description, efforts: m.efforts }).collect()
         };
+        let n = t.begin(step, "Loading the OpenRouter model catalogue", "openrouter.ai");
         let catalog = tokio::time::timeout(wait, crate::openrouter::catalog::get(&st.data_dir, false)).await.ok().and_then(Result::ok);
+        match &catalog {
+            Some(c) => n.done(format!("{} models known", c.models.len())),
+            None => n.fail("not reachable, so context sizes are left out"),
+        }
         let mut by_account: Vec<(String, String, Vec<b::AccountModel>)> = Vec::new();
         for m in crate::openrouter::launch::flow_models(&accounts).into_iter().filter(|m| !m.direct) {
             let known = catalog.as_ref().and_then(|c| c.models.iter().find(|x| x.id == m.id));
@@ -237,10 +280,15 @@ impl Service {
         }
         let mut paid = Vec::new();
         for (id, name, models) in by_account {
+            let n = t.begin(step, &format!("Checking what is left on {name}"), "openrouter.ai");
             let balance = match accounts.get(&id) {
                 Some(a) if a.kind == crate::secrets::Kind::Openrouter => tokio::time::timeout(wait, crate::openrouter::catalog::remote(a)).await.ok().and_then(Result::ok).and_then(|r| balance_words(&r)),
                 _ => None,
             };
+            match &balance {
+                Some(b) => n.done(format!("{b} · {} models", models.len())),
+                None => n.done(format!("{} models, no balance to read", models.len())),
+            }
             paid.push(b::Account { name, balance, models });
         }
         let pool = crate::web::pool::Pool::of(&accounts);
@@ -250,7 +298,9 @@ impl Service {
             .map(|(_, label)| label)
             .collect();
         let web = (!tools.is_empty()).then(|| b::Web { tools, services: accounts.web_accounts().filter_map(|a| a.kind.web()).map(|p| p.name().to_owned()).collect() });
+        let n = t.begin(step, "Reading the pages you chose about how models compare", if web.is_some() { "web" } else { "" });
         let intel = tokio::time::timeout(wait, crate::openrouter::intel::notes(&st.data_dir, &accounts)).await.ok().flatten();
+        if intel.is_some() { n.done("read") } else { n.done("none chosen, or none could be read") }
         let limits = *self.limits.lock().unwrap_or_else(|e| e.into_inner());
         b::render(&b::Briefing {
             claude: b::Plan { five_hour: windows.claude_5h, seven_day: windows.claude_7d, models: b::claude_models() },
@@ -272,33 +322,72 @@ impl Service {
 
     /// Step one of designing a flow: a first design for a kind of work, from everything there is to run agents on. Also a line for
     /// each agent that was given an OpenRouter model, saying why.
-    pub async fn suggest_flow(&self, st: &Arc<AppState>, goal: &str) -> Result<(Flow, Vec<String>), Fail> {
+    pub fn track(&self, id: Option<&str>) -> Tracker {
+        self.activity.track(id)
+    }
+
+    /// What designing a flow has done so far, and how long ago it began in milliseconds.
+    pub fn design_activity(&self, id: &str) -> Option<(Vec<super::activity::Item>, u64)> {
+        self.activity.read(id)
+    }
+
+    pub async fn suggest_flow(&self, st: &Arc<AppState>, goal: &str, t: &Tracker) -> Result<(Flow, Vec<String>), Fail> {
         Self::needs_kind(goal)?;
         let models = self.codex_models().await;
         let id = format!("f{}", new_id());
-        let briefing = self.briefing(st).await;
-        let (flow, notes, _) = prompts::design_stage(goal, &id, &models, &self.or_models(st).await, &briefing, self.via("suggest").await.as_ref(), &self.scratch).await?;
-        Ok((flow, notes))
+        let briefing = self.briefing(st, t, 1).await;
+        let via = self.via("suggest").await;
+        let n = t.begin(1, "Designing the team", &caller(via.as_ref()));
+        match prompts::design_stage(goal, &id, &models, &self.or_models(st).await, &briefing, via.as_ref(), &self.scratch).await {
+            Ok((flow, notes, _)) => {
+                n.done(format!("{} agents", flow.nodes.len()));
+                Ok((flow, notes))
+            }
+            Err(e) => {
+                n.fail(format!("{e:#}"));
+                Err(e.into())
+            }
+        }
     }
 
     /// Step two: the design is checked against the kind of work and what is available, and corrected. Returns the flow and what
     /// was changed, or that nothing needed to be.
-    pub async fn review_flow(&self, st: &Arc<AppState>, goal: &str, flow: Flow) -> Result<(Flow, String), Fail> {
+    pub async fn review_flow(&self, st: &Arc<AppState>, goal: &str, flow: Flow, t: &Tracker) -> Result<(Flow, String), Fail> {
         Self::needs_kind(goal)?;
         flow.validate().map_err(Fail::Bad)?;
         let models = self.codex_models().await;
-        let briefing = self.briefing(st).await;
-        let (flow, summary, _) = prompts::review_stage(goal, &flow, &models, &self.or_models(st).await, &briefing, self.via("suggest").await.as_ref(), &self.scratch).await?;
-        Ok((flow, summary))
+        let briefing = self.briefing(st, t, 2).await;
+        let via = self.via("suggest").await;
+        let n = t.begin(2, &format!("Reviewing the {} agents against the work and what you have", flow.nodes.len()), &caller(via.as_ref()));
+        match prompts::review_stage(goal, &flow, &models, &self.or_models(st).await, &briefing, via.as_ref(), &self.scratch).await {
+            Ok((flow, summary, _)) => {
+                n.done(summary.chars().take(160).collect::<String>());
+                Ok((flow, summary))
+            }
+            Err(e) => {
+                n.fail(format!("{e:#}"));
+                Err(e.into())
+            }
+        }
     }
 
     /// Step three: every agent's prompt is rewritten for its model and its place in the team.
-    pub async fn optimise_flow(&self, st: &Arc<AppState>, goal: &str, flow: Flow) -> Result<(Flow, String), Fail> {
+    pub async fn optimise_flow(&self, st: &Arc<AppState>, goal: &str, flow: Flow, t: &Tracker) -> Result<(Flow, String), Fail> {
         Self::needs_kind(goal)?;
         flow.validate().map_err(Fail::Bad)?;
-        let briefing = self.briefing(st).await;
-        let (flow, summary, _) = prompts::optimise_stage(goal, &flow, &briefing, self.via("nodePrompt").await.as_ref(), &self.scratch).await?;
-        Ok((flow, summary))
+        let briefing = self.briefing(st, t, 3).await;
+        let via = self.via("nodePrompt").await;
+        let n = t.begin(3, &format!("Writing the prompts of {} agents for the models they run on", flow.nodes.len()), &caller(via.as_ref()));
+        match prompts::optimise_stage(goal, &flow, &briefing, via.as_ref(), &self.scratch).await {
+            Ok((flow, summary, _)) => {
+                n.done(summary.chars().take(160).collect::<String>());
+                Ok((flow, summary))
+            }
+            Err(e) => {
+                n.fail(format!("{e:#}"));
+                Err(e.into())
+            }
+        }
     }
 
     /// Change a flow as the user asks. Returns the changed flow and what was done; nothing is saved.

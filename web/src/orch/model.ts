@@ -1182,6 +1182,57 @@ export const DESIGN_STEP_TEXT: Record<DesignStep, string> = {
   3: 'Step 3 of 3 · Writing each agent’s prompt for the model it runs on',
 };
 
+/** One lookup or call made while designing, as the server reports it. */
+export interface DesignItem {
+  id: number;
+  step: DesignStep;
+  label: string;
+  /** Who is being asked, for a call out. */
+  target?: string;
+  detail?: string;
+  state: 'running' | 'done' | 'failed';
+  /** Milliseconds after the work began. */
+  began: number;
+  ended?: number;
+}
+
+export interface DesignStage {
+  step: DesignStep;
+  title: string;
+  /** What it will do, shown before it begins. */
+  about: string;
+  state: 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
+  items: DesignItem[];
+}
+
+const STAGE_TEXT: Record<DesignStep, { title: string; about: string }> = {
+  1: { title: 'Design', about: 'Reads your plans, accounts and models, and designs a team for the work.' },
+  2: { title: 'Review', about: 'Checks the team has the right agents, on models that fit and that you have room for.' },
+  3: { title: 'Prompts', about: 'Writes each agent’s system prompt for the model it runs on.' },
+};
+
+/**
+ * The three stages with what has been done in each. `current` is the step the page is waiting on (null once it is over);
+ * `failed` lists steps that could not run; with `skipped` the steps not yet done are marked skipped.
+ */
+export function designProgress(items: DesignItem[], current: DesignStep | null, failed: DesignStep[] = [], skipped = false): DesignStage[] {
+  return ([1, 2, 3] as DesignStep[]).map((step) => {
+    const mine = items.filter((i) => i.step === step).sort((a, b) => a.began - b.began || a.id - b.id);
+    let state: DesignStage['state'];
+    if (failed.includes(step)) state = 'failed';
+    else if (current === step) state = 'running';
+    else if (current === null ? mine.length > 0 : step < current) state = 'done';
+    else state = skipped ? 'skipped' : 'waiting';
+    return { step, ...STAGE_TEXT[step], state, items: mine };
+  });
+}
+
+/** How long something has taken: "4s", "1m 05s". */
+export function stopwatch(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
 export interface DesignNote {
   step: 'Design' | 'Review' | 'Prompts';
   text: string;

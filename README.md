@@ -762,7 +762,10 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   roles included; **2** it reviews that team against the kind of work and the briefing, adding or removing agents and
   changing roles or models where the first design missed something or crowded a nearly full plan; **3** it rewrites every
   agent's system prompt for the model that agent runs on and the place it has in the team. A step that cannot run leaves what
-  the one before made, and says so in the notes shown at the end. Steps 1 and 2 use the model chosen for *Design a flow* in
+  the one before made, and says so in the notes shown at the end. While it works the dialog shows the three steps live: each
+  lookup (plan usage, Codex's models, the OpenRouter catalogue, each paid account's balance, the pages you chose) and each
+  call to a model, with who is being asked, how long it took and what it found. Steps 2 and 3 reuse what step 1 read.
+  **Skip the rest** (once step 1 is done) opens the design as it stands and lets go of what is still being asked. Steps 1 and 2 use the model chosen for *Design a flow* in
   Settings (Sonnet unless you chose another) and step 3 the one chosen for *Write an agent's instructions*. A flow is a template: it keeps a one-sentence **purpose** (edit it
   under *This flow* in Settings), shown in the list and when you start a run, and what to do each time is the goal you give
   the run, which every agent receives. **Design and run** does both with one prompt: it designs the flow, then opens the

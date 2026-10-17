@@ -1,6 +1,7 @@
 // Calls to /api/orch. A failure comes back as a message to show; a 401 reloads the page to the login.
 
 import { fetchRecentDirs, type RecentDir } from '../dirs';
+import type { DesignItem } from './model';
 import type { TurnDetail, Budget, Capability, CustomRole, Flow, FlowLists, Models, Output, Role, RepoState, RoleDef, Run, RunSummary, UsageSnapshot } from './types';
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -74,9 +75,11 @@ export const orch = {
   cancel: (id: string) => send<Run>('POST', `${run(id)}/cancel`),
   /** Change a flow as asked, with Claude or Codex. Nothing is saved. */
   editFlow: (flow: Flow, request: string, engine: 'claude' | 'codex') => send<{ flow: Flow; summary: string }>('POST', `${base}/flows/edit`, { flow, request, engine }),
-  reviewFlow: (goal: string, flow: Flow) => send<{ flow: Flow; summary: string }>('POST', `${base}/flows/review`, { goal, flow }),
-  optimiseFlow: (goal: string, flow: Flow) => send<{ flow: Flow; summary: string }>('POST', `${base}/flows/optimise`, { goal, flow }),
-  suggest: (goal: string) => send<Flow & { notes?: string[] }>('POST', `${base}/flows/suggest`, { goal }),
+  reviewFlow: (goal: string, flow: Flow, track?: string) => send<{ flow: Flow; summary: string }>('POST', `${base}/flows/review`, { goal, flow, track }),
+  optimiseFlow: (goal: string, flow: Flow, track?: string) => send<{ flow: Flow; summary: string }>('POST', `${base}/flows/optimise`, { goal, flow, track }),
+  suggest: (goal: string, track?: string) => send<Flow & { notes?: string[] }>('POST', `${base}/flows/suggest`, { goal, track }),
+  /** Every lookup and call made so far for the design called `track`, and how long since it began (ms). */
+  designActivity: (track: string) => send<{ items: DesignItem[]; now: number }>('GET', `${base}/flows/activity/${encodeURIComponent(track)}`),
   popOut: (id: string, node: string) => send<{ session: string }>('POST', `${run(id)}/popout`, { node }),
   usage: () => send<UsageSnapshot>('GET', '/api/usage'),
   recentDirs: (): Promise<RecentDir[]> => fetchRecentDirs(),

@@ -17,7 +17,7 @@ import { RunBar } from './RunBar';
 import { FlowsPage } from './FlowsPage';
 import { RunsPanel } from './RunsPanel';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, designReport, allFolders, inFolder, linkedDir, parentOf, pruneInputs, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type DesignNote, type DesignStep, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, designReport, allFolders, inFolder, linkedDir, parentOf, pruneInputs, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type DesignItem, type DesignNote, type DesignStep, type FlowEntry } from './model';
 import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
 const INSPECTOR_KEY = 'ttm.orch.inspector';
@@ -188,6 +188,12 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   // Which of the three steps of designing a flow is under way, and what each did once the flow is made.
   const [designStep, setDesignStep] = useState<DesignStep | null>(null);
   const [designNotes, setDesignNotes] = useState<DesignNote[] | null>(null);
+  // What the design is doing, polled from the server by the name this page gave it, and the ways it has gone so far.
+  const [designTrack, setDesignTrack] = useState<string | null>(null);
+  const [designItems, setDesignItems] = useState<{ items: DesignItem[]; now: number }>({ items: [], now: 0 });
+  const [designFailed, setDesignFailed] = useState<DesignStep[]>([]);
+  const [designSkipped, setDesignSkipped] = useState(false);
+  const skipDesign = useRef<(() => void) | null>(null);
   const [roles, setRoles] = useState<RoleDef[]>(getCatalog());
   const [customOpen, setCustomOpen] = useState(false);
   const [draft, setDraft] = useState<RoleDraft | null>(null);
@@ -549,27 +555,65 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     );
   // Designing a flow is three steps, each its own request so none is long and the page can say where it is. A step that fails
   // leaves what the one before made.
+  // While a flow is being designed, ask the server what it is doing.
+  useEffect(() => {
+    if (!designTrack) return;
+    let stale = false;
+    const look = async () => {
+      const r = await orch.designActivity(designTrack);
+      if (!stale && r.ok) setDesignItems(r.data);
+    };
+    void look();
+    const id = window.setInterval(look, 600);
+    return () => {
+      stale = true;
+      window.clearInterval(id);
+    };
+  }, [designTrack, designStep]);
   const suggest = async (goal: string, thenRun = false) => {
+    const track = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     setBusy(true);
     setError(null);
+    setDesignItems({ items: [], now: 0 });
+    setDesignFailed([]);
+    setDesignSkipped(false);
+    setDesignTrack(track);
     setDesignStep(1);
-    const first = await orch.suggest(goal);
-    if (!first.ok) {
+    const stop = new Promise<'skipped'>((resolve) => (skipDesign.current = () => (setDesignSkipped(true), resolve('skipped'))));
+    const finish = () => {
+      skipDesign.current = null;
       setBusy(false);
       setDesignStep(null);
+      // One last look, so the list shows how it ended, then stop asking.
+      void orch.designActivity(track).then((r) => r.ok && setDesignItems(r.data));
+      setDesignTrack(null);
+    };
+    const first = await orch.suggest(goal, track);
+    if (!first.ok) {
+      setDesignFailed([1]);
+      finish();
       setError(first.error);
       return;
     }
     const { notes, ...designed } = first.data;
     let made: Flow = designed;
+    // The steps after the first improve the design; the person may take the first one as it is, and a step still going is let go.
+    let skipped = false;
     setDesignStep(2);
-    const reviewed = await orch.reviewFlow(goal, made);
+    const reviewing = await Promise.race([orch.reviewFlow(goal, made, track), stop]);
+    skipped = reviewing === 'skipped';
+    const reviewed = skipped ? ({ ok: true, data: { flow: made, summary: 'Skipped at your request.' } } as const) : (reviewing as Awaited<ReturnType<typeof orch.reviewFlow>>);
     if (reviewed.ok) made = reviewed.data.flow;
-    setDesignStep(3);
-    const tuned = await orch.optimiseFlow(goal, made);
-    if (tuned.ok) made = tuned.data.flow;
-    setBusy(false);
-    setDesignStep(null);
+    else setDesignFailed((f) => [...f, 2]);
+    let tuned: Awaited<ReturnType<typeof orch.optimiseFlow>> | { ok: true; data: { flow: Flow; summary: string } } = { ok: true, data: { flow: made, summary: 'Skipped at your request.' } };
+    if (!skipped) {
+      setDesignStep(3);
+      const tuning = await Promise.race([orch.optimiseFlow(goal, made, track), stop]);
+      if (tuning !== 'skipped') tuned = tuning;
+      if (tuned.ok) made = tuned.data.flow;
+      else setDesignFailed((f) => [...f, 3]);
+    }
+    finish();
     const report = designReport(notes ?? [], reviewed.ok ? { ok: true, summary: reviewed.data.summary } : { ok: false, error: reviewed.error }, tuned.ok ? { ok: true, summary: tuned.data.summary } : { ok: false, error: tuned.error });
     edit({ ...made, folder: at }, true);
     edited.current = true;
@@ -977,7 +1021,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             </div>
           )}
           {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
-          {suggesting && <SuggestDialog busy={busy} step={designStep} error={error} onSuggest={(g, run) => void suggest(g, run)} onClose={() => (setSuggesting(false), setError(null))} />}
+          {suggesting && <SuggestDialog busy={busy} step={designStep} activity={designItems} failed={designFailed} skipped={designSkipped} onSkip={() => skipDesign.current?.()} error={error} onSuggest={(g, run) => void suggest(g, run)} onClose={() => (setSuggesting(false), setError(null))} />}
       {designNotes && <DesignNotesDialog notes={designNotes} onClose={() => setDesignNotes(null)} />}
           {rerunProblem && <RerunProblemDialog message={rerunProblem.message} project={rerunProblem.project} git={rerunProblem.git} busy={busy} onFix={() => void fixAndRerun()} onClose={() => setRerunProblem(null)} />}
         {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} initialGoal={runGoal} locked={linkedDir(lists.folderDirs ?? {}, flow.folder ?? '')} onCreate={createRun} onClose={() => (setDialog(false), setRunGoal(''), setError(null))} />}

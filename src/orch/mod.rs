@@ -1,5 +1,6 @@
 //! Orchestrator mode: role-based agent flows that run Claude Code and Codex headless.
 
+pub mod activity;
 pub mod api;
 pub mod briefing;
 pub mod claude;

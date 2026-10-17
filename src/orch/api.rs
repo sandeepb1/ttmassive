@@ -48,6 +48,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/models", get(models))
         .route("/api/orch/flows", get(flows))
         .route("/api/orch/flows/suggest", post(suggest))
+        .route("/api/orch/flows/activity/{track}", get(design_activity))
         .route("/api/orch/flows/review", post(review_flow))
         .route("/api/orch/flows/optimise", post(optimise_flow))
         .route("/api/orch/flows/edit", post(edit_flow))
@@ -88,28 +89,39 @@ async fn flows(State(st): St) -> Response {
 #[derive(Deserialize)]
 struct GoalBody {
     goal: String,
+    /// A name the page chose for this piece of work, to ask what it is doing by.
+    #[serde(default)]
+    track: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct StageBody {
     goal: String,
     flow: super::graph::Flow,
+    #[serde(default)]
+    track: Option<String>,
 }
 
 /// Step two of designing a flow: check the design against the kind of work and what is available.
 async fn review_flow(State(st): St, Json(b): Json<StageBody>) -> Result<Response, Fail> {
-    let (flow, summary) = st.orch.review_flow(&st, &b.goal, b.flow).await?;
+    let (flow, summary) = st.orch.review_flow(&st, &b.goal, b.flow, &st.orch.track(b.track.as_deref())).await?;
     Ok(json_nocache(json!({"flow": flow, "summary": summary})))
 }
 
 /// Step three: rewrite every agent's prompt for its model and its place in the team.
 async fn optimise_flow(State(st): St, Json(b): Json<StageBody>) -> Result<Response, Fail> {
-    let (flow, summary) = st.orch.optimise_flow(&st, &b.goal, b.flow).await?;
+    let (flow, summary) = st.orch.optimise_flow(&st, &b.goal, b.flow, &st.orch.track(b.track.as_deref())).await?;
     Ok(json_nocache(json!({"flow": flow, "summary": summary})))
 }
 
+/// What designing a flow is doing: each lookup and call so far, and how long since it began.
+async fn design_activity(State(st): St, Path(track): Path<String>) -> Result<Response, Fail> {
+    let (items, now) = st.orch.design_activity(&track).unwrap_or_default();
+    Ok(json_nocache(json!({"items": items, "now": now})))
+}
+
 async fn suggest(State(st): St, Json(b): Json<GoalBody>) -> Result<Response, Fail> {
-    let (flow, notes) = st.orch.suggest_flow(&st, &b.goal).await?;
+    let (flow, notes) = st.orch.suggest_flow(&st, &b.goal, &st.orch.track(b.track.as_deref())).await?;
     // The flow as it always was, plus why each agent on OpenRouter is there.
     let mut v = serde_json::to_value(&flow).map_err(|e| Fail::Internal(e.into()))?;
     v["notes"] = json!(notes);
