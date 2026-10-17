@@ -3,6 +3,7 @@
 
 import { useState } from 'react';
 import { Icon, iconFor, Field, Switch } from './bits';
+import { AdvancedSection } from './Advanced';
 import { MAX_PURPOSE, CAPABILITY_SHORT, DIAL_TEXT, ON_CAP_TEXT, OUTPUT_TEXT, ROUTING_TEXT, nextRung, providerOf, providerPatch, providersFor, rungFromKey, rungKey, withRoutingChange, asks, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
 import { DEFAULT_DIAL, DEFAULT_ITERATIONS, EFFORTS, type Answerer, type Budget, type Capability, type Engine, type Flow, type FlowEdge, type FlowNode, type Models, type NodeRun, type OnCap, type Output, type Routing, type Rung, type Run } from './types';
 
@@ -498,6 +499,7 @@ function NodePanel({ flow, node, run, models, editable, goal, onNode, onDelete, 
       <Field label="Token cap" hint="Pause the run if this agent uses more than this. Cache reads do not count. Leave empty for no cap.">
         <input className="mc-field mc-mono" type="number" min={0} placeholder="No cap" disabled={!editable} value={node.tokenCap ?? ''} onChange={(e) => onNode(node.id, { tokenCap: num(e.target.value) })} />
       </Field>
+      <AdvancedSection flow={flow} node={node} models={models} editable={editable} onNode={onNode} />
 
       {editable && (
         <button type="button" className="mc-btn mc-btn-danger" onClick={() => onDelete(node.id)}>

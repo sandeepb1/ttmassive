@@ -53,6 +53,10 @@ pub struct Spec {
     pub resume: Option<String>,
     /// Keep the conversation on disk so it can be resumed on another model. Otherwise nothing is left behind.
     pub persist: bool,
+    /// Stop the agent when it has spent this many dollars (Claude Code's own estimate), whatever else it is doing.
+    pub max_budget_usd: Option<f64>,
+    /// Tools taken away from the agent, by name.
+    pub deny_tools: Vec<String>,
 }
 
 /// The name the web tools go by in the agent: `mcp__ttm_web__web_search` and so on.
@@ -123,6 +127,12 @@ pub fn args(spec: &Spec) -> Vec<String> {
         }
         // A builder works inside its own worktree; the checkpoint before it starts is the human gate.
         Access::Write => a.push("--dangerously-skip-permissions".into()),
+    }
+    if !spec.deny_tools.is_empty() {
+        a.extend(["--disallowedTools".into(), spec.deny_tools.join(",")]);
+    }
+    if let Some(b) = spec.max_budget_usd {
+        a.extend(["--max-budget-usd".into(), format!("{b}")]);
     }
     if let Some(w) = &spec.web {
         // The token is read from the environment (`TTM_WEB_TOKEN`) so it is not on the command line. The flag takes
@@ -401,7 +411,7 @@ mod tests {
             web: None,
             effort: None,
             resume: None,
-            persist: false,
+            max_budget_usd: None, deny_tools: Vec::new(), persist: false,
         }
     }
 
@@ -441,6 +451,22 @@ mod tests {
         }
         assert!(!has(&args(&spec(Access::Write)), "--settings"), "an agent on your own plan gets no settings it does not need");
         assert!(has(&args(&spec(Access::Inspect)), "--settings"));
+    }
+
+    #[test]
+    fn tools_can_be_taken_away_and_spending_capped_and_nothing_is_added_otherwise() {
+        let plain = args(&spec(Access::ReadOnly));
+        assert!(!has(&plain, "--disallowedTools") && !has(&plain, "--max-budget-usd"), "an agent with no such settings gets no such flags");
+        let mut s = spec(Access::ReadOnly);
+        s.deny_tools = vec!["WebFetch".into(), "Bash(git push:*)".into()];
+        s.max_budget_usd = Some(1.5);
+        let a = args(&s);
+        assert_eq!(after(&a, "--disallowedTools"), Some("WebFetch,Bash(git push:*)"), "one comma-separated value");
+        assert_eq!(after(&a, "--max-budget-usd"), Some("1.5"));
+        let mut w = spec(Access::Write);
+        w.deny_tools = vec!["WebFetch".into()];
+        assert!(has(&args(&w), "--disallowedTools"), "a builder may be denied tools too");
+        assert!(has(&args(&w), "--dangerously-skip-permissions"));
     }
 
     #[test]

@@ -736,6 +736,18 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   cap and any custom role, new agents get a free spot, and the change is applied at once and marked *unsaved* until you
   press **Save**. **Undo** puts the flow back. It will not overwrite edits you make while it is working. It changes a flow
   that has agents; on an empty one it points you to **Design a flow**.
+- **Advanced settings.** Select an agent and open **Advanced settings** under its token cap. Nothing is set until you set it,
+  and the runner enforces each one; none is only a request to the model.
+  *Limits:* a **time limit** (`90s`, `10m`, `2h`) and a **most tool calls** limit end a turn that goes over, and count it as
+  failed (a Claude Code agent's process is stopped, a Codex turn is interrupted); a **cost cap** is the most an agent paid per
+  token may spend in one run (an OpenRouter agent's key is capped, and a Claude Code agent is stopped by its own estimate).
+  *Resilience:* **Try again by itself** re-runs a failed turn up to three times before the run stops and asks you, each try
+  counted as an attempt, and **Run the retry on** sends the retry to another model (an overloaded one, say); the agent goes
+  back to its own model afterwards. *Context:* choose which of the agents that feed it it is **shown the results of**, **cut
+  each result** to a number of characters (a note says where), and **start fresh each time it runs** so it forgets the
+  conversation it had when work is sent back. *Access:* let an agent that only reads **run commands** in the same sandbox a
+  judge's shell uses (it cannot write anywhere), and **take tools away** by name from a Claude Code agent. Removing a
+  connection or an agent clears any "shown the results of" choice that pointed at it.
 - **Custom roles.** **More roles → Custom role…**: describe a job in your own words and Sonnet picks what it may do and
   what it hands back and writes its instructions; you check and change all of it before it is added. The rules are
   enforced on what it may do, not on its name: an agent that changes files always reports a change and asks first, and

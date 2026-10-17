@@ -17,7 +17,7 @@ import { RunBar } from './RunBar';
 import { FlowsPage } from './FlowsPage';
 import { RunsPanel } from './RunsPanel';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, allFolders, inFolder, parentOf, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, allFolders, inFolder, parentOf, pruneInputs, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
 import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
 const INSPECTOR_KEY = 'ttm.orch.inspector';
@@ -346,7 +346,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   // ------------------------------------------------------------------ the flow being edited
   const editFlow = useCallback(
     (update: (f: Flow) => Flow) => {
-      setFlow(update(flowRef.current));
+      // A change that removes an agent or a connection must not leave another agent set to take its input from it.
+      setFlow(pruneInputs(update(flowRef.current)));
       setDirty(true);
       edited.current = true;
     },

@@ -168,10 +168,13 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
             p.push_str(&format!("\n## {}\n\n{}\n", r.url, r.text.trim()));
         }
     }
+    // Which of the agents that feed it it is shown the results of: all of them, unless it was told to take only some.
+    let wanted = node.advanced.inputs.as_deref();
     let inputs: Vec<_> = run
         .flow
         .inputs_of(&node.id)
         .into_iter()
+        .filter(|id| wanted.is_none_or(|w| w.iter().any(|x| x == id)))
         .filter_map(|id| {
             let from = run.flow.node(id)?;
             let n = run.nodes.get(id)?;
@@ -185,6 +188,10 @@ pub fn build_prompt(run: &Run, node: &Node) -> String {
         p.push_str("\n# Inputs\n");
         for (from, out) in inputs {
             let body = serde_json::to_string_pretty(out).unwrap_or_default();
+            let body = match node.advanced.input_chars {
+                Some(max) if body.chars().count() > max as usize => format!("{}\n[… cut here: the rest of this result is left out]", body.chars().take(max as usize).collect::<String>()),
+                _ => body,
+            };
             p.push_str(&format!("\n## From {} ({})\n\n{body}\n", from.name, from.role_label()));
         }
     }
@@ -290,7 +297,7 @@ mod tests {
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: String::new(),
-            checkpoint: false,
+            advanced: Default::default(), checkpoint: false,
             token_cap: None,
             keep_model: false,
             account: None,
@@ -353,6 +360,52 @@ mod tests {
         let p = build_prompt(&r, &b);
         assert!(p.contains("## From Research"));
         assert!(p.contains("Use bcrypt"));
+    }
+
+    /// Two researchers feed a builder; both are done.
+    fn two_feed_one() -> Run {
+        let flow = Flow {
+            id: "f".into(),
+            name: "F".into(),
+            nodes: vec![node("r1", "Docs", Role::Researcher), node("r2", "Code", Role::Researcher), node("b", "Build", Role::Builder)],
+            edges: vec![Edge::new("e1", "r1", "b", EdgeKind::Forward), Edge::new("e2", "r2", "b", EdgeKind::Forward)],
+            max_retries: 2,
+            budget: Budget::default(),
+            downshift: false,
+            dial: 2, folder: String::new(), purpose: String::new(),
+        };
+        let mut r = Run::new("run1".into(), flow, "Add a login page".into(), 0);
+        for (id, said) in [("r1", "docs say use bcrypt"), ("r2", "code uses argon2 already")] {
+            let n = r.nodes.get_mut(id).unwrap();
+            n.status = NodeStatus::Done;
+            n.output = Some(json!({"summary": said}));
+        }
+        r
+    }
+
+    #[test]
+    fn an_agent_told_to_take_only_some_results_is_shown_only_those() {
+        let r = two_feed_one();
+        let mut b = r.flow.node("b").unwrap().clone();
+        let all = build_prompt(&r, &b);
+        assert!(all.contains("## From Docs") && all.contains("## From Code"), "by default it sees every result that feeds it");
+        b.advanced.inputs = Some(vec!["r2".into()]);
+        let some = build_prompt(&r, &b);
+        assert!(some.contains("## From Code") && some.contains("argon2"));
+        assert!(!some.contains("## From Docs") && !some.contains("bcrypt"), "the other result is left out");
+    }
+
+    #[test]
+    fn a_result_is_cut_to_the_size_an_agent_was_given_and_says_so() {
+        let mut r = two_feed_one();
+        r.nodes.get_mut("r1").unwrap().output = Some(json!({"summary": "x".repeat(5000)}));
+        let mut b = r.flow.node("b").unwrap().clone();
+        assert!(!build_prompt(&r, &b).contains("cut here"));
+        b.advanced.input_chars = Some(500);
+        let p = build_prompt(&r, &b);
+        assert!(p.contains("[… cut here: the rest of this result is left out]"));
+        assert!(!p.contains(&"x".repeat(600)), "the long one is cut");
+        assert!(p.contains("argon2"), "a short one is left whole");
     }
 
     #[test]

@@ -35,6 +35,10 @@ pub struct EngineRunner {
     threads: Mutex<HashMap<String, (codex::Thread, Option<String>)>>,
     /// Codex threads that are in the middle of a turn, so a cancel can stop them.
     active: std::sync::Mutex<HashSet<String>>,
+    /// The Codex thread each agent's turn is on, so a turn cut short can be told to stop.
+    codex_thread: std::sync::Mutex<HashMap<String, String>>,
+    /// What holds each agent's current turn in check: its time and tool call limits.
+    guards: std::sync::Mutex<HashMap<String, Arc<Guard>>>,
     /// Builders can start together, and `git worktree add` on one repository must not overlap itself.
     worktree_lock: Mutex<()>,
     /// Where agents on OpenRouter get their credentials: one lease per agent, tagged `orch:<run>:<node>`.
@@ -99,8 +103,8 @@ enum Limits {
 fn limits(node: &Node) -> Limits {
     if node.writes() {
         Limits::Writes
-    } else if node.capability() == Capability::Inspect || node.engine == Engine::Codex {
-        // A Claude agent that may inspect is given a sandboxed shell; Codex's read-only sandbox already allows one.
+    } else if node.capability() == Capability::Inspect || node.engine == Engine::Codex || node.advanced.shell {
+        // A Claude agent that may inspect, or was given a shell, has a sandboxed one; Codex's read-only sandbox already allows one.
         Limits::Shell
     } else {
         Limits::Reads
@@ -153,6 +157,8 @@ impl EngineRunner {
             claude: Mutex::default(),
             threads: Mutex::default(),
             active: std::sync::Mutex::default(),
+            codex_thread: std::sync::Mutex::default(),
+            guards: std::sync::Mutex::default(),
             worktree_lock: Mutex::new(()),
             leases,
             origin,
@@ -198,6 +204,29 @@ impl EngineRunner {
         }
     }
 
+    /// Count one tool call by an agent toward its limit.
+    fn tick(&self, node_id: &str) {
+        if let Some(g) = self.guards.lock().unwrap_or_else(|e| e.into_inner()).get(node_id) {
+            g.tick();
+        }
+    }
+
+    /// Let an agent start its next turn with no memory of the earlier ones.
+    async fn forget(&self, node_id: &str) {
+        self.claude.lock().await.remove(node_id);
+        self.threads.lock().await.remove(node_id);
+        self.direct.lock().await.remove(node_id);
+    }
+
+    /// Tell a Codex agent whose turn was cut short to stop working. A Claude agent's process ends when its turn is dropped.
+    async fn stop_codex(&self, node_id: &str) {
+        let Some(thread) = self.codex_thread.lock().unwrap_or_else(|e| e.into_inner()).remove(node_id) else { return };
+        self.active.lock().unwrap_or_else(|e| e.into_inner()).remove(&thread);
+        if let Ok(server) = self.codex.get().await {
+            server.interrupt(&thread).await;
+        }
+    }
+
     fn web_tag(&self, node_id: &str) -> String {
         format!("{}:web", self.lease_tag(node_id))
     }
@@ -237,7 +266,12 @@ impl EngineRunner {
     fn proxy_for(&self, node: &Node) -> Option<Proxy> {
         let account = node.account.as_deref()?;
         let tag = self.lease_tag(&node.id);
-        let cap = if self.waived.load(Ordering::SeqCst) { None } else { self.limits.lock().unwrap_or_else(|e| e.into_inner()).run_usd };
+        let run_cap = if self.waived.load(Ordering::SeqCst) { None } else { self.limits.lock().unwrap_or_else(|e| e.into_inner()).run_usd };
+        // The agent's own cap is a setting of its own, so carrying on past the plan limits does not lift it.
+        let cap = match (run_cap, node.advanced.cost_cap_usd) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let token = match self.leases.by_tag(&tag) {
             Some((token, lease)) => {
                 if lease.model != node.model {
@@ -312,6 +346,7 @@ impl EngineRunner {
                 let tools = crate::web::tools::chat_tools(&pool);
                 let r = chat::complete_with_tools(&endpoint, &history, Some(&schema), &tools, chat::MAX_TOOL_CALLS, &crate::web::tools::Web(pool)).await?;
                 for e in &r.events {
+                    self.tick(&node.id);
                     log(format!("→ used {}", e.name));
                     trace.push(Kind::Tool, e.name.clone(), &e.arguments);
                     trace.push(Kind::Result, "result", &e.result);
@@ -338,7 +373,7 @@ impl EngineRunner {
             schema: handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id)),
             access: match limits(node) {
                 Limits::Writes => Access::Write,
-                _ if node.capability() == Capability::Inspect => Access::Inspect,
+                _ if node.capability() == Capability::Inspect || node.advanced.shell => Access::Inspect,
                 _ => Access::ReadOnly,
             },
             cwd: cwd.clone(),
@@ -350,6 +385,8 @@ impl EngineRunner {
             resume,
             // An agent that may move between models keeps its conversation, so the next model can carry on from it.
             persist: node.routing != super::graph::Routing::Pinned,
+            max_budget_usd: node.advanced.cost_cap_usd,
+            deny_tools: node.advanced.deny_tools.clone(),
         };
         let want = claude::Identity { model: node.model.clone(), effort: node.effort.clone(), account: node.account.clone() };
         let mut resumed = false;
@@ -374,7 +411,10 @@ impl EngineRunner {
         let mut outcome = agent
             .turn_traced(prompt, |ev| match ev {
                 Event::Said(t) => log(preview(t)),
-                Event::Tool(t) => log(format!("→ {t}")),
+                Event::Tool(t) => {
+                    self.tick(&node.id);
+                    log(format!("→ {t}"));
+                }
                 Event::Skill(s) => log(format!("{SKILL_PREFIX}{s}")),
                 Event::Subagent(s) => log(format!("{SUBAGENT_PREFIX}{s}")),
                 Event::Nested(t) => log(format!("    ↳ {}", preview(t))),
@@ -417,15 +457,18 @@ impl EngineRunner {
         };
         let schema = handoff::schema_for(node.output(), &self.flow.send_back_targets(&node.id));
         self.active.lock().unwrap_or_else(|e| e.into_inner()).insert(thread.id.clone());
+        self.codex_thread.lock().unwrap_or_else(|e| e.into_inner()).insert(node.id.clone(), thread.id.clone());
         let result = server
             .turn(&mut thread, prompt, &schema, (Some(node.model.as_str()), node.effort.as_deref()), |note| {
                 codex::trace_note(note, trace);
                 if let Some(line) = codex::describe(note) {
+                    self.tick(&node.id);
                     log(line);
                 }
             })
             .await;
         self.active.lock().unwrap_or_else(|e| e.into_inner()).remove(&thread.id);
+        self.codex_thread.lock().unwrap_or_else(|e| e.into_inner()).remove(&node.id);
         let outcome = result?;
         self.threads.lock().await.insert(node.id.clone(), (thread, node.account.clone()));
         Ok(outcome)
@@ -445,11 +488,87 @@ pub fn lease_tag(run_id: &str, node_id: &str) -> String {
     format!("orch:{run_id}:{node_id}")
 }
 
+/// What holds one turn of an agent in check: it counts the tool calls the agent makes and says when it has made more than it may.
+struct Guard {
+    made: std::sync::atomic::AtomicU32,
+    max_calls: Option<u32>,
+    over: tokio::sync::Notify,
+}
+
+impl Guard {
+    fn new(max_calls: Option<u32>) -> Guard {
+        Guard { made: std::sync::atomic::AtomicU32::new(0), max_calls, over: tokio::sync::Notify::new() }
+    }
+
+    fn tick(&self) {
+        let n = self.made.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.max_calls.is_some_and(|m| n > m) {
+            self.over.notify_one();
+        }
+    }
+}
+
+/// Why a turn was cut short.
+#[derive(Debug, PartialEq)]
+enum Cut {
+    Time(std::time::Duration),
+    Calls(u32),
+}
+
+impl Cut {
+    fn message(&self, name: &str) -> String {
+        match self {
+            Cut::Time(d) => format!("{name} was stopped: it went over its time limit of {}", duration_label(d.as_secs() as u32)),
+            Cut::Calls(n) => format!("{name} was stopped: it made more than {n} tool calls"),
+        }
+    }
+}
+
+fn duration_label(secs: u32) -> String {
+    match secs {
+        s if s % 3600 == 0 => format!("{} hour{}", s / 3600, if s == 3600 { "" } else { "s" }),
+        s if s % 60 == 0 => format!("{} minute{}", s / 60, if s == 60 { "" } else { "s" }),
+        s => format!("{s} second{}", if s == 1 { "" } else { "s" }),
+    }
+}
+
+/// Run a turn until it ends, or until it has taken longer than `secs` or made more tool calls than the guard allows. The turn
+/// is dropped when it is cut short, which stops the agent's process or request.
+async fn guarded<T>(turn: impl std::future::Future<Output = Result<T>>, limit: Option<std::time::Duration>, guard: &Guard) -> std::result::Result<Result<T>, Cut> {
+    tokio::pin!(turn);
+    let timer = async {
+        match limit {
+            Some(d) => tokio::time::sleep(d).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        r = &mut turn => Ok(r),
+        _ = timer => Err(Cut::Time(limit.unwrap_or_default())),
+        _ = guard.over.notified() => Err(Cut::Calls(guard.max_calls.unwrap_or(0))),
+    }
+}
+
 impl NodeRunner for EngineRunner {
     async fn run(&self, node: &Node, prompt: &str, log: &mut (dyn FnMut(String) + Send)) -> Result<Outcome> {
         let mut trace = Trace::default();
         let mut commit = None;
-        let result = self.run_turn(node, prompt, log, &mut trace, &mut commit).await;
+        // An agent set to start afresh each time forgets its earlier conversation before this turn.
+        if node.advanced.fresh_on_retry {
+            self.forget(&node.id).await;
+        }
+        let guard = Arc::new(Guard::new(node.advanced.max_tool_calls));
+        self.guards.lock().unwrap_or_else(|e| e.into_inner()).insert(node.id.clone(), guard.clone());
+        let turn = self.run_turn(node, prompt, log, &mut trace, &mut commit);
+        let ended = guarded(turn, node.advanced.time_limit_secs.map(|s| std::time::Duration::from_secs(u64::from(s))), &guard).await;
+        self.guards.lock().unwrap_or_else(|e| e.into_inner()).remove(&node.id);
+        let result = match ended {
+            Ok(r) => r,
+            Err(cut) => {
+                self.stop_codex(&node.id).await;
+                Err(anyhow::anyhow!(cut.message(&node.name)))
+            }
+        };
         self.meta.lock().unwrap_or_else(|e| e.into_inner()).insert(node.id.clone(), TurnMeta { trace: trace.into_entries(), commit });
         result
     }
@@ -701,7 +820,7 @@ mod tests {
             engine,
             model: "m".into(),
             system_prompt: String::new(),
-            checkpoint: false,
+            advanced: Default::default(), checkpoint: false,
             token_cap: None,
             keep_model: false,
             account: None,
@@ -733,5 +852,101 @@ mod tests {
         let p = preview(&long);
         assert_eq!(p.chars().count(), 161);
         assert!(p.ends_with('…'));
+    }
+
+    // ---- what holds a turn in check
+
+    #[tokio::test]
+    async fn a_turn_that_ends_on_its_own_is_left_alone() {
+        let g = Guard::new(Some(5));
+        let r = guarded(async { Ok::<_, anyhow::Error>(7) }, Some(std::time::Duration::from_secs(5)), &g).await;
+        assert_eq!(r.unwrap().unwrap(), 7);
+        assert!(matches!(guarded(async { Ok::<_, anyhow::Error>(1) }, None, &Guard::new(None)).await, Ok(Ok(1))), "no limits, no cutting");
+    }
+
+    #[tokio::test]
+    async fn a_turn_over_its_time_limit_is_cut_short() {
+        let limit = std::time::Duration::from_millis(40);
+        let r = guarded(async { tokio::time::sleep(std::time::Duration::from_secs(30)).await; Ok::<_, anyhow::Error>(()) }, Some(limit), &Guard::new(None)).await;
+        assert_eq!(r.unwrap_err(), Cut::Time(limit));
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_makes_too_many_tool_calls_is_cut_short_whenever_they_were_made() {
+        let g = Guard::new(Some(2));
+        g.tick();
+        g.tick();
+        let within = guarded(async { Ok::<_, anyhow::Error>(1) }, None, &g).await;
+        assert!(matches!(within, Ok(Ok(1))), "two calls is the limit, not over it");
+        g.tick();
+        let over = guarded(async { std::future::pending::<Result<()>>().await }, None, &g).await;
+        assert_eq!(over.unwrap_err(), Cut::Calls(2), "a call counted before the turn was watched still counts");
+        // And one made while it is being watched.
+        let g = Arc::new(Guard::new(Some(1)));
+        let g2 = g.clone();
+        let live = guarded(async move { g2.tick(); g2.tick(); std::future::pending::<Result<()>>().await }, None, &g).await;
+        assert_eq!(live.unwrap_err(), Cut::Calls(1));
+        assert_eq!(Guard::new(None).made.load(Ordering::SeqCst), 0);
+        let none = Guard::new(None);
+        for _ in 0..50 {
+            none.tick();
+        }
+        assert!(matches!(guarded(async { Ok::<_, anyhow::Error>(()) }, None, &none).await, Ok(Ok(()))), "no limit, no cut however many");
+    }
+
+    #[test]
+    fn a_cut_says_what_happened_in_plain_words() {
+        assert_eq!(Cut::Time(std::time::Duration::from_secs(300)).message("Builder"), "Builder was stopped: it went over its time limit of 5 minutes");
+        assert_eq!(Cut::Calls(40).message("Builder"), "Builder was stopped: it made more than 40 tool calls");
+        assert_eq!((duration_label(1), duration_label(60), duration_label(90), duration_label(3600), duration_label(7200)), ("1 second".into(), "1 minute".into(), "90 seconds".into(), "1 hour".into(), "2 hours".into()));
+    }
+
+    #[test]
+    fn an_agent_given_a_shell_is_told_it_has_one_and_a_writer_is_unchanged() {
+        let flow = crate::orch::starters::all().remove(0);
+        let mut n = flow.nodes.iter().find(|n| n.role == Role::Researcher && n.engine == Engine::Claude).unwrap().clone();
+        assert!(matches!(limits(&n), Limits::Reads), "a Claude researcher cannot run commands");
+        n.advanced.shell = true;
+        assert!(matches!(limits(&n), Limits::Shell), "until it is given a shell");
+        let mut b = flow.nodes.iter().find(|n| n.role == Role::Builder).unwrap().clone();
+        b.advanced.shell = true;
+        assert!(matches!(limits(&b), Limits::Writes), "a builder is still a builder");
+    }
+
+    fn lease_cap(run_usd: Option<f64>, node_cap: Option<f64>, waived: bool) -> Option<f64> {
+        let dir = std::env::temp_dir().join(format!("ttm-cap-{}", std::process::id()));
+        let leases = Arc::new(Leases::new());
+        let limits = crate::orch::graph::Budget { run_usd, ..Default::default() };
+        let flow = crate::orch::starters::all().remove(0);
+        let mut node = flow.nodes.iter().find(|n| n.role == Role::Builder).unwrap().clone();
+        node.account = Some("acct".into());
+        node.advanced.cost_cap_usd = node_cap;
+        let r = EngineRunner::new(flow, dir.clone(), dir.join("wt"), "r1".into(), Arc::default(), leases.clone(), "http://127.0.0.1:1".into(), Arc::new(std::sync::Mutex::new(limits)), waived, dir);
+        r.proxy_for(&node).expect("an agent on an account has a lease");
+        leases.by_tag(&r.lease_tag(&node.id)).unwrap().1.cap_usd
+    }
+
+    #[test]
+    fn an_agents_own_cost_cap_and_the_runs_are_both_kept_and_the_lower_wins() {
+        assert_eq!(lease_cap(Some(2.0), Some(0.5), false), Some(0.5));
+        assert_eq!(lease_cap(Some(0.25), Some(0.5), false), Some(0.25), "the run's is lower");
+        assert_eq!(lease_cap(None, Some(0.5), false), Some(0.5));
+        assert_eq!(lease_cap(Some(2.0), None, false), Some(2.0));
+        assert_eq!(lease_cap(None, None, false), None);
+        assert_eq!(lease_cap(Some(2.0), Some(0.5), true), Some(0.5), "carrying on past the plan limits does not lift an agent's own cap");
+        assert_eq!(lease_cap(Some(2.0), None, true), None, "but it does lift the run's");
+    }
+
+    #[tokio::test]
+    async fn an_agent_set_to_start_afresh_forgets_its_conversation_and_one_that_is_not_keeps_it() {
+        let dir = std::env::temp_dir().join(format!("ttm-forget-{}", std::process::id()));
+        let flow = crate::orch::starters::all().remove(0);
+        let r = EngineRunner::new(flow, dir.clone(), dir.join("wt"), "r1".into(), Arc::default(), Arc::new(Leases::new()), "http://127.0.0.1:1".into(), Arc::new(std::sync::Mutex::new(Default::default())), false, dir);
+        r.direct.lock().await.insert("a".into(), vec![Message::user("earlier")]);
+        r.direct.lock().await.insert("b".into(), vec![Message::user("earlier")]);
+        r.forget("a").await;
+        assert!(r.direct.lock().await.get("a").is_none(), "it starts its next turn with nothing");
+        assert!(r.direct.lock().await.get("b").is_some(), "and another agent keeps its conversation");
+        r.forget("never-ran").await;
     }
 }

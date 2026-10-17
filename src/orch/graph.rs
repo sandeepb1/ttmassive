@@ -128,6 +128,9 @@ pub struct Node {
     /// Never switch this agent to a cheaper model, whatever the plan windows say.
     #[serde(default)]
     pub keep_model: bool,
+    /// Limits, retries, context and access beyond what the role gives.
+    #[serde(default, skip_serializing_if = "Advanced::is_default")]
+    pub advanced: Advanced,
     /// Canvas position, kept so a saved flow opens the way it was laid out.
     #[serde(default)]
     pub x: f64,
@@ -172,6 +175,51 @@ impl Routing {
         *self == Routing::Pinned
     }
 }
+
+/// How an agent is held in check, kept going and given what it needs, beyond its role. Every setting is off or unlimited until
+/// it is set, so a flow that never mentions them runs as it always did.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Advanced {
+    // ---- limits
+    /// Stop a turn that takes longer than this many seconds.
+    pub time_limit_secs: Option<u32>,
+    /// Most dollars the agent may spend in one run, for an agent that is paid for per token: on OpenRouter, or Claude Code's own
+    /// estimate. A direct call is one request, so there is nothing to stop part way.
+    pub cost_cap_usd: Option<f64>,
+    /// Stop a turn that makes more tool calls than this.
+    pub max_tool_calls: Option<u32>,
+    // ---- resilience
+    /// How many times a failed turn is tried again, by itself, before the run stops and asks.
+    pub auto_retries: u8,
+    /// Where a retry runs when the first model failed. Left out, the retry uses the same model.
+    pub fallback: Option<Rung>,
+    // ---- context
+    /// Which earlier agents' results it is given, by id. Left out, all of those that feed it.
+    pub inputs: Option<Vec<String>>,
+    /// Cut each result it is given to this many characters.
+    pub input_chars: Option<u32>,
+    /// Begin a new conversation each time it runs again, instead of carrying on the one it had.
+    pub fresh_on_retry: bool,
+    // ---- access
+    /// Let an agent that only reads run commands in a sandbox that cannot write, as a judge's shell does.
+    pub shell: bool,
+    /// Tools taken away from it, by name (Claude Code agents).
+    pub deny_tools: Vec<String>,
+}
+
+impl Advanced {
+    pub fn is_default(&self) -> bool {
+        *self == Advanced::default()
+    }
+}
+
+pub const MAX_TIME_LIMIT_SECS: u32 = 24 * 3600;
+pub const MAX_TOOL_CALLS: u32 = 1000;
+pub const MAX_AUTO_RETRIES: u8 = 3;
+pub const MIN_INPUT_CHARS: u32 = 500;
+pub const MAX_INPUT_CHARS: u32 = 200_000;
+pub const MAX_DENIED_TOOLS: usize = 20;
 
 /// One step of an agent's ladder: a model, where it runs, and how hard it thinks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -382,6 +430,59 @@ impl Flow {
         self.nodes.iter().find(|n| n.id == id)
     }
 
+    /// Take out of every agent's `inputs` the ones that no longer feed it, and the setting itself when none are left. A change
+    /// that removes an agent or a connection should not leave another agent pointing at it.
+    pub fn prune_inputs(&mut self) {
+        let feeds: Vec<(String, Vec<String>)> = self.nodes.iter().map(|n| (n.id.clone(), self.inputs_of(&n.id).into_iter().map(String::from).collect())).collect();
+        for n in &mut self.nodes {
+            let Some(fed) = feeds.iter().find(|(id, _)| *id == n.id).map(|(_, f)| f) else { continue };
+            if let Some(list) = &mut n.advanced.inputs {
+                list.retain(|i| fed.contains(i));
+                if list.is_empty() {
+                    n.advanced.inputs = None;
+                }
+            }
+        }
+    }
+
+    fn validate_advanced(&self, n: &Node) -> Result<(), String> {
+        let a = &n.advanced;
+        let bad = |what: &str| Err(format!("node '{}': {what}", n.name));
+        if a.time_limit_secs.is_some_and(|s| s == 0 || s > MAX_TIME_LIMIT_SECS) {
+            return bad("the time limit must be from 1 second to 24 hours");
+        }
+        if a.cost_cap_usd.is_some_and(|c| !(c.is_finite() && c > 0.0 && c < 1.0e6)) {
+            return bad("the cost cap must be more than zero");
+        }
+        if a.max_tool_calls.is_some_and(|c| c == 0 || c > MAX_TOOL_CALLS) {
+            return bad(&format!("the tool call limit must be from 1 to {MAX_TOOL_CALLS}"));
+        }
+        if a.auto_retries > MAX_AUTO_RETRIES {
+            return bad(&format!("it may be retried at most {MAX_AUTO_RETRIES} times"));
+        }
+        if a.input_chars.is_some_and(|c| !(MIN_INPUT_CHARS..=MAX_INPUT_CHARS).contains(&c)) {
+            return bad(&format!("results may be cut to {MIN_INPUT_CHARS} to {MAX_INPUT_CHARS} characters"));
+        }
+        if let Some(ids) = &a.inputs {
+            let feeds = self.inputs_of(&n.id);
+            if let Some(id) = ids.iter().find(|i| !feeds.contains(&i.as_str())) {
+                return bad(&format!("it is told to take its input from '{id}', which does not feed it"));
+            }
+        }
+        if a.deny_tools.len() > MAX_DENIED_TOOLS || a.deny_tools.iter().any(|t| t.is_empty() || t.len() > 80 || !t.chars().all(|c| c.is_ascii_alphanumeric() || "_:*()-. ".contains(c))) {
+            return bad("the tools taken away must be names of up to 80 characters");
+        }
+        if let Some(r) = &a.fallback {
+            if n.direct {
+                return bad("an agent that calls its model directly has no fallback");
+            }
+            if r.model.trim().is_empty() || r.model.len() > 200 || r.effort.as_deref().is_some_and(|e| !EFFORTS.contains(&e)) {
+                return bad("the fallback model is not valid");
+            }
+        }
+        Ok(())
+    }
+
     /// Check a flow from the page before it is stored or run.
     pub fn validate(&self) -> Result<(), String> {
         if !id_ok(&self.id) {
@@ -434,6 +535,7 @@ impl Flow {
             if n.token_cap == Some(0) {
                 return Err(format!("node '{}' token cap must be above 0", n.name));
             }
+            self.validate_advanced(n)?;
             match (&n.role, &n.custom) {
                 (Role::Custom, None) => return Err(format!("node '{}' is a custom role with no definition", n.name)),
                 (Role::Custom, Some(c)) if c.label.trim().is_empty() || c.label.len() > MAX_NAME => {
@@ -664,7 +766,7 @@ mod tests {
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: String::new(),
-            checkpoint: false,
+            advanced: Default::default(), checkpoint: false,
             token_cap: None,
             keep_model: false,
             account: None,
@@ -908,5 +1010,72 @@ mod tests {
         let mut v = serde_json::to_value(line()).unwrap();
         v.as_object_mut().unwrap().remove("folder");
         assert_eq!(serde_json::from_value::<Flow>(v).unwrap().folder, "", "a flow saved before folders is at the top level");
+    }
+
+    #[test]
+    fn advanced_settings_default_to_nothing_and_are_left_out_of_a_saved_flow() {
+        let f = line();
+        assert!(f.nodes[0].advanced.is_default());
+        let v = serde_json::to_value(&f).unwrap();
+        assert!(v["nodes"][0].get("advanced").is_none(), "an agent with none saves as it always did");
+        let mut g = line();
+        g.nodes[1].advanced.time_limit_secs = Some(600);
+        g.nodes[1].advanced.deny_tools = vec!["WebFetch".into()];
+        let v = serde_json::to_value(&g).unwrap();
+        assert_eq!(v["nodes"][1]["advanced"]["timeLimitSecs"], 600);
+        assert_eq!(serde_json::from_value::<Flow>(v).unwrap(), g, "and they survive a round trip");
+    }
+
+    #[test]
+    fn advanced_settings_are_checked() {
+        let with = |f: &dyn Fn(&mut Advanced)| {
+            let mut flow = line();
+            f(&mut flow.nodes[2].advanced);
+            flow.validate()
+        };
+        assert_eq!(with(&|a| a.time_limit_secs = Some(90)), Ok(()));
+        assert!(with(&|a| a.time_limit_secs = Some(0)).is_err());
+        assert!(with(&|a| a.time_limit_secs = Some(MAX_TIME_LIMIT_SECS + 1)).is_err());
+        assert!(with(&|a| a.cost_cap_usd = Some(0.0)).is_err() && with(&|a| a.cost_cap_usd = Some(f64::NAN)).is_err());
+        assert_eq!(with(&|a| a.cost_cap_usd = Some(1.5)), Ok(()));
+        assert!(with(&|a| a.max_tool_calls = Some(0)).is_err() && with(&|a| a.max_tool_calls = Some(MAX_TOOL_CALLS + 1)).is_err());
+        assert!(with(&|a| a.auto_retries = MAX_AUTO_RETRIES + 1).is_err());
+        assert_eq!(with(&|a| a.auto_retries = MAX_AUTO_RETRIES), Ok(()));
+        assert!(with(&|a| a.input_chars = Some(MIN_INPUT_CHARS - 1)).is_err() && with(&|a| a.input_chars = Some(MAX_INPUT_CHARS + 1)).is_err());
+        assert_eq!(with(&|a| a.input_chars = Some(2000)), Ok(()));
+        assert!(with(&|a| a.deny_tools = vec!["Bash; rm".into()]).is_err(), "a tool name is a name");
+        assert!(with(&|a| a.deny_tools = (0..=MAX_DENIED_TOOLS).map(|i| format!("T{i}")).collect()).is_err());
+        assert_eq!(with(&|a| a.deny_tools = vec!["WebFetch".into(), "mcp__x__y".into(), "Bash(git push:*)".into()]), Ok(()));
+        let rung = |m: &str| Rung { engine: Engine::Claude, model: m.into(), account: None, effort: None };
+        assert_eq!(with(&|a| a.fallback = Some(rung("haiku"))), Ok(()));
+        assert!(with(&|a| a.fallback = Some(rung(" "))).is_err());
+        assert!(with(&|a| a.fallback = Some(Rung { effort: Some("loud".into()), ..rung("haiku") })).is_err());
+    }
+
+    #[test]
+    fn an_agent_can_only_take_its_input_from_an_agent_that_feeds_it() {
+        let mut f = line();
+        f.nodes[2].advanced.inputs = Some(vec![f.nodes[1].id.clone()]);
+        assert_eq!(f.validate(), Ok(()), "build is fed by res");
+        f.nodes[2].advanced.inputs = Some(vec![f.nodes[0].id.clone()]);
+        assert!(f.validate().unwrap_err().contains("does not feed it"), "orch does not feed build directly");
+        f.nodes[2].advanced.inputs = Some(vec!["nobody".into()]);
+        assert!(f.validate().is_err());
+    }
+
+    #[test]
+    fn removing_an_agent_or_a_connection_leaves_no_input_pointing_at_it() {
+        let mut f = line();
+        let (res, build) = (f.nodes[1].id.clone(), f.nodes[2].id.clone());
+        f.nodes[2].advanced.inputs = Some(vec![res.clone()]);
+        f.edges.retain(|e| !(e.from == res && e.to == build));
+        assert!(f.validate().is_err(), "as it stands the setting is stale");
+        f.prune_inputs();
+        assert_eq!(f.nodes[2].advanced.inputs, None, "with nothing left to name it goes back to all");
+        assert_eq!(f.validate(), Ok(()));
+        let mut g = line();
+        g.nodes[3].advanced.inputs = Some(vec![g.nodes[2].id.clone()]);
+        g.prune_inputs();
+        assert_eq!(g.nodes[3].advanced.inputs, Some(vec![g.nodes[2].id.clone()]), "one that still feeds it stays");
     }
 }

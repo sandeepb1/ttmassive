@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, ADV, isDefaultAdvanced, advancedCount, parseDuration, formatDuration, parseWhole, parseUsdCap, parseToolNames, feeders, withAdvanced, pruneInputs, fallbackChoices, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -909,4 +909,93 @@ test('executions fall under running, needs you, done or stopped', () => {
   assert.deepEqual(filterRuns(runs, 'all', ' EXPORT ').map((r) => r.id), ['r1'], 'the goal is searched');
   assert.equal(filterRuns(runs, 'all', 'bug fix').length, 5, 'and the flow name');
   assert.deepEqual(filterRuns(runs, 'active', 'export'), [], 'a heading and words together');
+});
+
+// ---- advanced settings
+
+test('an agent with no advanced settings has none to show, and each one set is counted', () => {
+  assert.ok(isDefaultAdvanced(undefined) && isDefaultAdvanced({}) && isDefaultAdvanced({ timeLimitSecs: null, autoRetries: 0, denyTools: [], freshOnRetry: false }));
+  assert.equal(advancedCount(undefined), 0);
+  assert.equal(advancedCount({ timeLimitSecs: 300, shell: true, denyTools: ['WebFetch'], autoRetries: 2, inputs: ['a'] }), 5);
+  assert.ok(!isDefaultAdvanced({ costCapUsd: 0.5 }));
+});
+
+test('a time is typed as seconds, minutes or hours, and a bare number is minutes', () => {
+  assert.equal(parseDuration(''), null);
+  assert.equal(parseDuration('90s'), 90);
+  assert.equal(parseDuration('5m'), 300);
+  assert.equal(parseDuration('10'), 600, 'a bare number is minutes');
+  assert.equal(parseDuration('2h'), 7200);
+  assert.equal(parseDuration(' 1.5 hours '), 5400);
+  assert.equal(parseDuration('30 minutes'), 1800);
+  assert.equal(parseDuration('1h 30m'), 5400, 'several parts together');
+  assert.equal(parseDuration('1m30s'), 90);
+  assert.equal(parseDuration('1h 30'), 'bad', 'a part after the first needs its unit');
+  for (const bad of ['0', '0s', 'soon', '25h', '-5m', '5 days', '1e3']) assert.equal(parseDuration(bad), 'bad', bad);
+  assert.equal(formatDuration(45), '45s');
+  assert.equal(formatDuration(300), '5m');
+  assert.equal(formatDuration(90), '1m 30s');
+  assert.equal(formatDuration(7200), '2h');
+  assert.equal(formatDuration(5400), '1h 30m');
+  assert.equal(formatDuration(3661), '1h 1m 1s');
+  for (const secs of [1, 59, 60, 61, 3600, 5400, 3661, 86400]) assert.equal(parseDuration(formatDuration(secs)), secs, `${secs} survives being written and read`);
+});
+
+test('counts, dollars and tool names are checked the way the server checks them', () => {
+  assert.equal(parseWhole('', 1, 1000), null);
+  assert.equal(parseWhole('40', 1, 1000), 40);
+  assert.equal(parseWhole('0', 1, 1000), 'bad');
+  assert.equal(parseWhole('1001', 1, ADV.calls), 'bad');
+  assert.equal(parseWhole('2.5', 1, 10), 'bad');
+  assert.equal(parseUsdCap(''), null);
+  assert.equal(parseUsdCap('$1.50'), 1.5);
+  assert.equal(parseUsdCap('0'), 'bad');
+  assert.equal(parseUsdCap('-1'), 'bad');
+  assert.deepEqual(parseToolNames('WebFetch, Bash(git push:*)\nmcp__x__y,WebFetch'), ['WebFetch', 'Bash(git push:*)', 'mcp__x__y']);
+  assert.deepEqual(parseToolNames(''), []);
+  assert.equal(parseToolNames('Bash; rm -rf'), 'bad');
+  assert.equal(parseToolNames(Array.from({ length: ADV.tools + 1 }, (_, i) => `T${i}`).join(',')), 'bad');
+});
+
+const adv = (): Flow => ({
+  id: 'f', name: 'F', maxRetries: 2, budget: { claudePct: 15, codexPct: 10, stopWindowPct: 85 },
+  nodes: ['a', 'b', 'c'].map((id) => ({ id, name: id.toUpperCase(), role: 'researcher', engine: 'claude', model: 'sonnet', systemPrompt: '', checkpoint: false, x: 0, y: 0 }) as FlowNode),
+  edges: [{ id: 'e1', from: 'a', to: 'c', kind: 'forward' }, { id: 'e2', from: 'b', to: 'c', kind: 'forward' }, { id: 'e3', from: 'c', to: 'a', kind: 'retry' }] as Flow['edges'],
+});
+
+test('an agent can be shown the results of only those that feed it, which excludes a send-back connection', () => {
+  const f = adv();
+  assert.deepEqual(feeders(f, 'c').map((n) => n.id), ['a', 'b']);
+  assert.deepEqual(feeders(f, 'a').map((n) => n.id), [], 'a send-back edge is not an input');
+  assert.deepEqual(feeders(f, 'b'), []);
+});
+
+test('settings are kept tidy as they change', () => {
+  assert.equal(withAdvanced(undefined, { autoRetries: 9 }).autoRetries, 3, 'at most three');
+  assert.equal(withAdvanced({ autoRetries: 2 }, { autoRetries: -1 }).autoRetries, 0);
+  const rung = { engine: 'claude' as const, model: 'haiku' };
+  assert.deepEqual(withAdvanced({ autoRetries: 1, fallback: rung }, {}).fallback, rung);
+  assert.equal(withAdvanced({ autoRetries: 1, fallback: rung }, { autoRetries: 0 }).fallback, null, 'with no retries a fallback has nothing to do');
+  assert.equal(withAdvanced({ inputs: ['a'] }, { inputs: [] }).inputs, null, 'an empty choice is all of them');
+  assert.equal(withAdvanced({ shell: true }, { timeLimitSecs: 60 }).shell, true, 'other settings are left as they were');
+});
+
+test('removing a connection leaves no agent pointing at an input it no longer has', () => {
+  let f = adv();
+  f = { ...f, nodes: f.nodes.map((n) => (n.id === 'c' ? { ...n, advanced: { inputs: ['a', 'b'] } } : n)) };
+  assert.equal(pruneInputs(f), f, 'nothing to prune is the same flow');
+  const cut = pruneInputs({ ...f, edges: f.edges.filter((e) => e.id !== 'e2') });
+  assert.deepEqual(cut.nodes.find((n) => n.id === 'c')!.advanced!.inputs, ['a']);
+  const none = pruneInputs({ ...f, edges: f.edges.filter((e) => e.kind !== 'forward') });
+  assert.equal(none.nodes.find((n) => n.id === 'c')!.advanced!.inputs, null, 'with none left it is back to all');
+  const gone = pruneInputs({ ...f, nodes: f.nodes.filter((n) => n.id !== 'a'), edges: f.edges.filter((e) => e.from !== 'a' && e.to !== 'a') });
+  assert.deepEqual(gone.nodes.find((n) => n.id === 'c')!.advanced!.inputs, ['b']);
+});
+
+test('a retry can go to any model the flow could use', () => {
+  const models = { claude: ['opus', 'haiku'], codex: ['gpt-6-luna'], openrouter: [{ account: 'a1', accountName: 'OR', id: 'x/y', driver: 'codex', priceIn: 1, priceOut: 2, tools: true, direct: false }, { account: 'a2', accountName: 'Plain', id: 'p/q', driver: 'claude', priceIn: null, priceOut: null, tools: false, direct: true }] } as unknown as Models;
+  const keys = fallbackChoices(models).map((c) => c.key);
+  assert.deepEqual(keys, ['claude:opus', 'claude:haiku', 'codex:gpt-6-luna', 'or:a1:x/y'], 'a direct call has no tools and cannot take over an agent');
+  const orRung = fallbackChoices(models).find((c) => c.key === 'or:a1:x/y')!.rung;
+  assert.deepEqual([orRung.engine, orRung.account], ['codex', 'a1'], 'it runs on the CLI that runs that model');
 });

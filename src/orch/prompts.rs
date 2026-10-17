@@ -291,7 +291,7 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
                 (None, true) => starters::default_prompt(role).into(),
             },
             // An agent that changes files waits for the user's approval, whatever the designer said.
-            checkpoint: n.get("checkpoint").and_then(Value::as_bool).unwrap_or(false) || custom.as_ref().is_some_and(|c| c.capability == super::roles::Capability::Write),
+            advanced: Default::default(), checkpoint: n.get("checkpoint").and_then(Value::as_bool).unwrap_or(false) || custom.as_ref().is_some_and(|c| c.capability == super::roles::Capability::Write),
             custom,
             engine,
             model,
@@ -332,6 +332,7 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
         downshift: false,
         dial: 2,
     };
+    flow.prune_inputs();
     flow.validate().map_err(anyhow::Error::msg).context("the suggested flow is not valid")?;
     lay_out(&mut flow);
     Ok((flow, notes))
@@ -514,7 +515,7 @@ async fn one_shot(model: &str, system: &str, prompt: &str, schema: Value, cwd: &
         web: None,
         effort: None,
         resume: None,
-        persist: false,
+        max_budget_usd: None, deny_tools: Vec::new(), persist: false,
     };
     let mut agent = claude::Agent::start(&spec).await?;
     let outcome = agent.turn(prompt, |_| {}).await;
@@ -669,7 +670,7 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
                     engine,
                     model: model.clone(),
                     system_prompt: String::new(),
-                    checkpoint: false,
+                    advanced: Default::default(), checkpoint: false,
                     token_cap: None,
                     keep_model: false,
                     account: None,
@@ -744,6 +745,7 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
         downshift: base.downshift,
         dial: base.dial,
     };
+    flow.prune_inputs();
     flow.validate().map_err(anyhow::Error::msg).context("the changed flow is not valid")?;
     place_new(&mut flow, &added);
     let summary = v.get("summary").and_then(Value::as_str).unwrap_or("").trim();
@@ -964,7 +966,7 @@ mod tests {
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: "Look for holes.".into(),
-            checkpoint: false,
+            advanced: Default::default(), checkpoint: false,
             token_cap: None,
             keep_model: false,
             account: None,

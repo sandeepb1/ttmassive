@@ -5,7 +5,7 @@
 import { DEFAULT_ITERATIONS, DEFAULT_LIMITS } from './types.ts';
 import { orLines, orStrip, orUsedPct } from '../usage-format.ts';
 import type {
-  Budget, Capability, CustomRole, EdgeKind, Flow, Turn, Routing, Rung, FlowEdge, FlowModel, OnCap, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
+  Advanced, Budget, Capability, CustomRole, EdgeKind, Flow, Turn, Routing, Rung, FlowEdge, FlowModel, OnCap, FlowNode, LogEntry, Models, Output, Pause, Question, Role, RoleDef, Run, RunStatus, RunSummary, Stage, Tokens, UsageSnapshot,
 } from './types.ts';
 
 // ---------------------------------------------------------------------------- roles
@@ -1037,4 +1037,109 @@ export function runCounts(runs: RunSummary[]): Record<RunGroup, number> {
 export function filterRuns(runs: RunSummary[], group: RunGroup, query: string): RunSummary[] {
   const q = query.trim().toLowerCase();
   return runs.filter((r) => (group === 'all' || runGroup(r.status) === group) && (!q || r.goal.toLowerCase().includes(q) || r.flowName.toLowerCase().includes(q))).sort((a, b) => b.created - a.created);
+}
+
+// ---- advanced settings of an agent --------------------------------------------------------------
+
+/** The bounds the server holds each setting to. */
+export const ADV = { timeMax: 24 * 3600, calls: 1000, retries: 3, charsMin: 500, charsMax: 200_000, tools: 20 } as const;
+
+export const isDefaultAdvanced = (a: Advanced | undefined): boolean =>
+  !a || (a.timeLimitSecs == null && a.costCapUsd == null && a.maxToolCalls == null && !a.autoRetries && !a.fallback && a.inputs == null && a.inputChars == null && !a.freshOnRetry && !a.shell && !(a.denyTools?.length));
+
+/** How many of an agent's advanced settings are set, for the heading that says so. */
+export function advancedCount(a: Advanced | undefined): number {
+  if (!a) return 0;
+  return [a.timeLimitSecs != null, a.costCapUsd != null, a.maxToolCalls != null, !!a.autoRetries, !!a.fallback, a.inputs != null, a.inputChars != null, !!a.freshOnRetry, !!a.shell, !!a.denyTools?.length].filter(Boolean).length;
+}
+
+/** A time typed into a field: `90s`, `5m`, `2h`, or several together such as `1h 30m`; a lone bare number is minutes. Blank is no limit. */
+export function parseDuration(text: string): number | null | 'bad' {
+  const t = text.trim().toLowerCase();
+  if (t === '') return null;
+  const part = /(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)?\s*/y;
+  let secs = 0;
+  let at = 0;
+  let parts = 0;
+  while (at < t.length) {
+    part.lastIndex = at;
+    const m = part.exec(t);
+    // Every part needs its unit, unless it is the only one.
+    if (!m || (!m[2] && parts > 0)) return 'bad';
+    const unit = m[2]?.[0];
+    secs += Number(m[1]) * (unit === 's' ? 1 : unit === 'h' ? 3600 : 60);
+    at = part.lastIndex;
+    parts += 1;
+  }
+  secs = Math.round(secs);
+  return secs >= 1 && secs <= ADV.timeMax ? secs : 'bad';
+}
+
+/** The other way, exactly: `90s`, `5m`, `1h 30m`, `1h 1m 1s`. */
+export function formatDuration(secs: number): string {
+  const [h, m, s] = [Math.floor(secs / 3600), Math.floor((secs % 3600) / 60), secs % 60];
+  return [h && `${h}h`, m && `${m}m`, s && `${s}s`].filter(Boolean).join(' ') || '0s';
+}
+
+/** A whole number in a range typed into a field; blank is none. */
+export function parseWhole(text: string, min: number, max: number): number | null | 'bad' {
+  const t = text.trim();
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isInteger(n) && n >= min && n <= max ? n : 'bad';
+}
+
+/** Dollars typed into a field; blank is no cap. */
+export function parseUsdCap(text: string): number | null | 'bad' {
+  const t = text.trim().replace(/^\$/, '');
+  if (t === '') return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 && n < 1e6 ? n : 'bad';
+}
+
+/** Tool names typed in, separated by commas or lines: trimmed, each once. `bad` when a name is not one, or there are too many. */
+export function parseToolNames(text: string): string[] | 'bad' {
+  const names = [...new Set(text.split(/[\n,]/).map((t) => t.trim()).filter(Boolean))];
+  const ok = names.length <= ADV.tools && names.every((n) => n.length <= 80 && /^[A-Za-z0-9_:*().\- ]+$/.test(n));
+  return ok ? names : 'bad';
+}
+
+/** The agents whose results `node` can be shown: the ones that feed it, in the order they are on the chart. */
+export function feeders(flow: Pick<Flow, 'nodes' | 'edges'>, nodeId: string): FlowNode[] {
+  const ids = new Set(flow.edges.filter((e) => e.kind === 'forward' && e.to === nodeId).map((e) => e.from));
+  return flow.nodes.filter((n) => ids.has(n.id));
+}
+
+/** The settings with a change made, kept tidy: a fallback that is the same as nothing, and an empty list of inputs, go away. */
+export function withAdvanced(a: Advanced | undefined, patch: Partial<Advanced>): Advanced {
+  const next: Advanced = { ...(a ?? {}), ...patch };
+  if (next.autoRetries != null) next.autoRetries = Math.max(0, Math.min(ADV.retries, Math.round(next.autoRetries)));
+  if (!next.autoRetries) next.fallback = null;
+  if (next.inputs && next.inputs.length === 0) next.inputs = null;
+  return next;
+}
+
+/** After a connection or an agent is removed, take out of every agent's `inputs` any that no longer feed it, as the server does. */
+export function pruneInputs(flow: Flow): Flow {
+  let changed = false;
+  const nodes = flow.nodes.map((n) => {
+    const list = n.advanced?.inputs;
+    if (!list) return n;
+    const fed = new Set(feeders(flow, n.id).map((f) => f.id));
+    const kept = list.filter((i) => fed.has(i));
+    if (kept.length === list.length) return n;
+    changed = true;
+    return { ...n, advanced: { ...n.advanced, inputs: kept.length ? kept : null } };
+  });
+  return changed ? { ...flow, nodes } : flow;
+}
+
+/** The models an agent's retry may be sent to, as picker entries: the same pool a ladder draws on. */
+export function fallbackChoices(models: Models): { key: string; label: string; rung: Rung }[] {
+  const several = new Set(models.openrouter.map((m) => m.account)).size > 1;
+  const plan = (engine: 'claude' | 'codex', list: string[]) => list.map((model) => ({ key: rungKey({ engine, model, account: null }), label: `${engine === 'claude' ? 'Claude' : 'Codex'} · ${model}`, rung: { engine, model, account: null, effort: null } as Rung }));
+  const paid = models.openrouter
+    .filter((m) => !m.direct)
+    .map((m) => ({ key: `or:${m.account}:${m.id}`, label: several ? `${m.accountName} · ${m.id}` : m.id, rung: { engine: m.driver, model: m.id, account: m.account, effort: null } as Rung }));
+  return [...plan('claude', models.claude), ...plan('codex', models.codex), ...paid];
 }

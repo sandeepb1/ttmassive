@@ -62,8 +62,34 @@ export interface FlowNode {
   tokenCap?: number | null;
   /** Never switch this agent to a cheaper model. */
   keepModel?: boolean;
+  /** Limits, retries, context and access beyond its role. */
+  advanced?: Advanced;
   x: number;
   y: number;
+}
+
+/** Limits, retries, context and access beyond what an agent's role gives. Every setting is off until it is set. */
+export interface Advanced {
+  /** Stop a turn that takes longer than this many seconds. */
+  timeLimitSecs?: number | null;
+  /** Most dollars the agent may spend in one run, when it is paid for per token. */
+  costCapUsd?: number | null;
+  /** Stop a turn that makes more tool calls than this. */
+  maxToolCalls?: number | null;
+  /** How many times a failed turn is tried again by itself before the run stops and asks. */
+  autoRetries?: number;
+  /** Where a retry runs when the first model failed. */
+  fallback?: Rung | null;
+  /** The earlier agents whose results it is shown; absent for all of those that feed it. */
+  inputs?: string[] | null;
+  /** Cut each result it is shown to this many characters. */
+  inputChars?: number | null;
+  /** Begin a new conversation each time it runs again. */
+  freshOnRetry?: boolean;
+  /** Let an agent that only reads run commands in a sandbox that cannot write. */
+  shell?: boolean;
+  /** Tools taken away from it, by name. */
+  denyTools?: string[];
 }
 
 export type Routing = 'pinned' | 'ladder' | 'auto';

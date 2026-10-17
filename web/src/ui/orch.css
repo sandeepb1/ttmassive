@@ -2325,8 +2325,57 @@ button.mc-tl-head:hover {
 
 /* The folder a flow is in, ahead of its name in the top bar: one line, cut short rather than wrapped. */
 .mc-crumbtext {
+  flex-shrink: 0;
   max-width: 12rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* An agent's advanced settings: closed until they are wanted, open when any is set. */
+.mc-adv {
+  border-top: 1px solid var(--mc-line-soft);
+  padding-top: 0.75rem;
+}
+.mc-adv > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--mc-dim);
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+.mc-adv > summary::-webkit-details-marker {
+  display: none;
+}
+.mc-adv > summary::before {
+  content: '›';
+  display: inline-block;
+  transition: transform 0.12s;
+}
+.mc-adv[open] > summary::before {
+  transform: rotate(90deg);
+}
+.mc-adv-head {
+  margin: 1rem 0 0.25rem;
+  color: var(--mc-faint);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mc-field[aria-invalid='true'] {
+  border-color: var(--mc-bad);
+}
+.mc-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.mc-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
 }

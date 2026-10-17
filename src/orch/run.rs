@@ -187,6 +187,9 @@ pub struct NodeRun {
     /// What those credits cost, in dollars.
     #[serde(default)]
     pub web_usd: f64,
+    /// How many times a failed turn has been tried again by itself since the agent last finished one.
+    #[serde(default)]
+    pub auto_retries_used: u8,
     pub transcript: Vec<String>,
     /// The agent's own conversation id after its latest finished turn, for opening it in a live session.
     #[serde(default)]
@@ -218,7 +221,7 @@ impl NodeRun {
             error: None,
             tokens: Tokens::default(),
             cost_usd: 0.0,
-            credits: 0, web_usd: 0.0,
+            credits: 0, web_usd: 0.0, auto_retries_used: 0,
             transcript: Vec::new(),
             session: None,
             model_used: None,
@@ -504,7 +507,7 @@ mod tests {
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: String::new(),
-            checkpoint: false,
+            advanced: Default::default(), checkpoint: false,
             token_cap: None,
             keep_model: false,
             account: None,
@@ -541,7 +544,7 @@ mod tests {
     fn a_runs_cost_is_what_openrouter_charged_for_its_agents_on_it() {
         let mut r = Run::new("r".into(), Flow { id: "f".into(), name: "f".into(), nodes: vec![], edges: vec![], max_retries: 1, budget: Default::default(), downshift: false, dial: 2 , folder: String::new(), purpose: String::new()}, "g".into(), 0);
         assert_eq!(r.cost_usd(), 0.0);
-        let mk = |id: &str, account: Option<&str>| Node { id: id.into(), name: id.into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "m".into(), account: account.map(String::from), direct: false, web: false, effort: None, routing: crate::orch::graph::Routing::Pinned, ladder: Vec::new(), system_prompt: String::new(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0 };
+        let mk = |id: &str, account: Option<&str>| Node { id: id.into(), name: id.into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "m".into(), account: account.map(String::from), direct: false, web: false, effort: None, routing: crate::orch::graph::Routing::Pinned, ladder: Vec::new(), system_prompt: String::new(), advanced: Default::default(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0 };
         r.flow.nodes = vec![mk("plan", None), mk("or1", Some("a")), mk("or2", Some("a"))];
         for (id, cost) in [("plan", 5.0), ("or1", 0.25), ("or2", 0.5)] {
             r.nodes.insert(id.into(), NodeRun { cost_usd: cost, ..NodeRun::new() });

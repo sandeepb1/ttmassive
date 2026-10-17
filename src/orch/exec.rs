@@ -165,6 +165,12 @@ fn start_ready(run: &mut Run, limit: &dyn Fn(&Run) -> Option<String>, pressure: 
             }
         };
         node.model = model;
+        // The turn after a failure runs on the fallback the agent was given, when it has one.
+        if run.nodes[&id].auto_retries_used > 0 {
+            if let Some(r) = &node.advanced.fallback {
+                (node.engine, node.model, node.account, node.effort) = (r.engine, r.model.clone(), r.account.clone(), r.effort.clone());
+            }
+        }
         let prompt = handoff::build_prompt(run, &node);
         let inputs: Vec<String> = run.flow.inputs_of(&id).iter().map(|i| name_of(run, i)).collect();
         let why = if run.feedback.contains_key(&id) {
@@ -270,6 +276,18 @@ fn watch_cache(n: &mut super::run::NodeRun, turn: &super::usage::Tokens) {
 fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option<Pause> {
     let fail = |run: &mut Run, message: String| {
         let n = run.nodes.get_mut(&node.id).expect("every node has a state");
+        // A turn that failed may be tried again by itself, a few times, before the run stops to ask. It starts again from its own
+        // beginning, and on the fallback it was given, if any.
+        if n.auto_retries_used < node.advanced.auto_retries {
+            n.auto_retries_used += 1;
+            n.status = NodeStatus::Interrupted;
+            n.error = None;
+            let (used, max) = (n.auto_retries_used, node.advanced.auto_retries);
+            let on = node.advanced.fallback.as_ref().map_or(String::new(), |r| format!(" on {}", r.model));
+            let brief: String = message.chars().take(160).collect();
+            run.note(Some(&node.id), LogKind::Decision, format!("{} failed ({brief}); trying again{on}, {used} of {max}", node.name), Some(message));
+            return None;
+        }
         n.status = NodeStatus::Failed;
         n.error = Some(message.clone());
         run.note(Some(&node.id), LogKind::Error, format!("✕ {} failed", node.name), Some(message.clone()));
@@ -322,6 +340,11 @@ fn finish(run: &mut Run, node: &Node, result: anyhow::Result<Outcome>) -> Option
     };
     n.status = NodeStatus::Done;
     n.output = Some(output.clone());
+    // A turn that finished on a fallback does not leave the agent there: its next turn is on its own model again.
+    if n.auto_retries_used > 0 && node.advanced.fallback.is_some() {
+        n.model_used = None;
+    }
+    n.auto_retries_used = 0;
     let t = outcome.tokens;
     let shown = serde_json::to_string_pretty(&output).unwrap_or_default();
     run.feedback.remove(&node.id);
@@ -714,7 +737,7 @@ mod tests {
             engine: Engine::Claude,
             model: "sonnet".into(),
             system_prompt: String::new(),
-            checkpoint: false,
+            advanced: Default::default(), checkpoint: false,
             token_cap: None,
             keep_model: false,
             account: None,
@@ -1017,6 +1040,60 @@ mod tests {
         assert_eq!(status(&run), RunStatus::Done);
         assert_eq!(fake.ran(), vec!["orch", "res", "res", "build", "judge"]);
         assert_eq!(run.lock().unwrap().nodes["res"].attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_is_tried_again_by_itself_up_to_the_agents_limit() {
+        let mut f = flow();
+        f.nodes.iter_mut().find(|n| n.id == "res").unwrap().advanced.auto_retries = 2;
+        let run = new_run(f);
+        let fake = Fake::with(vec![("res", Err(anyhow::anyhow!("claude exited"))), ("res", Err(anyhow::anyhow!("overloaded"))), ("judge", approve())]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done, "the third try went through, so the run never stopped to ask");
+        assert_eq!(fake.ran(), vec!["orch", "res", "res", "res", "build", "judge"]);
+        let r = run.lock().unwrap();
+        assert_eq!((r.nodes["res"].attempts, r.nodes["res"].auto_retries_used), (3, 0), "every try is an attempt, and the count starts again once it finishes");
+        let notes: Vec<_> = r.log.iter().filter(|e| e.title.contains("trying again")).map(|e| e.title.clone()).collect();
+        assert_eq!(notes.len(), 2);
+        assert!(notes[0].contains("claude exited") && notes[0].contains("1 of 2") && notes[1].contains("2 of 2"), "{notes:?}");
+    }
+
+    #[tokio::test]
+    async fn once_the_retries_are_used_up_the_run_stops_and_asks_as_it_always_did() {
+        let mut f = flow();
+        f.nodes.iter_mut().find(|n| n.id == "res").unwrap().advanced.auto_retries = 1;
+        let run = new_run(f);
+        let fake = Fake::with(vec![("res", Err(anyhow::anyhow!("one"))), ("res", Err(anyhow::anyhow!("two")))]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Paused { pause: Pause::Failed { node: "res".into(), message: "two".into() } });
+        assert_eq!(fake.ran(), vec!["orch", "res", "res"], "one try and one retry");
+        assert_eq!(run.lock().unwrap().nodes["res"].status, NodeStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_no_retries_stops_the_run_at_the_first_failure_as_before() {
+        let run = new_run(flow());
+        let fake = Fake::with(vec![("res", Err(anyhow::anyhow!("claude exited")))]);
+        go(&run, &fake).await;
+        assert!(matches!(status(&run), RunStatus::Paused { pause: Pause::Failed { .. } }));
+        assert_eq!(fake.ran(), vec!["orch", "res"]);
+    }
+
+    #[tokio::test]
+    async fn the_try_after_a_failure_runs_on_the_fallback_and_the_agent_then_goes_back_to_its_own_model() {
+        let mut f = flow();
+        let res = f.nodes.iter_mut().find(|n| n.id == "res").unwrap();
+        let own = res.model.clone();
+        res.advanced.auto_retries = 1;
+        res.advanced.fallback = Some(crate::orch::graph::Rung { engine: res.engine, model: "haiku".into(), account: None, effort: None });
+        let run = new_run(f);
+        let fake = Fake::with(vec![("res", Err(anyhow::anyhow!("model overloaded"))), ("judge", approve())]);
+        go(&run, &fake).await;
+        assert_eq!(status(&run), RunStatus::Done);
+        let on: Vec<String> = fake.models.lock().unwrap().iter().filter(|(id, _)| id == "res").map(|(_, m)| m.clone()).collect();
+        assert_eq!(on, vec![own, "haiku".to_string()], "first its own model, then the fallback");
+        assert_eq!(run.lock().unwrap().nodes["res"].model_used, None, "a later turn is on its own model again");
+        assert!(run.lock().unwrap().log.iter().any(|e| e.title.contains("trying again on haiku")));
     }
 
     #[tokio::test]

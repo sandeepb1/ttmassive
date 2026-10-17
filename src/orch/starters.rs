@@ -21,7 +21,7 @@ fn node(id: &str, name: &str, role: Role, engine: Engine, model: &str, layer: us
         engine,
         model: model.into(),
         system_prompt: prompt.into(),
-        checkpoint: false,
+        advanced: Default::default(), checkpoint: false,
         token_cap: None,
         keep_model: false,
         account: None,

@@ -164,7 +164,7 @@ mod tests {
         let ladder = ["haiku", "sonnet", "opus", "opus-max"].iter().take(rungs).map(|m| rung(m, Some("medium"))).collect();
         Node {
             id: "n".into(), name: "Builder".into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "sonnet".into(), account: None,
-            direct: false, web: false, effort: None, routing, ladder, system_prompt: String::new(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0,
+            direct: false, web: false, effort: None, routing, ladder, system_prompt: String::new(), advanced: Default::default(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0,
         }
     }
 
