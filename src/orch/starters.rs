@@ -70,7 +70,7 @@ fn flow(id: &str, name: &str, specs: &[Spec], edges: &[(&str, &str, EdgeKind)], 
         budget,
         downshift: false,
         dial: 2,
-        purpose: purpose_of(id).into(),
+        folder: String::new(), purpose: purpose_of(id).into(),
     }
 }
 

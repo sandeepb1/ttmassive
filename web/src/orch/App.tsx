@@ -14,11 +14,13 @@ import { Timeline } from './Timeline';
 import { Inspector } from './Inspector';
 import { NodeList } from './NodeList';
 import { RunBar } from './RunBar';
-import { Sidebar } from './Sidebar';
+import { FlowsPage } from './FlowsPage';
+import { RunsPanel } from './RunsPanel';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, allFolders, inFolder, parentOf, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
 import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
+const INSPECTOR_KEY = 'ttm.orch.inspector';
 const PHONE = '(max-width: 699px)';
 const WIDE = '(min-width: 1100px)';
 
@@ -141,8 +143,11 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const [dirty, setDirty] = useState(false);
   // Whether the flow has been changed since it was opened or saved: leaving it then asks first.
   const edited = useRef(false);
-  // The sidebar's level: the list of flows, or the open flow with its executions.
-  const [nav, setNav] = useState<'flows' | 'flow'>('flow');
+  // What is on screen: every flow, every execution, or one flow (its design, or its executions).
+  const [page, setPage] = useState<'flows' | 'runs' | 'flow'>(initialRun ? 'flow' : 'flows');
+  const [flowTab, setFlowTab] = useState<'design' | 'runs'>(initialRun ? 'runs' : 'design');
+  // The folder the table of flows is showing; empty at the top level.
+  const [at, setAt] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [runId, setRunId] = useState<string | null>(initialRun);
   const [run, setRun] = useState<Run | null>(null);
@@ -151,8 +156,26 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
   const [answering, setAnswering] = useState(false);
 
-  const [sideOpen, setSideOpen] = useState(false);
-  const [inspOpen, setInspOpen] = useState(false);
+  // The details panel is a column beside the design on a wide screen and a drawer on a narrow one. Either way it can be
+  // closed, and on a wide screen the choice is remembered.
+  const [inspOpen, setInspOpenState] = useState(() => {
+    try {
+      return matchMedia(WIDE).matches && localStorage.getItem(INSPECTOR_KEY) !== '0';
+    } catch {
+      return false;
+    }
+  });
+  const setInspOpen = useCallback((v: boolean | ((open: boolean) => boolean)) => {
+    setInspOpenState((open) => {
+      const next = typeof v === 'function' ? v(open) : v;
+      try {
+        if (matchMedia(WIDE).matches) localStorage.setItem(INSPECTOR_KEY, next ? '1' : '0');
+      } catch {
+        /* the choice is simply not remembered */
+      }
+      return next;
+    });
+  }, []);
   const [view, setView] = useState<'canvas' | 'list'>('canvas');
   // An execution opens on its timeline; the chart is one tap away. A flow being designed has only the chart.
   const [runView, setRunView] = useState<'timeline' | 'chart'>('timeline');
@@ -209,8 +232,6 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       if (rs.ok) setRuns(rs.data);
       if (u.ok) setUsage(u.data);
       setRecents(d);
-      // Someone with flows or past executions starts at their list; a new user starts in the editor.
-      if (!initialRun && ((f.ok && f.data.saved.length) || (rs.ok && rs.data.length))) setNav('flows');
       setLoaded(true);
     })();
     // Once, when the mode opens.
@@ -280,7 +301,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     setFlow(structuredClone(savedFlow ?? run.flow));
     setDirty(!savedFlow);
     edited.current = false;
-    setNav('flow');
+    setPage('flow');
   }, [run?.id, loaded, lists.saved, setFlow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = useCallback(
@@ -345,6 +366,10 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
 
   const entries = useMemo(() => flowEntries(lists.saved, runs), [lists.saved, runs]);
   const isSaved = lists.saved.some((f) => f.id === flow.id);
+  // This flow's executions, newest first.
+  const flowRuns = useMemo(() => entries.find((e) => e.id === flow.id)?.runs ?? [], [entries, flow.id]);
+  // The design, or an execution's chart or timeline, is on screen; the other part of a flow is the table of its executions.
+  const showDesign = flowTab === 'design' || runId !== null;
   const shown = run ? run.flow : flow;
   const editable = !run;
   const problem = useMemo(() => flowProblem(flow), [flow]);
@@ -365,7 +390,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     setDirty(unsaved);
     edited.current = false;
     setSelected(null);
-    setNav('flow');
+    setPage('flow');
+    setFlowTab('design');
     fit();
   };
   const openEntry = async (e: FlowEntry) => {
@@ -373,7 +399,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     const savedFlow = lists.saved.find((f) => f.id === e.id);
     if (savedFlow) {
       if (e.id !== flow.id) edit(structuredClone(savedFlow), false);
-      else (setRunId(null), setNav('flow'));
+      else (setRunId(null), setPage('flow'), setFlowTab('design'));
     } else if (e.last) {
       // Only its executions are left: open the flow as it was in the latest one.
       const r = await orch.getRun(e.last.id);
@@ -381,32 +407,46 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       else say(r.error);
     }
   };
+  // A new flow is made in the folder being looked at.
   const useTemplate = (f: Flow) => {
     if (!mayLeave()) return;
-    edit(cloneFlow(f), true);
-    setSideOpen(false);
+    edit({ ...cloneFlow(f), folder: at }, true);
   };
   const newFlow = () => {
     if (!mayLeave()) return;
-    edit(emptyFlow(newFlowId(), 'New flow'), false);
-    setSideOpen(false);
+    edit({ ...emptyFlow(newFlowId(), 'New flow'), folder: at }, false);
   };
   const duplicate = (e: FlowEntry) => {
     const f = lists.saved.find((x) => x.id === e.id);
     if (!f || !mayLeave()) return;
     edit({ ...cloneFlow(f), name: `${f.name} copy`.slice(0, 60) }, true);
-    setSideOpen(false);
   };
   const toDesign = () => {
     setRunId(null);
     setSelected(null);
-    setSideOpen(false);
+    setFlowTab('design');
   };
   const openRun = (id: string) => {
     setRunId(id);
     setSelected(null);
-    setNav('flow');
-    setSideOpen(false);
+    setPage('flow');
+    setFlowTab('runs');
+  };
+  /** Back to the table of flows, in the folder the open flow is in. Unsaved changes are asked about first. */
+  const toFlows = () => {
+    if (page === 'flow' && !mayLeave()) return;
+    edited.current = false;
+    setError(null);
+    if (page === 'flow') setAt(flowRef.current.folder ?? '');
+    setRunId(null);
+    setPage('flows');
+  };
+  const toRuns = () => {
+    if (page === 'flow' && !mayLeave()) return;
+    edited.current = false;
+    setError(null);
+    setRunId(null);
+    setPage('runs');
   };
   const select = (id: string | null) => {
     setSelected(id);
@@ -446,17 +486,49 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     if (!confirm(`Delete the flow “${e.name}”?${kept}`)) return;
     void act(() => orch.deleteFlow(e.id), () => {
       void refreshLists();
-      if (e.id === flow.id) edit(emptyFlow(newFlowId(), 'New flow'), false), setNav('flows');
+      if (e.id === flow.id) (edit(emptyFlow(newFlowId(), 'New flow'), false), setPage('flows'));
     });
   };
+  // ------------------------------------------------------------------ folders
+  const folders = useMemo(() => allFolders(lists.folders ?? [], entries), [lists.folders, entries]);
+  const newFolder = (path: string) => void act(() => orch.createFolder(path), () => void refreshLists());
+  const renameFolder = (from: string, to: string) =>
+    void act(
+      () => orch.renameFolder(from, to),
+      () => {
+        if (inFolder(at, from)) setAt(to + at.slice(from.length));
+        // The flow in the editor is a copy; keep where it is kept in step, so saving it does not undo the move.
+        const f = flowRef.current;
+        if (inFolder(f.folder ?? '', from)) setFlow({ ...f, folder: to + (f.folder ?? '').slice(from.length) });
+        void refreshLists();
+      },
+    );
+  const deleteFolder = (path: string) => {
+    if (!confirm(`Delete the folder “${path}”? It has no flows in it.`)) return;
+    void act(
+      () => orch.deleteFolder(path),
+      () => {
+        if (inFolder(at, path)) setAt(parentOf(path));
+        void refreshLists();
+      },
+    );
+  };
+  const moveFlow = (e: FlowEntry, folder: string) =>
+    void act(
+      () => orch.moveFlow(e.id, folder),
+      () => {
+        if (e.id === flowRef.current.id) setFlow({ ...flowRef.current, folder });
+        void refreshLists();
+        say(`Moved “${e.name}”`);
+      },
+    );
   const suggest = (goal: string, thenRun = false) =>
     void act(
       () => orch.suggest(goal),
       ({ notes, ...f }) => {
-        edit(f, true);
+        edit({ ...f, folder: at }, true);
         edited.current = true;
         setSuggesting(false);
-        setSideOpen(false);
         // Design and run: the same words are the first task, so the run dialog opens with them, to be checked and started.
         setRunGoal(thenRun ? goal : '');
         setDialog(thenRun);
@@ -511,7 +583,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         setRun(r);
         setRunId(r.id);
         setSelected(null);
-        setNav('flow');
+        setPage('flow');
+        setFlowTab('runs');
         void refreshLists();
       },
     );
@@ -650,102 +723,139 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         <button type="button" className="mc-btn mc-exit" title="Leave the orchestrator and go back to single agent mode: your sessions" onClick={onExit}>
           <Icon name="agent" /> Single agent
         </button>
-        {!wide && (
-          <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label="Flows and executions" onClick={() => setSideOpen((o) => !o)}>
-            <Icon name="menu" />
-          </button>
-        )}
         <div className="mc-brand">
           <span className="mc-brand-mark">
             <Icon name="workflow" />
           </span>
           <span className="mc-brand-text">Orchestrator</span>
         </div>
-        <input className="mc-flow-name" aria-label="Flow name" value={shown.name} disabled={!editable} maxLength={60} onChange={(e) => editFlow((f) => ({ ...f, name: e.target.value }))} />
-        {editable && dirty && (
-          <span className="mc-pill mc-hide-narrow" data-tone="warn">
-            unsaved
-          </span>
+        {page === 'flow' ? (
+          <>
+            <button type="button" className="mc-btn mc-btn-quiet" aria-label="Back to all flows" title={shown.folder ? `Back to ${shown.folder.replace(/\//g, ' › ')}` : 'Back to all flows'} onClick={toFlows}>
+              <Icon name="back" /> <span className="mc-hide-narrow">Flows</span>
+            </button>
+            {shown.folder && <span className="mc-muted mc-hide-narrow mc-crumbtext" title={shown.folder.replace(/\//g, ' › ')}>{shown.folder.replace(/\//g, ' › ')} ›</span>}
+            <input className="mc-flow-name" aria-label="Flow name" value={shown.name} disabled={!editable} maxLength={60} onChange={(e) => editFlow((f) => ({ ...f, name: e.target.value }))} />
+            {editable && dirty && (
+              <span className="mc-pill mc-hide-narrow" data-tone="warn">
+                unsaved
+              </span>
+            )}
+            <div className="mc-nav" role="tablist" aria-label="This flow">
+              <button type="button" role="tab" className="mc-navtab" aria-selected={!run && flowTab === 'design'} onClick={toDesign}>
+                Design
+              </button>
+              <button type="button" role="tab" className="mc-navtab" aria-selected={!!run || flowTab === 'runs'} onClick={() => (setRunId(null), setSelected(null), setFlowTab('runs'))}>
+                Runs{flowRuns.length ? ` · ${flowRuns.length}` : ''}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="mc-nav" role="tablist" aria-label="Orchestrator pages">
+            <button type="button" role="tab" className="mc-navtab" aria-selected={page === 'flows'} onClick={toFlows}>
+              Flows
+            </button>
+            <button type="button" role="tab" className="mc-navtab" aria-selected={page === 'runs'} onClick={toRuns}>
+              Runs{runs.some((r) => r.status.state === 'running') ? ` · ${runs.filter((r) => r.status.state === 'running').length} running` : ''}
+            </button>
+          </div>
         )}
         <span className="mc-spacer" />
         <UsageMeters gauges={meters} api={apiMeters} />
-        <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon mc-hide-narrow" aria-label="Settings and plan limits" title="Plan limits and flow settings" onClick={openLimits}>
-          <Icon name="sliders" />
-        </button>
-        <div className="mc-top-actions">
-          {editable ? (
-            <>
-              {!phone && (
-                <button type="button" className="mc-btn mc-hide-narrow" onClick={() => (editFlow(tidy), window.setTimeout(() => setFitToken((t) => t + 1), 0))} title="Line the agents up left to right">
-                  <Icon name="grid" /> Tidy
+        {page === 'flow' && showDesign && (
+          <>
+            <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon mc-hide-narrow" aria-label="Settings and plan limits" title="Plan limits and flow settings" onClick={openLimits}>
+              <Icon name="sliders" />
+            </button>
+            <div className="mc-top-actions">
+              {editable ? (
+                <>
+                  {!phone && (
+                    <button type="button" className="mc-btn mc-hide-narrow" onClick={() => (editFlow(tidy), window.setTimeout(() => setFitToken((t) => t + 1), 0))} title="Line the agents up left to right">
+                      <Icon name="grid" /> Tidy
+                    </button>
+                  )}
+                  <button type="button" className="mc-btn" disabled={!dirty || !!problem || busy} onClick={save} title={problem ?? 'Save this flow'}>
+                    <Icon name="save" /> <span className="mc-hide-narrow">Save</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="mc-btn mc-hide-narrow" onClick={useThisVersion} title="Put this execution's design back in the editor">
+                    <Icon name="retry" /> Use this version
+                  </button>
+                  <button type="button" className="mc-btn" aria-label="Back to design" title="Back to the design" onClick={toDesign}>
+                    <Icon name="edit" /> <span className="mc-hide-narrow">Back to design</span>
+                  </button>
+                </>
+              )}
+              {!phone && !showTimeline && (
+                <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={showList ? 'Show the chart' : 'Show a list'} onClick={() => setView(showList ? 'canvas' : 'list')}>
+                  <Icon name={showList ? 'columns' : 'todo'} />
                 </button>
               )}
-              <button type="button" className="mc-btn mc-hide-narrow" disabled={!dirty || !!problem || busy} onClick={save} title={problem ?? 'Save this flow'}>
-                <Icon name="save" /> Save
+              <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={inspOpen ? 'Close the details panel' : 'Open the details panel'} aria-pressed={inspOpen} onClick={() => setInspOpen((o) => !o)}>
+                <Icon name="panel-right" />
               </button>
-              <button type="button" className="mc-btn mc-btn-primary" disabled={!!problem} onClick={() => (setRunGoal(''), setDialog(true))} title={problem ?? 'Start a run of this flow'}>
-                <Icon name="play" /> Run
-              </button>
-            </>
-          ) : (
-            <>
-              <button type="button" className="mc-btn mc-hide-narrow" onClick={useThisVersion} title="Put this execution's design back in the editor">
-                <Icon name="retry" /> Use this version
-              </button>
-              <button type="button" className="mc-btn" aria-label="Back to design" title="Back to the design" onClick={toDesign}>
-                <Icon name="edit" /> <span className="mc-hide-narrow">Back to design</span>
-              </button>
-            </>
-          )}
-          {!phone && !showTimeline && (
-            <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={showList ? 'Show the chart' : 'Show a list'} onClick={() => setView(showList ? 'canvas' : 'list')}>
-              <Icon name={showList ? 'columns' : 'todo'} />
-            </button>
-          )}
-          {!wide && (
-            <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label="Details" onClick={() => setInspOpen((o) => !o)}>
-              <Icon name="panel-right" />
-            </button>
-          )}
-        </div>
+            </div>
+          </>
+        )}
       </header>
 
-      <div className="mc-body">
-        <aside className="mc-side" data-open={sideOpen} aria-label="Flows and executions">
+      {page === 'flows' && (
+        <div className="mc-pagewrap">
           {!loaded ? (
             <p className="mc-empty" role="status">
               Loading…
             </p>
           ) : (
-          <Sidebar
-            level={nav}
-            entries={entries}
-            starters={lists.starters}
-            flowId={flow.id}
-            flowName={flow.name}
-            saved={isSaved}
-            dirty={dirty}
-            runId={runId}
-            canRun={!problem}
-            onOpenFlow={(e) => void openEntry(e)}
-            onUseStarter={useTemplate}
-            onNewFlow={newFlow}
-            onSuggest={() => (setError(null), setSuggesting(true))}
-            onDuplicate={duplicate}
-            onDelete={removeFlow}
-            onBack={() => setNav('flows')}
-            onDesign={toDesign}
-            onOpenRun={openRun}
-            onNewRun={() => (setSideOpen(false), setRunGoal(''), setDialog(true))}
-            onDeleteRun={removeRun}
+            <FlowsPage
+              entries={entries}
+              folders={folders}
+              starters={lists.starters}
+              at={at}
+              onAt={setAt}
+              onOpen={(e) => void openEntry(e)}
+              onNewFlow={newFlow}
+              onDesign={() => (setError(null), setSuggesting(true))}
+              onUseStarter={useTemplate}
+              onNewFolder={newFolder}
+              onRenameFolder={renameFolder}
+              onDeleteFolder={deleteFolder}
+              onMove={moveFlow}
+              openMenu={setMenu}
+              flowMenu={flowMenu}
+            />
+          )}
+        </div>
+      )}
+      {page === 'runs' && (
+        <div className="mc-pagewrap">
+          <RunsPanel title="Executions" runs={runs} showFlow empty="No executions yet. Open a flow and press Run." onOpen={(r) => openRun(r.id)} onRerun={(r) => rerun(r.id)} onDelete={removeRun} openMenu={setMenu} runMenu={runMenu} />
+        </div>
+      )}
+      {page === 'flow' && flowTab === 'runs' && !run && (
+        <div className="mc-pagewrap">
+          <RunsPanel
+            title={`${flow.name || 'Untitled flow'} · executions`}
+            runs={flowRuns}
+            showFlow={false}
+            action={
+              <button type="button" className="mc-btn mc-btn-primary" disabled={!!problem} onClick={() => (setRunGoal(''), setDialog(true))} title={problem ?? 'Start a run of this flow'}>
+                <Icon name="play" /> New run
+              </button>
+            }
+            empty="No executions yet. Press New run, and each one will be kept here."
+            onOpen={(r) => openRun(r.id)}
             onRerun={(r) => rerun(r.id)}
+            onDelete={removeRun}
             openMenu={setMenu}
-            flowMenu={flowMenu}
             runMenu={runMenu}
           />
-          )}
-        </aside>
-
+        </div>
+      )}
+      {page === 'flow' && showDesign && (
+        <div className="mc-body" data-insp={inspOpen}>
         <main className="mc-stage" data-list={showList || showTimeline}>
           {run && <RunBar run={run} busy={busy} link={link} onAnswer={() => setAnswering(true)} onMoreRounds={(n) => void act(() => orch.moreRounds(run.id, n), applyRun)} onApprove={(n) => void act(() => orch.approve(run.id, n), applyRun)} onResume={(waive) => void act(() => orch.resume(run.id, waive), applyRun)} onLimits={openLimits} onCancel={() => void act(() => orch.cancel(run.id), applyRun)} onCopy={copyText} view={runView} onView={setRunView} onRerun={() => rerun(run.id)} />}
           {showTimeline ? (
@@ -759,6 +869,11 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             </ReactFlowProvider>
           )}
           {editable && <Assistant flow={flow} onReplace={(f) => (editFlow(() => f), fit())} onDesign={() => (setError(null), setSuggesting(true))} />}
+          {editable && (
+            <button type="button" className="mc-run-fab" disabled={!!problem} onClick={() => (setRunGoal(''), setDialog(true))} title={problem ?? 'Start a run of this flow'}>
+              <Icon name="play" /> Run
+            </button>
+          )}
           {editable && flow.nodes.length === 0 && (
             <div className="mc-empty" style={{ position: 'absolute', inset: '32% 0 auto', zIndex: 3 }}>
               <p style={{ margin: '0 0 0.75rem' }}>An empty flow. Add agents from the bar below, open a starter, or</p>
@@ -773,32 +888,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               {logOpen && <LogPanel run={run} onClose={toggleLog} />}
             </>
           )}
-          {error && !dialog && run?.status.state !== 'grilling' && (
-            <p className="mc-error" role="alert" style={{ position: 'absolute', left: '0.75rem', bottom: run ? '3.5rem' : '0.75rem', right: '0.75rem', margin: 0, zIndex: 6 }}>
-              {error}
-            </p>
-          )}
-          {toast && (
-            <div className="mc-toast" role="status">
-              {toast}
-            </div>
-          )}
-          {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
-          {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
-          {rerunProblem && <RerunProblemDialog message={rerunProblem.message} project={rerunProblem.project} git={rerunProblem.git} busy={busy} onFix={() => void fixAndRerun()} onClose={() => setRerunProblem(null)} />}
-        {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} initialGoal={runGoal} onCreate={createRun} onClose={() => (setDialog(false), setRunGoal(''), setError(null))} />}
-          {run?.status.state === 'grilling' && (
-            <GrillDialog
-              run={run}
-              thinking={thinking}
-              error={error}
-              onAnswer={(a) => void doGrill(a)}
-              onStart={(brief) => void act(() => orch.start(run.id, brief), applyRun)}
-              onStop={() => void act(() => orch.cancel(run.id), applyRun)}
-            />
-          )}
         </main>
-
         <aside className="mc-inspector" data-open={inspOpen} aria-label="Details">
           <Inspector
             flow={shown}
@@ -826,7 +916,32 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             onClose={() => (setSelected(null), setInspOpen(false))}
           />
         </aside>
-      </div>
+        </div>
+      )}
+      {error && !dialog && run?.status.state !== 'grilling' && (
+            <p className="mc-error" role="alert" style={{ position: 'absolute', left: '0.75rem', bottom: run ? '3.5rem' : '0.75rem', right: '0.75rem', margin: 0, zIndex: 6 }}>
+              {error}
+            </p>
+          )}
+          {toast && (
+            <div className="mc-toast" role="status">
+              {toast}
+            </div>
+          )}
+          {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
+          {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
+          {rerunProblem && <RerunProblemDialog message={rerunProblem.message} project={rerunProblem.project} git={rerunProblem.git} busy={busy} onFix={() => void fixAndRerun()} onClose={() => setRerunProblem(null)} />}
+        {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} initialGoal={runGoal} onCreate={createRun} onClose={() => (setDialog(false), setRunGoal(''), setError(null))} />}
+          {run?.status.state === 'grilling' && (
+            <GrillDialog
+              run={run}
+              thinking={thinking}
+              error={error}
+              onAnswer={(a) => void doGrill(a)}
+              onStart={(brief) => void act(() => orch.start(run.id, brief), applyRun)}
+              onStop={() => void act(() => orch.cancel(run.id), applyRun)}
+            />
+          )}
       {answering && run?.pending && (
         <QuestionsDialog run={run} busy={busy} error={error} onClose={() => setAnswering(false)} onAnswer={(a) => void act(() => orch.answers(run.id, a), (r) => (applyRun(r), setAnswering(false)))} />
       )}

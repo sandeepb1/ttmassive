@@ -629,7 +629,24 @@ impl Service {
 
     /// Flows the user can start from: their own, then the built-in ones.
     pub fn flows(&self) -> serde_json::Value {
-        json!({"saved": self.store.list_flows(), "starters": super::starters::all()})
+        json!({"saved": self.store.list_flows(), "starters": super::starters::all(), "folders": self.store.list_folders()})
+    }
+
+    pub fn create_folder(&self, path: &str) -> Result<String, Fail> {
+        self.store.create_folder(path).map_err(|e| Fail::Bad(e.to_string()))
+    }
+
+    /// Rename a folder, moving what is inside it. Returns how many flows moved.
+    pub fn rename_folder(&self, from: &str, to: &str) -> Result<usize, Fail> {
+        self.store.rename_folder(from, to).map_err(|e| Fail::Bad(e.to_string()))
+    }
+
+    pub fn delete_folder(&self, path: &str) -> Result<(), Fail> {
+        self.store.delete_folder(path).map_err(|e| Fail::Bad(e.to_string()))
+    }
+
+    pub fn move_flow(&self, id: &str, folder: &str) -> Result<(), Fail> {
+        self.store.move_flow(id, folder).map_err(|e| Fail::Bad(e.to_string()))
     }
 
     /// Open a builder's conversation in a live ttm session, in its worktree, so a person can carry on with

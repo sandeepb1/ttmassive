@@ -50,6 +50,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/flows/suggest", post(suggest))
         .route("/api/orch/flows/edit", post(edit_flow))
         .route("/api/orch/flows/{id}", axum::routing::put(save_flow).delete(delete_flow))
+        .route("/api/orch/flows/{id}/move", post(move_flow))
+        .route("/api/orch/folders", post(create_folder))
+        .route("/api/orch/folders/rename", post(rename_folder))
+        .route("/api/orch/folders/delete", post(delete_folder))
         .route("/api/orch/node-prompt", post(node_prompt))
         .route("/api/orch/custom-role", post(custom_role))
         .route("/api/orch/roles", get(roles))
@@ -113,6 +117,40 @@ async fn save_flow(State(st): St, Path(id): Path<String>, Json(SaveBody(flow)): 
         return Err(Fail::Bad("the flow's id does not match the address".into()));
     }
     st.orch.save_flow(&flow)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+struct FolderBody {
+    folder: String,
+}
+
+async fn move_flow(State(st): St, Path(id): Path<String>, Json(b): Json<FolderBody>) -> Result<Response, Fail> {
+    st.orch.move_flow(&id, &b.folder)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+struct PathBody {
+    path: String,
+}
+
+async fn create_folder(State(st): St, Json(b): Json<PathBody>) -> Result<Response, Fail> {
+    Ok(json_nocache(json!({"path": st.orch.create_folder(&b.path)?})))
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    from: String,
+    to: String,
+}
+
+async fn rename_folder(State(st): St, Json(b): Json<RenameBody>) -> Result<Response, Fail> {
+    Ok(json_nocache(json!({"moved": st.orch.rename_folder(&b.from, &b.to)?})))
+}
+
+async fn delete_folder(State(st): St, Json(b): Json<PathBody>) -> Result<Response, Fail> {
+    st.orch.delete_folder(&b.path)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

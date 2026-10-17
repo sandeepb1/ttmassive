@@ -123,6 +123,8 @@ export interface Flow {
   dial?: number;
   /** What kind of work the flow is for, in a sentence. A flow is a template; what to do each time is the run's goal. */
   purpose?: string;
+  /** The folder it is kept in, as a path like `Work/Bugs`; empty or absent at the top level. */
+  folder?: string;
 }
 
 export interface Tokens {
@@ -257,6 +259,8 @@ export interface RunSummary {
   tokens: number;
   /** Dollars charged by OpenRouter for the run's agents on it. */
   costUsd?: number;
+  /** Dollars its web access cost. */
+  webUsd?: number;
 }
 
 /** A pinned OpenRouter model a flow's agent may use. */
@@ -324,6 +328,8 @@ export interface Models {
 export interface FlowLists {
   saved: Flow[];
   starters: Flow[];
+  /** Every folder, parents before what is inside them. */
+  folders?: string[];
 }
 
 export interface Window {

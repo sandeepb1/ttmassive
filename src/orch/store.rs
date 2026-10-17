@@ -31,6 +31,18 @@ pub struct RunSummary {
     pub tokens: u64,
     /// Dollars charged by OpenRouter for the run's agents on it.
     pub cost_usd: f64,
+    /// Dollars its web access cost.
+    pub web_usd: f64,
+}
+
+/// Whether `path` is `folder` or inside it.
+fn in_folder(path: &str, folder: &str) -> bool {
+    path == folder || path.starts_with(&format!("{folder}/"))
+}
+
+/// `path`, which is `from` or inside it, with `from` replaced by `to`.
+fn reparent(path: &str, from: &str, to: &str) -> String {
+    format!("{to}{}", &path[from.len()..])
 }
 
 impl Store {
@@ -80,6 +92,104 @@ impl Store {
         let mut v: Vec<Flow> = self.read_all("flows");
         v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         v
+    }
+
+    /// Every folder there is: those made on purpose (so an empty one stays), those flows are kept in, and the folders above
+    /// them. Sorted, so a folder comes before what is inside it.
+    pub fn list_folders(&self) -> Vec<String> {
+        let declared: Vec<String> = fs::read(self.root.join("folders.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut all = std::collections::BTreeSet::new();
+        for path in declared.into_iter().chain(self.list_flows().into_iter().map(|f| f.folder)) {
+            let mut at = String::new();
+            for name in path.split('/').filter(|n| !n.is_empty()) {
+                if !at.is_empty() {
+                    at.push('/');
+                }
+                at.push_str(name);
+                all.insert(at.clone());
+            }
+        }
+        all.into_iter().collect()
+    }
+
+    fn save_declared(&self, folders: &[String]) -> Result<()> {
+        fs::create_dir_all(&self.root)?;
+        let path = self.root.join("folders.json");
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_vec_pretty(folders)?)?;
+        fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// Make a folder (and the ones above it). Returns its tidy path.
+    pub fn create_folder(&self, path: &str) -> Result<String> {
+        let path = super::graph::clean_folder(path).map_err(anyhow::Error::msg)?;
+        if path.is_empty() {
+            bail!("give the folder a name");
+        }
+        let mut declared = self.list_folders();
+        if !declared.contains(&path) {
+            declared.push(path.clone());
+        }
+        self.save_declared(&declared)?;
+        Ok(path)
+    }
+
+    /// Rename a folder, which moves what is inside it with it. Returns how many flows moved. Refuses a name that is taken, or
+    /// a place inside the folder itself.
+    pub fn rename_folder(&self, from: &str, to: &str) -> Result<usize> {
+        let (from, to) = (super::graph::clean_folder(from).map_err(anyhow::Error::msg)?, super::graph::clean_folder(to).map_err(anyhow::Error::msg)?);
+        if from.is_empty() || to.is_empty() {
+            bail!("a folder needs a name");
+        }
+        let all = self.list_folders();
+        if !all.contains(&from) {
+            bail!("there is no such folder");
+        }
+        if to == from || to.starts_with(&format!("{from}/")) {
+            bail!("a folder cannot be moved into itself");
+        }
+        if all.contains(&to) {
+            bail!("there is already a folder called that");
+        }
+        let flows: Vec<Flow> = self.list_flows().into_iter().filter(|f| in_folder(&f.folder, &from)).collect();
+        // Check every new place before changing anything.
+        for f in &flows {
+            let mut moved = f.clone();
+            moved.folder = reparent(&f.folder, &from, &to);
+            moved.validate().map_err(anyhow::Error::msg)?;
+        }
+        let declared: Vec<String> = all.iter().map(|p| if in_folder(p, &from) { reparent(p, &from, &to) } else { p.clone() }).collect();
+        for p in &declared {
+            super::graph::clean_folder(p).map_err(anyhow::Error::msg)?;
+        }
+        for f in &flows {
+            let mut moved = f.clone();
+            moved.folder = reparent(&f.folder, &from, &to);
+            self.save_flow(&moved)?;
+        }
+        self.save_declared(&declared)?;
+        Ok(flows.len())
+    }
+
+    /// Remove a folder that has no flows in it, with any empty folders inside it.
+    pub fn delete_folder(&self, path: &str) -> Result<()> {
+        let path = super::graph::clean_folder(path).map_err(anyhow::Error::msg)?;
+        if path.is_empty() {
+            bail!("a folder needs a name");
+        }
+        if self.list_flows().iter().any(|f| in_folder(&f.folder, &path)) {
+            bail!("the folder has flows in it: move or delete them first");
+        }
+        let kept: Vec<String> = self.list_folders().into_iter().filter(|p| !in_folder(p, &path)).collect();
+        self.save_declared(&kept)
+    }
+
+    /// Put a flow in a folder (`""` for the top level). The folder is made if it is new.
+    pub fn move_flow(&self, id: &str, folder: &str) -> Result<()> {
+        let mut flow = self.load_flow(id).context("there is no such flow")?;
+        flow.folder = super::graph::clean_folder(folder).map_err(anyhow::Error::msg)?;
+        self.save_flow(&flow)
     }
 
     pub fn delete_flow(&self, id: &str) -> Result<()> {
@@ -155,8 +265,8 @@ impl Store {
             .into_iter()
             .map(|r| {
                 let tokens = r.tokens().total();
-                let cost_usd = r.cost_usd();
-                RunSummary { id: r.id, flow_id: r.flow.id, flow_name: r.flow.name, goal: r.goal, status: r.status, created: r.created, tokens, cost_usd }
+                let (cost_usd, web_usd) = (r.cost_usd(), r.web_usd());
+                RunSummary { id: r.id, flow_id: r.flow.id, flow_name: r.flow.name, goal: r.goal, status: r.status, created: r.created, tokens, cost_usd, web_usd }
             })
             .collect();
         v.sort_by(|a, b| b.created.cmp(&a.created));
@@ -308,5 +418,74 @@ mod tests {
         s.save_flow(&starters::all().remove(0)).unwrap();
         fs::write(dir.join("orch/flows/broken.json"), "{ nope").unwrap();
         assert_eq!(s.list_flows().len(), 1);
+    }
+
+    fn flow_in(id: &str, folder: &str) -> Flow {
+        let mut f = starters::all().remove(0);
+        f.id = id.into();
+        f.name = id.into();
+        f.folder = folder.into();
+        f
+    }
+
+    #[test]
+    fn folders_are_those_made_and_those_flows_sit_in_with_the_ones_above() {
+        let dir = tmp("folders");
+        let s = Store::new(&dir.0);
+        assert!(s.list_folders().is_empty());
+        s.save_flow(&flow_in("a", "Work/Bugs")).unwrap();
+        assert_eq!(s.list_folders(), ["Work", "Work/Bugs"], "a folder a flow is in brings the ones above it");
+        assert_eq!(s.create_folder(" Personal / Notes ").unwrap(), "Personal/Notes");
+        assert_eq!(s.list_folders(), ["Personal", "Personal/Notes", "Work", "Work/Bugs"]);
+        assert!(s.create_folder("").is_err() && s.create_folder("a/b/c/d/e").is_err());
+        assert_eq!(s.create_folder("Work").unwrap(), "Work", "making one that exists is fine");
+    }
+
+    #[test]
+    fn renaming_a_folder_moves_the_flows_and_folders_inside_it() {
+        let dir = tmp("rename");
+        let s = Store::new(&dir.0);
+        s.save_flow(&flow_in("a", "Work")).unwrap();
+        s.save_flow(&flow_in("b", "Work/Bugs")).unwrap();
+        s.save_flow(&flow_in("c", "")).unwrap();
+        s.create_folder("Work/Empty").unwrap();
+        assert_eq!(s.rename_folder("Work", "Jobs").unwrap(), 2);
+        let at = |id: &str| s.load_flow(id).unwrap().folder;
+        assert_eq!((at("a"), at("b"), at("c")), ("Jobs".into(), "Jobs/Bugs".into(), String::new()));
+        assert_eq!(s.list_folders(), ["Jobs", "Jobs/Bugs", "Jobs/Empty"]);
+        assert!(s.rename_folder("Jobs", "Jobs/Inside").is_err(), "not into itself");
+        s.create_folder("Taken").unwrap();
+        assert!(s.rename_folder("Jobs", "Taken").is_err(), "not onto another");
+        assert!(s.rename_folder("Nope", "X").is_err());
+        assert_eq!(at("a"), "Jobs", "a refused rename changes nothing");
+    }
+
+    #[test]
+    fn a_folder_with_flows_in_it_is_not_deleted_and_an_empty_one_goes_with_what_is_inside() {
+        let dir = tmp("fdel");
+        let s = Store::new(&dir.0);
+        s.save_flow(&flow_in("a", "Work/Bugs")).unwrap();
+        s.create_folder("Work/Empty/Deeper").unwrap();
+        assert!(s.delete_folder("Work").unwrap_err().to_string().contains("flows in it"));
+        assert!(s.list_folders().contains(&"Work/Empty/Deeper".to_string()), "nothing was removed");
+        s.delete_folder("Work/Empty").unwrap();
+        assert_eq!(s.list_folders(), ["Work", "Work/Bugs"]);
+        s.move_flow("a", "").unwrap();
+        s.delete_folder("Work").unwrap();
+        assert!(s.list_folders().is_empty());
+    }
+
+    #[test]
+    fn a_flow_is_moved_to_a_folder_and_back_to_the_top() {
+        let dir = tmp("fmove");
+        let s = Store::new(&dir.0);
+        s.save_flow(&flow_in("a", "")).unwrap();
+        s.move_flow("a", " Work / Bugs ").unwrap();
+        assert_eq!(s.load_flow("a").unwrap().folder, "Work/Bugs");
+        assert_eq!(s.list_folders(), ["Work", "Work/Bugs"]);
+        s.move_flow("a", "").unwrap();
+        assert_eq!(s.load_flow("a").unwrap().folder, "");
+        assert!(s.move_flow("nope", "X").is_err());
+        assert!(s.move_flow("a", "a/b/c/d/e").is_err());
     }
 }

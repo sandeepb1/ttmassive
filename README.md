@@ -746,15 +746,22 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   team for it (it opens for you to change; nothing runs). A flow is a template: it keeps a one-sentence **purpose** (edit it
   under *This flow* in Settings), shown in the list and when you start a run, and what to do each time is the goal you give
   the run, which every agent receives. **Design and run** does both with one prompt: it designs the flow, then opens the
-  run dialog with your text as the first goal. The copy button on a saved flow opens a duplicate to edit, and
-  **Templates** holds the built-in starters.
-- **Flows and executions.** The sidebar is a tree, one list at a time. The top level lists your flows, newest run
-  first, each with its agent count and how many times it has run. Open a flow and you see **Design** (the chart) and
-  **Executions**: every run of that flow, newest first, kept as its history. **New run** starts another. Running an
-  unsaved flow saves it first. Opening an execution shows exactly what ran, read-only; **Back to design** returns to
-  the editor and **Use this version** puts that execution's flow back in the editor. Deleting a flow keeps its
-  executions, listed as "Runs only". Leaving a flow with unsaved edits asks first.
-  **Deleting:** each flow and each execution has a bin button, and an execution that is still running must be stopped
+  run dialog with your text as the first goal. A flow's menu has Duplicate, which opens a copy to edit, and
+  **Templates** under the table holds the built-in starters.
+- **Flows and executions.** The orchestrator opens on **Flows**, a table of every flow with what it is for, how many
+  agents it has, how many times it has run and how the last run went. **Folders are rows** at the top of the table: click
+  one to go in, use the breadcrumb to come back, **New folder** to make one, and a folder's menu to rename it (its flows
+  move with it) or delete it once it is empty. A flow's menu has **Move to a folder…**. A new flow, template or design is
+  made in the folder you are looking at. The search box looks in every folder, and the headings sort the table. **Runs**
+  next to **Flows** is a table of every execution, grouped by running, needs you, done and stopped, with its token use and
+  what its API models and web access cost.
+  Click a flow to open it in **Design**. Its **Runs** tab lists that flow's executions, kept as its history; **Run**
+  floats over the chart (and **New run** is on the Runs tab). Running an unsaved flow saves it first. Opening an
+  execution shows exactly what ran, read-only; **Back to design** returns to the editor and **Use this version** puts
+  that execution's flow back in the editor. Deleting a flow keeps its executions, listed as "Runs only". Leaving a flow
+  with unsaved edits asks first. The details panel beside the chart opens with the panel button and closes again, and a
+  wide screen remembers which you chose.
+  **Deleting:** each flow's and each execution's menu has Delete, and an execution that is still running must be stopped
   first. Deleting an execution leaves any branches its builders made in your project.
   **Logs:** while a run is shown, **Logs** at the bottom of the chart opens a drawer with the run's story, oldest
   first: what each agent was sent (the full prompt), what it answered (with its token use), and a line for every
@@ -762,8 +769,8 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   said, why the run stopped). Skills an agent uses and sub-agents it starts get their own lines. Filter to one agent
   to see its step-by-step working lines, or to skills and sub-agents only. Agents run with skills switched off, and only
   an agent that changes files can start sub-agents, so expect those lines to be rare.
-  **Quick actions:** right-click (or long-press on a touch screen) a flow or an execution in the sidebar for Open,
-  Duplicate, Stop, Delete, and *Delete finished executions*. On the chart, right-click an agent (Details, Duplicate,
+  **Quick actions:** right-click (or long-press on a touch screen) a flow or an execution in a table for Open,
+  Duplicate, Move, Stop, Delete, and *Delete finished executions*. On the chart, right-click an agent (Details, Duplicate,
   Remove), a connection (Remove), or empty space (Add any role right there, Tidy up, Fit to screen).
 - **A run** starts with **Run**: say what you want and pick a project folder. If any agent changes files, the folder
   must be a git repository with a commit (builders work on copies of it); the dialog says so as soon as you choose the

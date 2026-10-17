@@ -312,8 +312,17 @@ textarea.mc-field {
 .mc-body {
   position: relative;
   display: grid;
-  grid-template-columns: 17.5rem minmax(0, 1fr) 22rem;
+  /* The canvas, and the details panel beside it while that is open. */
+  grid-template-columns: minmax(0, 1fr) 22rem;
   min-height: 0;
+}
+.mc-body[data-insp='false'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 1100px) {
+  .mc-body[data-insp='false'] .mc-inspector {
+    display: none;
+  }
 }
 .mc-side,
 .mc-inspector {
@@ -2020,4 +2029,304 @@ button.mc-tl-head:hover {
   display: flex;
   justify-content: flex-end;
   gap: 0.125rem;
+}
+
+
+/* ------------------------------------------------------------------ pages: the flows table and the executions table */
+.mc-pagewrap {
+  min-height: 0;
+  overflow: auto;
+  background: var(--mc-bg);
+}
+.mc-page {
+  display: flex;
+  max-width: 76rem;
+  flex-direction: column;
+  gap: 0.875rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+}
+.mc-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.mc-page-head h1 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+.mc-page-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+.mc-page-tools .mc-field {
+  flex: 1 1 14rem;
+  max-width: 26rem;
+}
+.mc-crumbs {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+.mc-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mc-faint);
+}
+.mc-anchor {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.mc-anchor:hover {
+  color: var(--mc-glow);
+}
+.mc-anchor:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--mc-glow);
+  outline-offset: 2px;
+}
+.mc-muted {
+  color: var(--mc-faint);
+}
+.mc-sronly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.mc-table {
+  width: 100%;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-md);
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--mc-panel);
+  table-layout: fixed;
+}
+.mc-table th,
+.mc-table td {
+  padding: 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--mc-line-soft);
+  text-align: left;
+  vertical-align: middle;
+  overflow-wrap: break-word;
+}
+.mc-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.mc-table thead th {
+  color: var(--mc-faint);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mc-th {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.mc-th:hover {
+  color: var(--mc-fg);
+}
+.mc-tr:hover {
+  background: color-mix(in oklch, var(--mc-hover) 55%, transparent);
+}
+.mc-tr[aria-current='true'] {
+  background: color-mix(in oklch, var(--mc-glow) 12%, transparent);
+}
+.mc-tr-folder .mc-cellname {
+  color: var(--mc-fg);
+}
+.mc-col-name {
+  width: 24%;
+}
+.mc-col-flow {
+  width: 14%;
+}
+.mc-col-num {
+  width: 4.5rem;
+  text-align: right !important;
+}
+.mc-col-cost {
+  width: 5rem;
+  text-align: right !important;
+}
+.mc-col-last {
+  width: 13rem;
+}
+.mc-col-when {
+  width: 8.5rem;
+}
+.mc-col-act {
+  width: 5.5rem;
+  text-align: right !important;
+  white-space: nowrap;
+}
+.mc-col-purpose {
+  color: var(--mc-dim);
+}
+.mc-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mc-cellname {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+.mc-where {
+  display: block;
+  color: var(--mc-faint);
+  font-size: 0.75rem;
+}
+.mc-name-field {
+  max-width: 18rem;
+}
+
+.mc-templates {
+  margin-top: 0.5rem;
+}
+.mc-templates-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--mc-dim);
+  font-weight: 700;
+}
+.mc-template-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: 0.5rem;
+  margin: 0.625rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.mc-template {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-md);
+  background: var(--mc-panel);
+  text-align: left;
+  cursor: pointer;
+}
+.mc-template:hover {
+  border-color: var(--mc-glow);
+}
+
+/* The two pages of the orchestrator, and the two parts of a flow, as tabs in the top bar. */
+.mc-nav {
+  display: inline-flex;
+  gap: 0.125rem;
+  padding: 0.2rem;
+  border-radius: var(--radius-md);
+  background: var(--mc-raise);
+}
+.mc-navtab {
+  height: 1.9rem;
+  padding: 0 0.875rem;
+  border: 0;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--mc-dim);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mc-navtab:hover {
+  color: var(--mc-fg);
+}
+.mc-navtab[aria-selected='true'] {
+  background: var(--mc-hover);
+  color: var(--mc-fg);
+}
+
+/* Run floats over the design, so starting the flow is always in reach and the top bar is for the flow itself. */
+.mc-run-fab {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 7;
+  display: inline-flex;
+  height: 2.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 1.25rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--mc-glow);
+  box-shadow: 0 0.5rem 1.5rem oklch(0 0 0 / 0.45);
+  color: oklch(0.2 0.03 230);
+  font-weight: 700;
+  cursor: pointer;
+}
+.mc-run-fab:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--mc-glow) 86%, white);
+}
+.mc-run-fab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 899px) {
+  .mc-col-purpose,
+  .mc-col-cost,
+  .mc-col-when,
+  .mc-col-flow {
+    display: none;
+  }
+}
+@media (max-width: 699px) {
+  .mc-col-num {
+    display: none;
+  }
+  .mc-table {
+    table-layout: auto;
+  }
+  .mc-col-name {
+    width: auto;
+    min-width: 7rem;
+  }
+  .mc-col-last {
+    width: 8.5rem;
+  }
+  .mc-col-act {
+    width: 2.75rem;
+  }
+}
+
+/* The folder a flow is in, ahead of its name in the top bar: one line, cut short rather than wrapped. */
+.mc-crumbtext {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

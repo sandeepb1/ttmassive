@@ -13,6 +13,23 @@ const MAX_ID: usize = 40;
 const MAX_NAME: usize = 60;
 /// Longest a flow's purpose may be, in characters.
 pub const MAX_PURPOSE: usize = 300;
+/// Most folders deep a flow may be kept, and the longest one folder's name may be.
+pub const MAX_FOLDER_DEPTH: usize = 4;
+pub const MAX_FOLDER_NAME: usize = 40;
+
+/// A folder path as it is stored: names joined by `/`, each trimmed, with no empty name between. `""` is the top level.
+pub fn clean_folder(path: &str) -> Result<String, String> {
+    let names: Vec<&str> = path.split('/').map(str::trim).filter(|n| !n.is_empty()).collect();
+    if names.len() > MAX_FOLDER_DEPTH {
+        return Err(format!("folders can be at most {MAX_FOLDER_DEPTH} deep"));
+    }
+    for n in &names {
+        if n.chars().count() > MAX_FOLDER_NAME || n.chars().any(char::is_control) || *n == "." || *n == ".." {
+            return Err(format!("a folder name must be 1 to {MAX_FOLDER_NAME} characters"));
+        }
+    }
+    Ok(names.join("/"))
+}
 const MAX_PROMPT: usize = 16_000;
 const MAX_RETRIES: u8 = 5;
 
@@ -306,6 +323,9 @@ pub struct Flow {
     /// What kind of work the flow is for, in a sentence. A flow is a template: what to do each time is the run's goal.
     #[serde(default)]
     pub purpose: String,
+    /// The folder the flow is kept in, as a path like `Work/Bugs`; empty at the top level. Only for finding it again.
+    #[serde(default)]
+    pub folder: String,
 }
 
 fn default_retries() -> u8 {
@@ -372,6 +392,9 @@ impl Flow {
         }
         if self.purpose.chars().count() > MAX_PURPOSE || self.purpose.chars().any(|c| c.is_control() && c != '\n') {
             return Err(format!("a flow's purpose must be at most {MAX_PURPOSE} characters"));
+        }
+        if clean_folder(&self.folder).as_deref() != Ok(self.folder.as_str()) {
+            return Err("the flow's folder is not a valid path".into());
         }
         if self.nodes.is_empty() || self.nodes.len() > MAX_NODES {
             return Err(format!("a flow needs 1 to {MAX_NODES} nodes"));
@@ -592,7 +615,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_asks_questions_may_send_work_back_but_only_one_way_and_a_few_times() {
-        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator), node("b", Role::Researcher), node("g", Role::Griller)], edges: vec![], max_retries: 2, budget: Budget::default(), downshift: false, dial: 2 , purpose: String::new()};
+        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator), node("b", Role::Researcher), node("g", Role::Griller)], edges: vec![], max_retries: 2, budget: Budget::default(), downshift: false, dial: 2 , folder: String::new(), purpose: String::new()};
         f.edges = vec![edge("e1", "a", "b", EdgeKind::Forward), edge("e2", "b", "g", EdgeKind::Forward), edge("r1", "g", "a", EdgeKind::Retry)];
         assert_eq!(f.validate(), Ok(()), "a griller is allowed what a judge is");
         f.edges.push(edge("r2", "g", "b", EdgeKind::Retry));
@@ -619,7 +642,7 @@ mod tests {
 
     #[test]
     fn only_an_agent_that_needs_no_tools_may_call_its_model_directly() {
-        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator)], edges: vec![], max_retries: 1, budget: Budget::default(), downshift: false, dial: 2 , purpose: String::new()};
+        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator)], edges: vec![], max_retries: 1, budget: Budget::default(), downshift: false, dial: 2 , folder: String::new(), purpose: String::new()};
         f.nodes[0].direct = true;
         assert!(f.validate().unwrap_err().contains("needs an account"));
         f.nodes[0].account = Some("acct".into());
@@ -663,7 +686,7 @@ mod tests {
         Flow {
             id: "f".into(),
             name: "Line".into(),
-            purpose: String::new(),
+            folder: String::new(), purpose: String::new(),
             nodes: vec![
                 node("orch", Role::Orchestrator),
                 node("res", Role::Researcher),
@@ -866,5 +889,24 @@ mod tests {
         v.as_object_mut().unwrap().remove("purpose");
         let old: Flow = serde_json::from_value(v).unwrap();
         assert_eq!(old.purpose, "", "a flow saved before purposes still loads");
+    }
+
+    #[test]
+    fn a_folder_path_is_tidied_and_limited() {
+        assert_eq!(clean_folder(""), Ok(String::new()));
+        assert_eq!(clean_folder("  Work / Bugs/ "), Ok("Work/Bugs".into()));
+        assert_eq!(clean_folder("//A///B//"), Ok("A/B".into()), "empty names are dropped");
+        assert!(clean_folder("a/b/c/d/e").is_err(), "at most four deep");
+        assert!(clean_folder(&"x".repeat(MAX_FOLDER_NAME + 1)).is_err());
+        assert!(clean_folder("ok/..").is_err() && clean_folder("./x").is_err(), "no dot names");
+        assert!(clean_folder("bad\u{7}name").is_err());
+        let mut f = line();
+        f.folder = "Work/Bugs".into();
+        assert_eq!(f.validate(), Ok(()));
+        f.folder = "Work//Bugs".into();
+        assert!(f.validate().is_err(), "a flow keeps its folder in the tidy form");
+        let mut v = serde_json::to_value(line()).unwrap();
+        v.as_object_mut().unwrap().remove("folder");
+        assert_eq!(serde_json::from_value::<Flow>(v).unwrap().folder, "", "a flow saved before folders is at the top level");
     }
 }

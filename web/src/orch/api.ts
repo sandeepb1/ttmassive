@@ -43,6 +43,10 @@ export const orch = {
   flows: () => send<FlowLists>('GET', `${base}/flows`),
   saveFlow: (f: Flow) => send<void>('PUT', `${base}/flows/${encodeURIComponent(f.id)}`, f),
   deleteFlow: (id: string) => send<void>('DELETE', `${base}/flows/${encodeURIComponent(id)}`),
+  moveFlow: (id: string, folder: string) => send<void>('POST', `${base}/flows/${encodeURIComponent(id)}/move`, { folder }),
+  createFolder: (path: string) => send<{ path: string }>('POST', `${base}/folders`, { path }),
+  renameFolder: (from: string, to: string) => send<{ moved: number }>('POST', `${base}/folders/rename`, { from, to }),
+  deleteFolder: (path: string) => send<void>('POST', `${base}/folders/delete`, { path }),
   roles: () => send<RoleDef[]>('GET', `${base}/roles`),
   nodePrompt: (role: Role, custom: CustomRole | null | undefined, name: string, goal: string) =>
     send<{ systemPrompt: string }>('POST', `${base}/node-prompt`, { role, custom: custom ?? null, name, goal }),

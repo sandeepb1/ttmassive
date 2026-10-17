@@ -737,7 +737,7 @@ mod tests {
         Flow {
             id: "f".into(),
             name: "F".into(),
-            purpose: String::new(),
+            folder: String::new(), purpose: String::new(),
             nodes: vec![
                 node("orch", Role::Orchestrator),
                 node("res", Role::Researcher),
@@ -1093,7 +1093,7 @@ mod tests {
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
-            dial: 2, purpose: String::new(),
+            dial: 2, folder: String::new(), purpose: String::new(),
         }
     }
 
@@ -1414,7 +1414,7 @@ mod tests {
             max_retries: 6,
             budget: Budget::default(),
             downshift: false,
-            dial: 2, purpose: String::new(),
+            dial: 2, folder: String::new(), purpose: String::new(),
         }
     }
 

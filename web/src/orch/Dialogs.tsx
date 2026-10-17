@@ -11,7 +11,7 @@ const PROJECT_KEY = 'ttm.orch.project';
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-function Dialog({ title, onClose, children, foot }: { title: string; onClose?: () => void; children: ReactNode; foot: ReactNode }) {
+export function Dialog({ title, onClose, children, foot }: { title: string; onClose?: () => void; children: ReactNode; foot: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!onClose) return;

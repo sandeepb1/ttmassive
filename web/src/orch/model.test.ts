@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -827,4 +827,86 @@ test('the list shows each saved flow with its purpose, and a flow that is only a
 test('the design assistant has something to change only once a flow has agents', () => {
   assert.equal(canEdit(emptyFlow('f', 'F')), false);
   assert.equal(canEdit({ nodes: [{} as FlowNode] }), true);
+});
+
+// ---- folders and the flows table
+
+const flowRow = (name: string, o: Partial<import('./model.ts').FlowEntry> = {}): import('./model.ts').FlowEntry => ({ id: name, name, saved: true, agents: 3, purpose: '', folder: '', runs: [], last: null, ...o });
+const ranAt = (created: number, state: 'done' | 'running' = 'done') => ({ id: `r${created}`, flowId: 'x', flowName: 'x', goal: 'g', status: { state }, created, tokens: 0 }) as unknown as RunSummary;
+
+test('a folder path is taken apart and put together the way the server keeps it', () => {
+  assert.equal(parentOf('Work/Bugs'), 'Work');
+  assert.equal(parentOf('Work'), '');
+  assert.equal(baseOf('Work/Bugs'), 'Bugs');
+  assert.equal(childPath('', 'Work'), 'Work');
+  assert.equal(childPath('Work', 'Bugs'), 'Work/Bugs');
+  assert.ok(inFolder('Work/Bugs', 'Work') && inFolder('Work', 'Work') && !inFolder('Workshop', 'Work'), 'a name that only starts the same is not inside');
+  assert.equal(cleanFolderName('  Big / Bad   name '), 'Big Bad name');
+  assert.equal(cleanFolderName('/'), '');
+  assert.equal(cleanFolderName('x'.repeat(80)).length, 40);
+  assert.deepEqual(crumbs(''), [{ name: 'Flows', path: '' }]);
+  assert.deepEqual(crumbs('Work/Bugs'), [{ name: 'Flows', path: '' }, { name: 'Work', path: 'Work' }, { name: 'Bugs', path: 'Work/Bugs' }]);
+});
+
+test('the folders there are include those a flow is in and the ones above it', () => {
+  assert.deepEqual(allFolders(['Personal'], [{ folder: 'Work/Bugs' }, { folder: '' }]), ['Personal', 'Work', 'Work/Bugs']);
+  assert.deepEqual(allFolders([], []), []);
+});
+
+test('the table lists the folders directly inside a folder, with what is in them, then its flows', () => {
+  const entries = [flowRow('Top'), flowRow('A', { folder: 'Work' }), flowRow('B', { folder: 'Work/Bugs' }), flowRow('C', { folder: 'Work/Bugs' }), flowRow('D', { folder: 'Personal' })];
+  const root = listing(entries, ['Archive'], '', '', DEFAULT_SORT);
+  assert.deepEqual(root.folders.map((f) => [f.name, f.flows, f.folders]), [['Archive', 0, 0], ['Personal', 1, 0], ['Work', 3, 1]], 'Work holds three flows counting those in Bugs');
+  assert.deepEqual(root.flows.map((f) => f.name), ['Top'], 'only the flows kept at this level');
+  const work = listing(entries, [], 'Work', '', DEFAULT_SORT);
+  assert.deepEqual(work.folders.map((f) => f.path), ['Work/Bugs']);
+  assert.deepEqual(work.flows.map((f) => f.name), ['A']);
+  assert.deepEqual(work.crumbs.map((c) => c.name), ['Flows', 'Work']);
+  assert.equal(work.searching, false);
+});
+
+test('a search looks in every folder and ignores where it is', () => {
+  const entries = [flowRow('Bug fix', { folder: 'Work/Bugs', purpose: 'Find the cause' }), flowRow('Review', { folder: 'Work' }), flowRow('Notes', { purpose: 'bug triage notes' })];
+  const found = listing(entries, ['Work'], 'Work', '  BUG ', DEFAULT_SORT);
+  assert.deepEqual(found.flows.map((f) => f.name).sort(), ['Bug fix', 'Notes'], 'matches the name, the purpose and the folder, from anywhere');
+  assert.deepEqual(found.folders, []);
+  assert.ok(found.searching);
+  assert.deepEqual(listing(entries, [], '', 'zzz', DEFAULT_SORT).flows, []);
+  assert.deepEqual(listing(entries, [], 'Work/Bugs', 'work', DEFAULT_SORT).flows.map((f) => f.name).sort(), ['Bug fix', 'Review'], 'the folder name is searched too');
+});
+
+test('flows sort by name, agents, runs or last run, and a heading pressed again turns the order round', () => {
+  const list = [flowRow('b', { agents: 5, runs: [ranAt(1)], last: ranAt(1) }), flowRow('A', { agents: 2, runs: [ranAt(9), ranAt(8)], last: ranAt(9) }), flowRow('c', { agents: null })];
+  const names = (key: 'name' | 'agents' | 'runs' | 'last', dir: 1 | -1) => sortEntries(list, { key, dir }).map((f) => f.name);
+  assert.deepEqual(names('name', 1), ['A', 'b', 'c'], 'names ignore case');
+  assert.deepEqual(names('agents', -1), ['b', 'A', 'c'], 'a flow with no count is last');
+  assert.deepEqual(names('runs', -1), ['A', 'b', 'c']);
+  assert.deepEqual(names('last', -1), ['A', 'b', 'c'], 'never run is last');
+  assert.deepEqual(sortBy({ key: 'name', dir: 1 }, 'name'), { key: 'name', dir: -1 });
+  assert.deepEqual(sortBy({ key: 'name', dir: -1 }, 'runs'), { key: 'runs', dir: -1 }, 'a number starts with the most');
+  assert.deepEqual(sortBy({ key: 'runs', dir: -1 }, 'name'), { key: 'name', dir: 1 }, 'a name starts at A');
+  assert.deepEqual(sortEntries([flowRow('b'), flowRow('a')], { key: 'runs', dir: -1 }).map((f) => f.name), ['a', 'b'], 'ties fall back to the name');
+});
+
+test('a flow can be moved to the top level or any folder', () => {
+  assert.deepEqual(moveTargets(['Work', 'Work/Bugs']), [{ path: '', label: 'Flows (top level)' }, { path: 'Work', label: 'Work' }, { path: 'Work/Bugs', label: 'Work › Bugs' }]);
+});
+
+// ---- the table of executions
+
+const statusOf = (state: string, pause?: string) => (pause ? { state, pause: { kind: pause } } : { state }) as unknown as RunSummary['status'];
+
+test('executions fall under running, needs you, done or stopped', () => {
+  assert.equal(runGroup(statusOf('running')), 'active');
+  assert.equal(runGroup(statusOf('grilling')), 'active', 'one being questioned is still going');
+  assert.equal(runGroup(statusOf('paused', 'failed')), 'waiting');
+  assert.equal(runGroup(statusOf('paused', 'limit')), 'waiting');
+  assert.equal(runGroup(statusOf('done')), 'done');
+  assert.equal(runGroup(statusOf('cancelled')), 'other');
+  const runs = [statusOf('running'), statusOf('done'), statusOf('done'), statusOf('paused', 'failed'), statusOf('cancelled')].map((status, i) => ({ id: `r${i}`, flowId: 'f', flowName: 'Bug fix', goal: i === 1 ? 'Fix the export' : 'Other', status, created: i, tokens: 0 }) as RunSummary);
+  assert.deepEqual(runCounts(runs), { all: 5, active: 1, waiting: 1, done: 2, other: 1 });
+  assert.deepEqual(filterRuns(runs, 'done', '').map((r) => r.id), ['r2', 'r1'], 'newest first');
+  assert.deepEqual(filterRuns(runs, 'all', ' EXPORT ').map((r) => r.id), ['r1'], 'the goal is searched');
+  assert.equal(filterRuns(runs, 'all', 'bug fix').length, 5, 'and the flow name');
+  assert.deepEqual(filterRuns(runs, 'active', 'export'), [], 'a heading and words together');
 });

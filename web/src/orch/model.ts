@@ -487,6 +487,8 @@ export interface FlowEntry {
   agents: number | null;
   /** What kind of work the flow is for; empty for a flow with none or one that is not saved. */
   purpose: string;
+  /** The folder it is kept in; empty at the top level. */
+  folder: string;
   /** Newest first. */
   runs: RunSummary[];
   last: RunSummary | null;
@@ -499,11 +501,11 @@ export const runsOf = (runs: RunSummary[], flowId: string): RunSummary[] =>
 /** Every saved flow, and every flow that only survives as executions. The ones used most recently come first; a flow
  *  never run goes after them, by name. */
 export function flowEntries(saved: Flow[], runs: RunSummary[]): FlowEntry[] {
-  const entry = (id: string, name: string, isSaved: boolean, agents: number | null, purpose = ''): FlowEntry => {
+  const entry = (id: string, name: string, isSaved: boolean, agents: number | null, purpose = '', folder = ''): FlowEntry => {
     const mine = runsOf(runs, id);
-    return { id, name, saved: isSaved, agents, purpose, runs: mine, last: mine[0] ?? null };
+    return { id, name, saved: isSaved, agents, purpose, folder, runs: mine, last: mine[0] ?? null };
   };
-  const out = saved.map((f) => entry(f.id, f.name, true, f.nodes.length, purposeOf(f)));
+  const out = saved.map((f) => entry(f.id, f.name, true, f.nodes.length, purposeOf(f), f.folder ?? ''));
   const known = new Set(saved.map((f) => f.id));
   for (const id of new Set(runs.map((r) => r.flowId))) {
     if (known.has(id)) continue;
@@ -903,3 +905,136 @@ export function rerunRequest(r: Run): { flow: Flow; goal: string; project: strin
 
 /** The roles to offer for a new agent: the ones that are not kept only for flows that already use them. */
 export const offered = (roles: RoleDef[]): RoleDef[] => roles.filter((r) => !r.hidden);
+
+// ---- folders and the table of flows ------------------------------------------------------------
+
+export const parentOf = (path: string): string => path.split('/').slice(0, -1).join('/');
+export const baseOf = (path: string): string => path.split('/').pop() ?? '';
+export const childPath = (parent: string, name: string): string => (parent ? `${parent}/${name}` : name);
+/** Whether `path` is `folder` or inside it. */
+export const inFolder = (path: string, folder: string): boolean => path === folder || path.startsWith(`${folder}/`);
+
+/** A folder name as it will be kept: no slashes, trimmed, short. Empty when nothing usable is left. */
+export const cleanFolderName = (text: string): string => text.replace(/[\/\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+
+/** The path to a folder as clickable steps, starting at the top level. */
+export function crumbs(at: string): { name: string; path: string }[] {
+  const out = [{ name: 'Flows', path: '' }];
+  let path = '';
+  for (const name of at.split('/').filter(Boolean)) {
+    path = childPath(path, name);
+    out.push({ name, path });
+  }
+  return out;
+}
+
+export type SortKey = 'name' | 'agents' | 'runs' | 'last';
+export interface Sort {
+  key: SortKey;
+  /** 1 for ascending, -1 for descending. */
+  dir: 1 | -1;
+}
+/** Flows run most recently first. */
+export const DEFAULT_SORT: Sort = { key: 'last', dir: -1 };
+
+/** The sort after a column heading is chosen: the same column again turns it round, another starts at its natural end. */
+export function sortBy(now: Sort, key: SortKey): Sort {
+  if (now.key === key) return { key, dir: now.dir === 1 ? -1 : 1 };
+  return { key, dir: key === 'name' ? 1 : -1 };
+}
+
+export function sortEntries(list: FlowEntry[], sort: Sort): FlowEntry[] {
+  const value = (e: FlowEntry): number | string => (sort.key === 'name' ? e.name.toLowerCase() : sort.key === 'agents' ? (e.agents ?? -1) : sort.key === 'runs' ? e.runs.length : (e.last?.created ?? -1));
+  return [...list].sort((a, b) => {
+    const [x, y] = [value(a), value(b)];
+    const by = typeof x === 'string' ? x.localeCompare(y as string) : (x as number) - (y as number);
+    return by * sort.dir || a.name.localeCompare(b.name);
+  });
+}
+
+export interface FolderRow {
+  path: string;
+  name: string;
+  /** Flows in it and in the folders inside it. */
+  flows: number;
+  /** Folders directly inside it. */
+  folders: number;
+}
+
+export interface Listing {
+  crumbs: { name: string; path: string }[];
+  folders: FolderRow[];
+  flows: FlowEntry[];
+  /** A search is on: the flows are from every folder and the folders are left out. */
+  searching: boolean;
+}
+
+/** Every folder, including those only implied by where a flow is kept, parents first. */
+export function allFolders(folders: string[], entries: Pick<FlowEntry, 'folder'>[]): string[] {
+  const set = new Set<string>();
+  for (const path of [...folders, ...entries.map((e) => e.folder)]) {
+    let at = '';
+    for (const name of path.split('/').filter(Boolean)) {
+      at = childPath(at, name);
+      set.add(at);
+    }
+  }
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+/** What the flows table shows for the folder `at`: the folders directly inside it, then its flows. A search looks in every folder. */
+export function listing(entries: FlowEntry[], folders: string[], at: string, query: string, sort: Sort): Listing {
+  const q = query.trim().toLowerCase();
+  if (q) {
+    const hit = (e: FlowEntry) => [e.name, e.purpose, e.folder].some((s) => s.toLowerCase().includes(q));
+    return { crumbs: crumbs(at), folders: [], flows: sortEntries(entries.filter(hit), sort), searching: true };
+  }
+  const every = allFolders(folders, entries);
+  const rows = every
+    .filter((p) => parentOf(p) === at && p !== at)
+    .map((p) => ({ path: p, name: baseOf(p), flows: entries.filter((e) => inFolder(e.folder, p)).length, folders: every.filter((q2) => parentOf(q2) === p).length }))
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  return { crumbs: crumbs(at), folders: rows, flows: sortEntries(entries.filter((e) => e.folder === at), sort), searching: false };
+}
+
+/** Where a flow can be moved to: the top level, then every folder. */
+export const moveTargets = (folders: string[]): { path: string; label: string }[] => [{ path: '', label: 'Flows (top level)' }, ...folders.map((p) => ({ path: p, label: p.replace(/\//g, ' › ') }))];
+
+// ---- the table of executions -------------------------------------------------------------------
+
+export type RunGroup = 'all' | 'active' | 'waiting' | 'done' | 'other';
+
+export const RUN_GROUPS: { id: RunGroup; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'active', label: 'Running' },
+  { id: 'waiting', label: 'Needs you' },
+  { id: 'done', label: 'Done' },
+  { id: 'other', label: 'Stopped' },
+];
+
+/** Which heading an execution is under: going now, waiting for a person or a limit, finished, or stopped. */
+export function runGroup(s: RunStatus): Exclude<RunGroup, 'all'> {
+  switch (s.state) {
+    case 'running':
+    case 'grilling':
+      return 'active';
+    case 'paused':
+      return 'waiting';
+    case 'done':
+      return 'done';
+    default:
+      return 'other';
+  }
+}
+
+export function runCounts(runs: RunSummary[]): Record<RunGroup, number> {
+  const counts: Record<RunGroup, number> = { all: runs.length, active: 0, waiting: 0, done: 0, other: 0 };
+  for (const r of runs) counts[runGroup(r.status)] += 1;
+  return counts;
+}
+
+/** The executions under a heading that match the words typed (in the goal or the flow's name), newest first. */
+export function filterRuns(runs: RunSummary[], group: RunGroup, query: string): RunSummary[] {
+  const q = query.trim().toLowerCase();
+  return runs.filter((r) => (group === 'all' || runGroup(r.status) === group) && (!q || r.goal.toLowerCase().includes(q) || r.flowName.toLowerCase().includes(q))).sort((a, b) => b.created - a.created);
+}

@@ -323,7 +323,7 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
     let name = v.get("name").and_then(Value::as_str).unwrap_or("").trim();
     let mut flow = Flow {
         id: flow_id.into(),
-        purpose: one_line(v.get("purpose").and_then(Value::as_str).unwrap_or(""), crate::orch::graph::MAX_PURPOSE),
+        folder: String::new(), purpose: one_line(v.get("purpose").and_then(Value::as_str).unwrap_or(""), crate::orch::graph::MAX_PURPOSE),
         name: if name.is_empty() { "Suggested flow".into() } else { name.chars().take(60).collect() },
         nodes,
         edges,
@@ -734,6 +734,7 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
     let name = v.get("name").and_then(Value::as_str).unwrap_or("").trim();
     let mut flow = Flow {
         id: base.id.clone(),
+        folder: base.folder.clone(),
         purpose: base.purpose.clone(),
         name: if name.is_empty() { base.name.clone() } else { name.chars().take(60).collect() },
         nodes,
@@ -1021,11 +1022,13 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_keeps_the_flows_purpose() {
+    fn an_edit_keeps_the_flows_purpose_and_folder() {
         let mut b = base();
         b.purpose = "Fix a bug and have the fix checked.".into();
+        b.folder = "Work/Bugs".into();
         let (f, _) = flow_from_edit(&b, &edit_answer(|v| v["nodes"][1]["name"] = json!("Coder")), &models()).unwrap();
         assert_eq!(f.purpose, "Fix a bug and have the fix checked.", "the editor does not return it, so it must not be lost");
+        assert_eq!(f.folder, "Work/Bugs", "nor must where the flow is kept");
     }
 
     #[test]
