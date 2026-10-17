@@ -727,8 +727,12 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   (it is told to treat test results as one input, not the verdict) and uses a different model from the builder, and most
   flows of three to five agents. The evidence that running checks beats reading alone is mixed, and no study shows a
   different-vendor judge catches more bugs in code, so those two are sensible precautions, not guarantees
-  (`docs/research/judge-evidence.md`). The five starters (Feature, Bug fix,
-  Refactor, Code review, Research report) are those flow shapes.
+  (`docs/research/judge-evidence.md`). The built-in examples (Feature, Greenfield app, Grilled plan, Bug fix,
+  Code review) are those flow shapes. **Feature** adds to a project that exists (its agents read the project's conventions
+  and check with its own tests and build). **Greenfield app** starts from a product brief in an empty directory: it
+  researches the products and services the brief names and their current documentation, designs the project and an order of
+  slices, builds it a slice at a time, checks it, and ends with a hand-over of what you must set up by hand (app
+  registrations, keys, environment variables, redirect addresses).
 - **Design assistant.** In the design view, **Ask AI** (top left of the chart) opens a small chat. Say how the flow should
   change ("add a security reviewer after the builder", "use cheaper models where that is safe") and **Claude** (Sonnet)
   or **Codex** (its smallest model), whichever you pick at the top of the box, changes the flow: it adds, removes and

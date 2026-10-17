@@ -45,7 +45,8 @@ type Spec<'a> = (&'a str, &'a str, Role, Engine, &'a str, usize, usize, bool);
 /// What each starter is for. A flow is a template, so this says what kind of work it suits, never one task.
 fn purpose_of(id: &str) -> &'static str {
     match id {
-        "starter-feature" => "Build a new feature: plan it, research the code, design it, build it and have it checked.",
+        "starter-feature" => "Add a feature to an existing project: plan it, read the code and its conventions, design it, build it and have it checked with the project's own tests.",
+        "starter-greenfield" => "Build a new app from a product brief: plan it, research the products and services it leans on, design it, build it in slices, have it checked and hand it over.",
         "starter-grilled-plan" => "Turn a rough idea into a plan that has been questioned until nothing important is left open.",
         "starter-bug-fix" => "Find the cause of a bug, fix it and have the fix checked.",
         "starter-code-review" => "Review existing changes for correctness and security, side by side, and report what was found.",
@@ -107,6 +108,52 @@ pub fn all() -> Vec<Flow> {
         default,
     );
 
+    // The existing-project flow knows to read the code and use its own checks; the prompts are the roles' own plus a line.
+    let line = |f: &mut Flow, id: &str, text: &str| {
+        let n = f.nodes.iter_mut().find(|n| n.id == id).expect("a node of the flow");
+        n.system_prompt.push(' ');
+        n.system_prompt.push_str(text);
+    };
+    let mut feature = feature;
+    line(&mut feature, "plan", "This is a change to a project that already exists: find out how it is built and keep the plan to what the feature needs.");
+    line(&mut feature, "read", "Read the existing code first: its conventions, where similar things live, and the commands and tests the project checks itself with. Report file paths.");
+    line(&mut feature, "design", "Fit the design to the conventions already there, reuse what exists before adding anything, and list the files to change.");
+    line(&mut feature, "build", "Follow the project's conventions, keep the change to what was designed, add or update tests, and run the project's own checks before you finish.");
+    line(&mut feature, "check", "Run the project's own tests, type-check, lint and build, and look for changes outside the feature.");
+
+    // A project that does not exist yet, from a product brief. Research looks at the products and the outside services the
+    // brief names; the architect lays out the project and an order of slices; the builder works through them; the reporter
+    // hands over what the person has to set up by hand (accounts, keys, redirect addresses).
+    let mut greenfield = flow(
+        "starter-greenfield",
+        "Greenfield app",
+        &[
+            ("plan", "Planner", Role::Orchestrator, claude, "opus", 0, 1, false),
+            ("read", "Researcher", Role::Researcher, claude, "sonnet", 1, 1, false),
+            ("design", "Architect", Role::Architect, claude, "opus", 2, 1, true),
+            ("build", "Builder", Role::Builder, codex, "gpt-6.1-sol", 3, 1, true),
+            ("check", "Judge", Role::Judge, claude, "opus", 4, 1, false),
+            ("report", "Reporter", Role::Reporter, claude, "sonnet", 5, 1, false),
+        ],
+        &[
+            ("plan", "read", F),
+            ("read", "design", F),
+            ("design", "build", F),
+            ("build", "check", F),
+            ("check", "report", F),
+            ("check", "build", R),
+            ("check", "design", R),
+        ],
+        2,
+        default,
+    );
+    line(&mut greenfield, "plan", "This is a new project in an empty or nearly empty directory. Turn the brief into: the product in a few sentences, the features split into a first usable slice and later ones, the stack (anything the brief names is fixed), the outside services and accounts it needs, and what done means for each slice. List what the person must set up by hand, such as app registrations, API keys and environment variables.");
+    line(&mut greenfield, "read", "Research what the brief points at: look up the products or sites it names for the ideas worth taking (layout, flows, concepts), and the current official documentation of every library and outside API the project will use (sign-in, scopes, versions, limits). Report facts with their sources and the exact versions to use.");
+    line(&mut greenfield, "design", "Design the project from scratch: folder layout, data model, how sign-in and every outside API are wired, the screens, and the order to build it in as small slices that each run. Choose current, well-documented tools. Name every environment variable and secret, and keep secrets out of the code.");
+    line(&mut greenfield, "build", "Scaffold the project and get it to install, build and start, then build one slice at a time in the order given. After each slice run the type-check, lint and tests and fix what fails before moving on, and commit. Read secrets from environment variables and keep an .env.example. Do not stand in fake data for what the brief asked for unless the design says so.");
+    line(&mut greenfield, "check", "Check the project as the person would receive it: install, build, type-check, lint and run the tests, start it and use its main paths where you can. Compare it with the brief and the design slice by slice and send back what is missing or broken. Check that no secret is committed, that sign-in guards every private page and route, and that .env.example lists every variable used.");
+    line(&mut greenfield, "report", "Write the hand-over: what was built and what was left out, how to install and start it, every environment variable, and the accounts or registrations the person must set up by hand with the exact steps and redirect addresses.");
+
     // A plan that is questioned before anyone builds on it: the griller asks you what the plan leaves open, the planner
     // revises with your answers, and the loop ends when the griller has nothing left to ask.
     let grilled = flow(
@@ -153,7 +200,7 @@ pub fn all() -> Vec<Flow> {
     review.nodes[1].system_prompt.push_str(" Review for correctness only: logic errors, broken behaviour, missing cases and failing checks.");
     review.nodes[2].system_prompt.push_str(" Review for security problems (injection, unsafe input, leaked secrets) and for gaps against the stated requirements only.");
 
-    vec![feature, grilled, bug, review]
+    vec![feature, greenfield, grilled, bug, review]
 }
 
 #[cfg(test)]
@@ -178,7 +225,7 @@ mod tests {
 
     #[test]
     fn starters_use_only_the_roles_on_offer_and_the_rest_as_custom_roles_with_the_same_instructions() {
-        assert_eq!(all().len(), 4);
+        assert_eq!(all().len(), 5);
         for f in all() {
             for n in &f.nodes {
                 assert!(!crate::orch::roles::is_hidden(n.role), "{}: {} uses a role that is not offered", f.name, n.name);
@@ -189,7 +236,7 @@ mod tests {
         let design = feature.node("design").unwrap();
         let c = design.custom.as_ref().expect("the architect is a custom role now");
         assert_eq!((c.label.as_str(), c.capability, c.output), ("Architect", Capability::Read, crate::orch::roles::Output::Plan));
-        assert_eq!(design.system_prompt, crate::orch::roles::prompt(Role::Architect), "the same instructions");
+        assert!(design.system_prompt.starts_with(crate::orch::roles::prompt(Role::Architect)), "the same instructions, then a line for this kind of work");
         assert!(design.web && feature.node("find").unwrap().web, "the ones that look things up keep their web access");
     }
 
@@ -287,5 +334,23 @@ mod tests {
         let f = all().into_iter().find(|f| f.id == "starter-code-review").unwrap();
         assert_ne!(f.node("right").unwrap().system_prompt, f.node("safe").unwrap().system_prompt);
         assert!(f.node("safe").unwrap().system_prompt.contains("security"));
+    }
+
+    #[test]
+    fn the_greenfield_flow_starts_from_a_brief_and_ends_with_a_hand_over() {
+        let f = all().into_iter().find(|f| f.id == "starter-greenfield").expect("the starter exists");
+        assert_eq!(f.send_back_targets("check"), vec!["build", "design"]);
+        assert!(f.edges.iter().any(|e| e.from == "check" && e.to == "report" && e.kind == EdgeKind::Forward), "the hand-over follows the check");
+        assert!(f.node("read").unwrap().web && f.node("read").unwrap().system_prompt.contains("official documentation"), "it reads the services' own documentation");
+        assert!(f.node("build").unwrap().system_prompt.contains(".env.example"));
+        assert!(f.node("report").unwrap().system_prompt.contains("registrations"));
+    }
+
+    #[test]
+    fn the_feature_flow_works_inside_the_project_that_is_there() {
+        let f = &all()[0];
+        assert!(f.purpose.contains("existing project"));
+        assert!(f.node("read").unwrap().system_prompt.contains("conventions"));
+        assert!(f.node("check").unwrap().system_prompt.contains("project's own tests"));
     }
 }
