@@ -452,23 +452,6 @@ mod tests {
     }
 
     #[test]
-    fn a_credit_cap_saved_before_web_access_was_priced_is_carried_over_in_dollars() {
-        let dir = tmp("limits-old");
-        let s = Store::new(&dir);
-        let old = r#"{"claudePct":40.0,"codexPct":30.0,"stopWindowPct":90.0,"runUsd":2.5,"runCredits":120}"#;
-        let b: crate::orch::graph::Budget = serde_json::from_str(old).unwrap();
-        assert_eq!(b.run_web_usd, Some(0.0996), "120 Firecrawl credits at list price");
-        assert_eq!(b.run_usd, Some(2.5));
-        let both: crate::orch::graph::Budget = serde_json::from_str(r#"{"claudePct":40.0,"codexPct":30.0,"stopWindowPct":90.0,"runCredits":120,"runWebUsd":3.0}"#).unwrap();
-        assert_eq!(both.run_web_usd, Some(3.0), "a dollar cap wins over the old credit count");
-        let none: crate::orch::graph::Budget = serde_json::from_str(r#"{"claudePct":40.0,"codexPct":30.0,"stopWindowPct":90.0}"#).unwrap();
-        assert_eq!(none.run_web_usd, None);
-        s.save_limits(&b).unwrap();
-        let saved = serde_json::to_string(&s.load_limits()).unwrap();
-        assert!(saved.contains("runWebUsd") && !saved.contains("runCredits"), "{saved}");
-    }
-
-    #[test]
     fn a_deleted_run_is_gone_and_deleting_twice_is_fine() {
         let dir = tmp("rundel");
         let s = Store::new(&dir);

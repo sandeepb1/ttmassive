@@ -291,7 +291,7 @@ fn forward() -> EdgeKind {
 /// The plan limits: the share of each window a single run may use, and the line no window may pass. One set for
 /// the whole app, changed any time and applied to runs that are going.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", from = "BudgetSaved")]
+#[serde(rename_all = "camelCase")]
 pub struct Budget {
     pub claude_pct: f64,
     pub codex_pct: f64,
@@ -303,29 +303,6 @@ pub struct Budget {
     /// Most dollars a run may spend on web access (search, pages, crawls), or `None` for no cap.
     #[serde(default)]
     pub run_web_usd: Option<f64>,
-}
-
-/// A budget as it may have been saved. Before web access was priced in dollars the cap was a count of Firecrawl
-/// credits, which is carried over at Firecrawl's list price per credit.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BudgetSaved {
-    claude_pct: f64,
-    codex_pct: f64,
-    stop_window_pct: f64,
-    #[serde(default)]
-    run_usd: Option<f64>,
-    #[serde(default)]
-    run_web_usd: Option<f64>,
-    #[serde(default)]
-    run_credits: Option<u64>,
-}
-
-impl From<BudgetSaved> for Budget {
-    fn from(s: BudgetSaved) -> Self {
-        let from_credits = s.run_credits.map(|c| (c as f64 * crate::web::types::Provider::Firecrawl.default_usd_per_credit() * 10_000.0).round() / 10_000.0);
-        Budget { claude_pct: s.claude_pct, codex_pct: s.codex_pct, stop_window_pct: s.stop_window_pct, run_usd: s.run_usd, run_web_usd: s.run_web_usd.or(from_credits) }
-    }
 }
 
 impl Budget {
