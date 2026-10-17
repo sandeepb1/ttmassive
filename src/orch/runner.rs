@@ -602,7 +602,7 @@ mod tests {
         };
         let accounts = crate::secrets::Accounts { accounts: vec![account], ..Default::default() };
         std::fs::write(dir.join("accounts.json"), serde_json::to_vec(&accounts).unwrap()).unwrap();
-        let flow = Flow { id: "f".into(), name: "f".into(), nodes, edges: vec![], max_retries: 1, budget: Default::default(), downshift: false, dial: 2 };
+        let flow = Flow { id: "f".into(), name: "f".into(), nodes, edges: vec![], max_retries: 1, budget: Default::default(), downshift: false, dial: 2 , purpose: String::new()};
         let limits = Arc::new(std::sync::Mutex::new(crate::orch::graph::Budget::default()));
         let r = EngineRunner::new(flow, dir.clone(), dir.join("wt"), "r1".into(), Arc::default(), Arc::new(Leases::new()), "http://127.0.0.1:1".into(), limits, false, dir.clone());
         (r, dir)

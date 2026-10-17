@@ -732,18 +732,22 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
 - **Design assistant.** In the design view, **Ask AI** (top left of the chart) opens a small chat. Say how the flow should
   change ("add a security reviewer after the builder", "use cheaper models where that is safe") and **Claude** (Sonnet)
   or **Codex** (its smallest model), whichever you pick at the top of the box, changes the flow: it adds, removes and
-  changes agents and rewires them by the same rules as **Suggest**. Agents it leaves alone keep their position, token
+  changes agents and rewires them by the same rules as **Design a flow**. Agents it leaves alone keep their position, token
   cap and any custom role, new agents get a free spot, and the change is applied at once and marked *unsaved* until you
-  press **Save**. **Undo** puts the flow back. It will not overwrite edits you make while it is working. On an empty flow
-  it builds one from your description.
+  press **Save**. **Undo** puts the flow back. It will not overwrite edits you make while it is working. It changes a flow
+  that has agents; on an empty one it points you to **Design a flow**.
 - **Custom roles.** **More roles → Custom role…**: describe a job in your own words and Sonnet picks what it may do and
   what it hands back and writes its instructions; you check and change all of it before it is added. The rules are
   enforced on what it may do, not on its name: an agent that changes files always reports a change and asks first, and
   one that gives verdicts can never be able to change files, so a reviewer cannot edit what it reviews. A custom agent
   that gives a verdict can send work back like a judge, and its role can be edited later in the details panel. **Write with Sonnet** drafts an agent's
-  instructions. **Save** keeps a flow. On the **Flows** list, **Suggest** takes a description
-  of the work and has Sonnet design the team (it opens for you to change; nothing runs), the copy button on a
-  saved flow opens a duplicate to edit, and **Templates** holds the built-in starters.
+  instructions. **Save** keeps a flow. On the **Flows** list, **Design a flow** takes a description
+  of a *kind* of work ("find the cause of a bug, fix it and have the fix reviewed") and has Sonnet design a reusable
+  team for it (it opens for you to change; nothing runs). A flow is a template: it keeps a one-sentence **purpose** (edit it
+  under *This flow* in Settings), shown in the list and when you start a run, and what to do each time is the goal you give
+  the run, which every agent receives. **Design and run** does both with one prompt: it designs the flow, then opens the
+  run dialog with your text as the first goal. The copy button on a saved flow opens a duplicate to edit, and
+  **Templates** holds the built-in starters.
 - **Flows and executions.** The sidebar is a tree, one list at a time. The top level lists your flows, newest run
   first, each with its agent count and how many times it has run. Open a flow and you see **Design** (the chart) and
   **Executions**: every run of that flow, newest first, kept as its history. **New run** starts another. Running an

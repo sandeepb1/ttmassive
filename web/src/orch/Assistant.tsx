@@ -1,9 +1,11 @@
 // A small chat widget in the design view: say how the flow should change, and Claude or Codex changes it. Each change
-// is applied at once and can be undone, so asking is never a commitment.
+// is applied at once and can be undone, so asking is never a commitment. It changes a flow that exists; starting from a
+// description is "Design a flow".
 
 import { useEffect, useRef, useState } from 'react';
 import { orch } from './api';
 import { Icon } from './bits';
+import { canEdit } from './model';
 import type { Flow } from './types';
 
 type Engine = 'claude' | 'codex';
@@ -30,10 +32,9 @@ function savedEngine(): Engine {
   }
 }
 
-const EXAMPLES_FULL = ['Add a security reviewer after the builder', 'Use cheaper models where that is safe', 'Run the research in parallel with the design'];
-const EXAMPLES_EMPTY = ['Fix a bug and have the fix reviewed', 'Research a topic and write it up', 'Build a feature with a plan, a builder and a judge'];
+const EXAMPLES = ['Add a security reviewer after the builder', 'Use cheaper models where that is safe', 'Run the research in parallel with the design'];
 
-export function Assistant({ flow, onReplace }: { flow: Flow; onReplace: (f: Flow) => void }) {
+export function Assistant({ flow, onReplace, onDesign }: { flow: Flow; onReplace: (f: Flow) => void; onDesign: () => void }) {
   const [open, setOpen] = useState(false);
   const [engine, setEngine] = useState<Engine>(savedEngine);
   const [text, setText] = useState('');
@@ -62,7 +63,7 @@ export function Assistant({ flow, onReplace }: { flow: Flow; onReplace: (f: Flow
 
   const send = async (request = text) => {
     const ask = request.trim();
-    if (!ask || busy) return;
+    if (!ask || busy || !canEdit(flowRef.current)) return;
     const before = structuredClone(flowRef.current);
     setText('');
     setBusy(true);
@@ -95,7 +96,7 @@ export function Assistant({ flow, onReplace }: { flow: Flow; onReplace: (f: Flow
       </button>
     );
   }
-  const examples = flow.nodes.length ? EXAMPLES_FULL : EXAMPLES_EMPTY;
+  const hasAgents = canEdit(flow);
   return (
     <section className="mc-bot" aria-label="Design assistant" onKeyDown={(e) => e.key === 'Escape' && setOpen(false)}>
       <div className="mc-bot-head">
@@ -117,14 +118,25 @@ export function Assistant({ flow, onReplace }: { flow: Flow; onReplace: (f: Flow
       <div className="mc-bot-log" ref={log} aria-live="polite">
         {turns.length === 0 && !busy && (
           <div className="mc-bot-empty">
-            <p>{flow.nodes.length ? 'Tell me how to change this flow. I will add, remove or change agents and rewire them, and you can undo it.' : 'Describe the work and I will build the flow for it.'}</p>
-            <div className="mc-chips">
-              {examples.map((x) => (
-                <button key={x} type="button" className="mc-chip" onClick={() => void send(x)}>
-                  {x}
+            {hasAgents ? (
+              <>
+                <p>Tell me how to change this flow. I will add, remove or change agents and rewire them, and you can undo it.</p>
+                <div className="mc-chips">
+                  {EXAMPLES.map((x) => (
+                    <button key={x} type="button" className="mc-chip" onClick={() => void send(x)}>
+                      {x}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <p>This flow has no agents yet. Describe the kind of work it is for and a team is designed; then I can change it.</p>
+                <button type="button" className="mc-btn mc-btn-primary" onClick={onDesign}>
+                  <Icon name="wand" /> Design a flow
                 </button>
-              ))}
-            </div>
+              </>
+            )}
           </div>
         )}
         {turns.map((t, i) => (
@@ -162,8 +174,8 @@ export function Assistant({ flow, onReplace }: { flow: Flow; onReplace: (f: Flow
           rows={2}
           value={text}
           maxLength={2000}
-          disabled={busy}
-          placeholder="e.g. add a security reviewer after the builder"
+          disabled={busy || !hasAgents}
+          placeholder={hasAgents ? 'e.g. add a security reviewer after the builder' : 'Design a flow first'}
           aria-label="What should change?"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -173,7 +185,7 @@ export function Assistant({ flow, onReplace }: { flow: Flow; onReplace: (f: Flow
             }
           }}
         />
-        <button type="submit" className="mc-btn mc-btn-primary mc-btn-icon" disabled={busy || !text.trim()} aria-label="Send">
+        <button type="submit" className="mc-btn mc-btn-primary mc-btn-icon" disabled={busy || !hasAgents || !text.trim()} aria-label="Send">
           <Icon name="arrow-up" />
         </button>
       </form>

@@ -4,7 +4,7 @@ Researched 2026-10-15. Numbers and quotes below were read in the cited source un
 
 ## 0. Decision, 16 Oct 2026: the roles offered out of the box are four
 
-**Orchestrator, Researcher, Builder, Judge.** Plan, find out, change, check. Everything else is a custom role, which Suggest and Ask AI define when a flow needs one (name, what it may do, what it hands back, instructions). Search, Analyst, Architect, Debugger, Reporter and Griller stay in the code so saved flows keep running, but are no longer offered, and the starter flows write them as custom roles.
+**Orchestrator, Researcher, Builder, Judge.** Plan, find out, change, check. Everything else is a custom role, which Design a flow and Ask AI define when a flow needs one (name, what it may do, what it hands back, instructions). Search, Analyst, Architect, Debugger, Reporter and Griller stay in the code so saved flows keep running, but are no longer offered, and the starter flows write them as custom roles.
 
 Why four, and why these:
 

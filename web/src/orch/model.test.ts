@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -800,4 +800,31 @@ test('the palette offers only the roles that are on offer, and the hidden ones s
   setCatalog(roles);
   assert.equal(roleDef('architect')?.label, 'architect', 'a saved flow with an architect still finds its role');
   setCatalog([]);
+});
+
+test('a flow is a template: it says what kind of work it is for, and the run dialog says so before asking what to do this time', () => {
+  const f = emptyFlow('f', 'F');
+  assert.equal(f.purpose, '', 'a new flow has none');
+  assert.equal(purposeOf(f), '');
+  assert.equal(purposeOf({ purpose: '  Fix a bug\n   and have the fix  checked. ' }), 'Fix a bug and have the fix checked.');
+  assert.equal(purposeOf({}), '', 'a flow saved before purposes has none');
+  assert.ok(goalHint({ purpose: 'Fix a bug and have the fix checked.' }).startsWith('This flow is for: Fix a bug and have the fix checked. Say it the way'));
+  assert.ok(!goalHint({}).includes('This flow is for'), 'with no purpose it only says how to ask');
+  assert.ok(goalHint({}).includes('colleague'));
+  assert.equal(MAX_PURPOSE, 300, 'the same limit as the server');
+});
+
+test('the list shows each saved flow with its purpose, and a flow that is only a record of runs has none', () => {
+  const saved = [{ ...emptyFlow('a', 'Bug fix'), purpose: 'Fix a bug.', nodes: [{} as FlowNode] }, emptyFlow('b', 'Blank')];
+  const runs = [{ id: 'r', flowId: 'gone', flowName: 'Old', created: 5 }] as unknown as RunSummary[];
+  const entries = flowEntries(saved, runs);
+  const byId = (id: string) => entries.find((e) => e.id === id)!;
+  assert.equal(byId('a').purpose, 'Fix a bug.');
+  assert.equal(byId('b').purpose, '');
+  assert.equal(byId('gone').purpose, '', 'a deleted flow whose runs remain keeps no purpose');
+});
+
+test('the design assistant has something to change only once a flow has agents', () => {
+  assert.equal(canEdit(emptyFlow('f', 'F')), false);
+  assert.equal(canEdit({ nodes: [{} as FlowNode] }), true);
 });

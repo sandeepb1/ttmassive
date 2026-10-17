@@ -42,6 +42,17 @@ fn edge(from: &str, to: &str, kind: EdgeKind) -> Edge {
 /// A flow of these agents and edges. Nodes are (id, name, role, engine, model, column, row, asks first).
 type Spec<'a> = (&'a str, &'a str, Role, Engine, &'a str, usize, usize, bool);
 
+/// What each starter is for. A flow is a template, so this says what kind of work it suits, never one task.
+fn purpose_of(id: &str) -> &'static str {
+    match id {
+        "starter-feature" => "Build a new feature: plan it, research the code, design it, build it and have it checked.",
+        "starter-grilled-plan" => "Turn a rough idea into a plan that has been questioned until nothing important is left open.",
+        "starter-bug-fix" => "Find the cause of a bug, fix it and have the fix checked.",
+        "starter-code-review" => "Review existing changes for correctness and security, side by side, and report what was found.",
+        _ => "",
+    }
+}
+
 fn flow(id: &str, name: &str, specs: &[Spec], edges: &[(&str, &str, EdgeKind)], max_retries: u8, budget: Budget) -> Flow {
     Flow {
         id: id.into(),
@@ -59,6 +70,7 @@ fn flow(id: &str, name: &str, specs: &[Spec], edges: &[(&str, &str, EdgeKind)], 
         budget,
         downshift: false,
         dial: 2,
+        purpose: purpose_of(id).into(),
     }
 }
 
@@ -148,6 +160,14 @@ pub fn all() -> Vec<Flow> {
 mod tests {
     use super::*;
     use crate::orch::roles::Capability;
+
+    #[test]
+    fn every_starter_says_what_kind_of_work_it_is_for() {
+        for f in all() {
+            assert!(!f.purpose.is_empty() && f.purpose.chars().count() <= crate::orch::graph::MAX_PURPOSE, "{}", f.name);
+            assert!(f.purpose.ends_with('.'), "{}: a sentence", f.name);
+        }
+    }
 
     #[test]
     fn every_starter_is_a_valid_flow() {

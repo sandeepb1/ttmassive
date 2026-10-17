@@ -11,6 +11,8 @@ const MAX_NODES: usize = 24;
 const MAX_EDGES: usize = 64;
 const MAX_ID: usize = 40;
 const MAX_NAME: usize = 60;
+/// Longest a flow's purpose may be, in characters.
+pub const MAX_PURPOSE: usize = 300;
 const MAX_PROMPT: usize = 16_000;
 const MAX_RETRIES: u8 = 5;
 
@@ -301,6 +303,9 @@ pub struct Flow {
     /// Where on the cost-to-quality scale agents with a ladder start: 0 is the cheapest rung, 4 the strongest.
     #[serde(default = "default_dial")]
     pub dial: u8,
+    /// What kind of work the flow is for, in a sentence. A flow is a template: what to do each time is the run's goal.
+    #[serde(default)]
+    pub purpose: String,
 }
 
 fn default_retries() -> u8 {
@@ -364,6 +369,9 @@ impl Flow {
         }
         if self.name.trim().is_empty() || self.name.len() > MAX_NAME {
             return Err("flow name must be 1 to 60 characters".into());
+        }
+        if self.purpose.chars().count() > MAX_PURPOSE || self.purpose.chars().any(|c| c.is_control() && c != '\n') {
+            return Err(format!("a flow's purpose must be at most {MAX_PURPOSE} characters"));
         }
         if self.nodes.is_empty() || self.nodes.len() > MAX_NODES {
             return Err(format!("a flow needs 1 to {MAX_NODES} nodes"));
@@ -584,7 +592,7 @@ mod tests {
 
     #[test]
     fn an_agent_that_asks_questions_may_send_work_back_but_only_one_way_and_a_few_times() {
-        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator), node("b", Role::Researcher), node("g", Role::Griller)], edges: vec![], max_retries: 2, budget: Budget::default(), downshift: false, dial: 2 };
+        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator), node("b", Role::Researcher), node("g", Role::Griller)], edges: vec![], max_retries: 2, budget: Budget::default(), downshift: false, dial: 2 , purpose: String::new()};
         f.edges = vec![edge("e1", "a", "b", EdgeKind::Forward), edge("e2", "b", "g", EdgeKind::Forward), edge("r1", "g", "a", EdgeKind::Retry)];
         assert_eq!(f.validate(), Ok(()), "a griller is allowed what a judge is");
         f.edges.push(edge("r2", "g", "b", EdgeKind::Retry));
@@ -611,7 +619,7 @@ mod tests {
 
     #[test]
     fn only_an_agent_that_needs_no_tools_may_call_its_model_directly() {
-        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator)], edges: vec![], max_retries: 1, budget: Budget::default(), downshift: false, dial: 2 };
+        let mut f = Flow { id: "f".into(), name: "f".into(), nodes: vec![node("a", Role::Orchestrator)], edges: vec![], max_retries: 1, budget: Budget::default(), downshift: false, dial: 2 , purpose: String::new()};
         f.nodes[0].direct = true;
         assert!(f.validate().unwrap_err().contains("needs an account"));
         f.nodes[0].account = Some("acct".into());
@@ -655,6 +663,7 @@ mod tests {
         Flow {
             id: "f".into(),
             name: "Line".into(),
+            purpose: String::new(),
             nodes: vec![
                 node("orch", Role::Orchestrator),
                 node("res", Role::Researcher),
@@ -839,5 +848,23 @@ mod tests {
         assert_eq!(json["edges"][3]["kind"], "retry");
         let back: Flow = serde_json::from_value(json).unwrap();
         assert_eq!(back, line());
+    }
+
+    #[test]
+    fn a_flow_has_a_purpose_that_is_short_and_older_flows_have_none() {
+        let mut f = line();
+        assert_eq!(f.purpose, "");
+        f.purpose = "Fix a bug and have the fix checked.".into();
+        assert_eq!(f.validate(), Ok(()));
+        f.purpose = "x".repeat(MAX_PURPOSE + 1);
+        assert!(f.validate().is_err(), "a purpose is a sentence, not a document");
+        f.purpose = "bad\u{7}bell".into();
+        assert!(f.validate().is_err());
+        f.purpose = "two\nlines".into();
+        assert_eq!(f.validate(), Ok(()), "a line break is allowed");
+        let mut v = serde_json::to_value(line()).unwrap();
+        v.as_object_mut().unwrap().remove("purpose");
+        let old: Flow = serde_json::from_value(v).unwrap();
+        assert_eq!(old.purpose, "", "a flow saved before purposes still loads");
     }
 }

@@ -313,7 +313,7 @@ mod tests {
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
-            dial: 2,
+            dial: 2, purpose: String::new(),
         };
         Run::new("run1".into(), flow, "Add a login page".into(), 0)
     }

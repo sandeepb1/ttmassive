@@ -56,8 +56,8 @@ function FlowList(p: Props) {
           <button type="button" className="mc-btn" onClick={p.onNewFlow}>
             <Icon name="plus" /> New flow
           </button>
-          <button type="button" className="mc-btn" onClick={p.onSuggest} title="Describe the work and let Sonnet design the team">
-            <Icon name="wand" /> Suggest
+          <button type="button" className="mc-btn" onClick={p.onSuggest} title="Describe the kind of work and let Sonnet design a reusable team">
+            <Icon name="wand" /> Design a flow
           </button>
         </div>
 
@@ -69,6 +69,7 @@ function FlowList(p: Props) {
               <li key={e.id} className="mc-li" {...menuOn(p.openMenu, () => p.flowMenu(e))} {...press(() => p.flowMenu(e))}>
                 <button type="button" className="mc-row-btn" aria-current={e.id === p.flowId} onClick={() => p.onOpenFlow(e)}>
                   <span className="mc-row-title">{e.name}</span>
+                  {e.purpose && <span className="mc-row-sub mc-row-purpose">{e.purpose}</span>}
                   <span className="mc-row-sub">
                     <span>
                       {e.saved ? `${e.agents} agents` : 'Runs only'} · {runsLabel(e.runs.length)}
@@ -112,6 +113,7 @@ function FlowList(p: Props) {
               <li key={f.id}>
                 <button type="button" className="mc-row-btn" onClick={() => p.onUseStarter(f)}>
                   <span className="mc-row-title">{f.name}</span>
+                  {f.purpose && <span className="mc-row-sub mc-row-purpose">{f.purpose}</span>}
                   <span className="mc-row-sub">{f.nodes.length} agents · opens as a copy for you to edit</span>
                 </button>
               </li>

@@ -57,10 +57,14 @@ fn role_lines() -> String {
 /// cap on how many roles a task needs.
 fn suggest_system(or: bool) -> String {
     format!(
-        "You design small teams of AI agents. Given a goal, return a flow: the agents (nodes), which agent's output \
-goes to which (edges), and a system prompt for each agent.\n\
+        "You design small teams of AI agents that are used again and again. Given a description of a KIND of work, return \
+a flow: the agents (nodes), which agent's output goes to which (edges), a system prompt for each agent, and its \
+purpose. A flow is a template: the task itself is given to the agents each time it runs, as their brief, so write \
+every agent's prompt for any task of this kind. If the description names something specific (a feature, a file, a \
+bug), design for the kind of work it stands for and keep that detail out of the prompts and the flow's name. \
+purpose is one plain sentence saying what kind of work the flow is for.\n\
 Roles:\n{}\n\
-Engines: claude (models opus, sonnet, haiku) or codex (models are given with the goal).\n\
+Engines: claude (models opus, sonnet, haiku) or codex (models are given with the description).\n\
 {DESIGN_RULES}{}{ROUTING_RULES}",
         role_lines(),
         if or { OPENROUTER_RULES } else { NO_OPENROUTER }
@@ -69,7 +73,7 @@ Engines: claude (models opus, sonnet, haiku) or codex (models are given with the
 
 /// How the designer may use the user's OpenRouter models. They are paid per token, unlike the user's own plan, so
 /// they are for where they are clearly the better buy.
-const OPENROUTER_RULES: &str = "\nOpenRouter: the user has also pinned some OpenRouter models, listed with the goal with their prices per \
+const OPENROUTER_RULES: &str = "\nOpenRouter: the user has also pinned some OpenRouter models, listed with the description with their prices per \
 million tokens. They cost real money per token, while claude and codex models use up the user's plan windows, which are limited. The user \
 pinned these models on purpose, so treat them as ones they trust. Give agents an OpenRouter model where it spares the plan \
 and is good enough: the read-only and high-volume roles (searching, researching, reviewing, judging) first, and a builder \
@@ -207,8 +211,8 @@ fn suggest_schema() -> Value {
         "properties": {"from": text(), "to": text(), "retry": {"type": "boolean"}}
     });
     json!({
-        "type": "object", "additionalProperties": false, "required": ["name", "nodes", "edges"],
-        "properties": {"name": text(), "nodes": {"type": "array", "items": node}, "edges": {"type": "array", "items": edge}}
+        "type": "object", "additionalProperties": false, "required": ["name", "purpose", "nodes", "edges"],
+        "properties": {"name": text(), "purpose": text(), "nodes": {"type": "array", "items": node}, "edges": {"type": "array", "items": edge}}
     })
 }
 
@@ -227,7 +231,7 @@ fn grill_schema() -> Value {
 }
 
 pub fn suggest_prompt(goal: &str, codex_models: &[String], or_models: &[FlowModel]) -> String {
-    let mut p = format!("# Goal\n\n{}\n\n# Codex models available\n\n{}\n", goal.trim(), codex_models.join(", "));
+    let mut p = format!("# Kind of work\n\n{}\n\n# Codex models available\n\n{}\n", goal.trim(), codex_models.join(", "));
     if !or_models.is_empty() {
         p.push_str(&format!("\n# OpenRouter models available\n\n{}\n", or_lines(or_models)));
     }
@@ -319,6 +323,7 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
     let name = v.get("name").and_then(Value::as_str).unwrap_or("").trim();
     let mut flow = Flow {
         id: flow_id.into(),
+        purpose: one_line(v.get("purpose").and_then(Value::as_str).unwrap_or(""), crate::orch::graph::MAX_PURPOSE),
         name: if name.is_empty() { "Suggested flow".into() } else { name.chars().take(60).collect() },
         nodes,
         edges,
@@ -330,6 +335,11 @@ pub fn flow_from_suggestion_with(v: &Value, flow_id: &str, codex_models: &[Strin
     flow.validate().map_err(anyhow::Error::msg).context("the suggested flow is not valid")?;
     lay_out(&mut flow);
     Ok((flow, notes))
+}
+
+/// Text as one line of at most `max` characters: a designer's sentence with its line breaks and stray spacing taken out.
+fn one_line(s: &str, max: usize) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(max).collect()
 }
 
 /// The role a designer defined for an agent, from its `custom_*` fields. A label it left out becomes the agent's name, and
@@ -724,6 +734,7 @@ pub fn flow_from_edit_with(base: &Flow, v: &Value, codex_models: &[String], or_m
     let name = v.get("name").and_then(Value::as_str).unwrap_or("").trim();
     let mut flow = Flow {
         id: base.id.clone(),
+        purpose: base.purpose.clone(),
         name: if name.is_empty() { base.name.clone() } else { name.chars().take(60).collect() },
         nodes,
         edges,
@@ -1007,6 +1018,14 @@ mod tests {
         let wires = |f: &Flow| f.edges.iter().map(|e| (e.from.clone(), e.to.clone(), e.kind)).collect::<Vec<_>>();
         assert_eq!(wires(&f), wires(&b), "same connections (their ids are renumbered)");
         assert_eq!((f.id.as_str(), f.max_retries, f.downshift), ("mine", b.max_retries, b.downshift));
+    }
+
+    #[test]
+    fn an_edit_keeps_the_flows_purpose() {
+        let mut b = base();
+        b.purpose = "Fix a bug and have the fix checked.".into();
+        let (f, _) = flow_from_edit(&b, &edit_answer(|v| v["nodes"][1]["name"] = json!("Coder")), &models()).unwrap();
+        assert_eq!(f.purpose, "Fix a bug and have the fix checked.", "the editor does not return it, so it must not be lost");
     }
 
     #[test]
@@ -1379,6 +1398,30 @@ mod tests {
         assert!(f.nodes[1].checkpoint);
         // An empty prompt falls back to the role's default.
         assert_eq!(f.nodes[1].system_prompt, starters::default_prompt(Role::Builder));
+    }
+
+    #[test]
+    fn a_suggestion_keeps_the_purpose_it_was_given_as_one_short_line() {
+        let mut s = suggestion();
+        assert_eq!(flow_from_suggestion(&s, "f", &models()).unwrap().purpose, "", "a designer that gave none leaves it empty");
+        s["purpose"] = json!("  Build a small feature\n  and have it   reviewed. ");
+        assert_eq!(flow_from_suggestion(&s, "f", &models()).unwrap().purpose, "Build a small feature and have it reviewed.");
+        s["purpose"] = json!("x".repeat(1000));
+        let long = flow_from_suggestion(&s, "f", &models()).unwrap();
+        assert_eq!(long.purpose.chars().count(), crate::orch::graph::MAX_PURPOSE);
+        assert_eq!(long.validate(), Ok(()), "a long one is cut rather than refused");
+    }
+
+    #[test]
+    fn the_designer_is_asked_for_a_template_for_a_kind_of_work_not_for_one_task() {
+        let system = suggest_system(false);
+        assert!(system.contains("KIND of work") && system.contains("template") && system.contains("any task of this kind"), "{system}");
+        assert!(system.contains("purpose"), "it is asked for a purpose");
+        let prompt = suggest_prompt("Fix bugs and have the fix reviewed", &models(), &[]);
+        assert!(prompt.starts_with("# Kind of work\n\nFix bugs and have the fix reviewed"), "{prompt}");
+        assert!(!prompt.contains("# Goal"));
+        let schema = suggest_schema();
+        assert!(schema["required"].as_array().unwrap().contains(&json!("purpose")) && schema["properties"]["purpose"].is_object());
     }
 
     #[test]

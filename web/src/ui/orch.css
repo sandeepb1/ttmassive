@@ -413,6 +413,14 @@ textarea.mc-field {
   color: var(--mc-faint);
   font-size: 0.75rem;
 }
+/* What a flow is for: a sentence under its name, kept to two lines so a long one does not push the list around. */
+.mc-row-purpose {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-align: left;
+}
 .mc-flow-title {
   margin: 0 0 0.5rem;
   overflow: hidden;

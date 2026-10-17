@@ -159,6 +159,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   // A run that could not be started again: why, and where it was.
   const [rerunProblem, setRerunProblem] = useState<{ id: string; message: string; project: string; git: boolean } | null>(null);
   const [dialog, setDialog] = useState(false);
+  /** The goal the run dialog starts with: the text a flow was just designed from, when the person chose Design and run. */
+  const [runGoal, setRunGoal] = useState('');
   const [suggesting, setSuggesting] = useState(false);
   const [roles, setRoles] = useState<RoleDef[]>(getCatalog());
   const [customOpen, setCustomOpen] = useState(false);
@@ -447,7 +449,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       if (e.id === flow.id) edit(emptyFlow(newFlowId(), 'New flow'), false), setNav('flows');
     });
   };
-  const suggest = (goal: string) =>
+  const suggest = (goal: string, thenRun = false) =>
     void act(
       () => orch.suggest(goal),
       ({ notes, ...f }) => {
@@ -455,8 +457,11 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         edited.current = true;
         setSuggesting(false);
         setSideOpen(false);
+        // Design and run: the same words are the first task, so the run dialog opens with them, to be checked and started.
+        setRunGoal(thenRun ? goal : '');
+        setDialog(thenRun);
         // Which agents run on OpenRouter, and why, so a paid model is never a surprise.
-        say(['Here is a flow for it. Change anything, then run it.', ...(notes ?? [])].join(' '));
+        say([thenRun ? 'Here is a flow for it, and your text as the first task. Check the folder, then start.' : 'Here is a flow for it. Change anything, then run it with a goal of its own.', ...(notes ?? [])].join(' '));
       },
     );
   const designRole = async (description: string) => {
@@ -678,7 +683,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               <button type="button" className="mc-btn mc-hide-narrow" disabled={!dirty || !!problem || busy} onClick={save} title={problem ?? 'Save this flow'}>
                 <Icon name="save" /> Save
               </button>
-              <button type="button" className="mc-btn mc-btn-primary" disabled={!!problem} onClick={() => setDialog(true)} title={problem ?? 'Start a run of this flow'}>
+              <button type="button" className="mc-btn mc-btn-primary" disabled={!!problem} onClick={() => (setRunGoal(''), setDialog(true))} title={problem ?? 'Start a run of this flow'}>
                 <Icon name="play" /> Run
               </button>
             </>
@@ -731,7 +736,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             onBack={() => setNav('flows')}
             onDesign={toDesign}
             onOpenRun={openRun}
-            onNewRun={() => (setSideOpen(false), setDialog(true))}
+            onNewRun={() => (setSideOpen(false), setRunGoal(''), setDialog(true))}
             onDeleteRun={removeRun}
             onRerun={(r) => rerun(r.id)}
             openMenu={setMenu}
@@ -753,12 +758,12 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               {editable && <AddAgent roles={roles} count={flow.nodes.length} onAdd={addNode} onCustom={() => (setDraft(null), setCustomError(null), setCustomOpen(true))} />}
             </ReactFlowProvider>
           )}
-          {editable && <Assistant flow={flow} onReplace={(f) => (editFlow(() => f), fit())} />}
+          {editable && <Assistant flow={flow} onReplace={(f) => (editFlow(() => f), fit())} onDesign={() => (setError(null), setSuggesting(true))} />}
           {editable && flow.nodes.length === 0 && (
             <div className="mc-empty" style={{ position: 'absolute', inset: '32% 0 auto', zIndex: 3 }}>
               <p style={{ margin: '0 0 0.75rem' }}>An empty flow. Add agents from the bar below, open a starter, or</p>
               <button type="button" className="mc-btn" onClick={() => (setError(null), setSuggesting(true))}>
-                <Icon name="wand" /> Suggest a flow
+                <Icon name="wand" /> Design a flow
               </button>
             </div>
           )}
@@ -781,7 +786,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
           {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
           {rerunProblem && <RerunProblemDialog message={rerunProblem.message} project={rerunProblem.project} git={rerunProblem.git} busy={busy} onFix={() => void fixAndRerun()} onClose={() => setRerunProblem(null)} />}
-        {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} onCreate={createRun} onClose={() => (setDialog(false), setError(null))} />}
+        {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} initialGoal={runGoal} onCreate={createRun} onClose={() => (setDialog(false), setRunGoal(''), setError(null))} />}
           {run?.status.state === 'grilling' && (
             <GrillDialog
               run={run}

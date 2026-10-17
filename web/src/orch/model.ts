@@ -180,8 +180,24 @@ export function liveLines(run: Run): { node: string; line: string }[] {
 export const isFinished = (s: { state: string }) => s.state === 'done' || s.state === 'cancelled';
 
 export function emptyFlow(id: string, name: string): Flow {
-  return { id, name, nodes: [], edges: [], maxRetries: 2, budget: { ...DEFAULT_LIMITS }, downshift: false };
+  return { id, name, nodes: [], edges: [], maxRetries: 2, budget: { ...DEFAULT_LIMITS }, downshift: false, purpose: '' };
 }
+
+/** Longest a flow's purpose may be; the server refuses more. */
+export const MAX_PURPOSE = 300;
+
+/** The flow's purpose as one tidy line, or '' when it has none. */
+export const purposeOf = (flow: Pick<Flow, 'purpose'>): string => (flow.purpose ?? '').replace(/\s+/g, ' ').trim();
+
+/** What the run dialog says about the flow, so the goal typed there is about this time and not the kind of work. */
+export function goalHint(flow: Pick<Flow, 'purpose'>): string {
+  const purpose = purposeOf(flow);
+  const ask = 'Say it the way you would to a colleague. The orchestrator will ask what it needs to know before it starts.';
+  return purpose ? `This flow is for: ${purpose} ${ask}` : ask;
+}
+
+/** Whether the design assistant has anything to change: a flow with no agents is built with Design a flow first. */
+export const canEdit = (flow: Pick<Flow, 'nodes'>): boolean => flow.nodes.length > 0;
 
 export function removeNode(flow: Flow, id: string): Flow {
   return { ...flow, nodes: flow.nodes.filter((n) => n.id !== id), edges: flow.edges.filter((e) => e.from !== id && e.to !== id) };
@@ -469,6 +485,8 @@ export interface FlowEntry {
   /** In the saved list. False for a flow that was never saved or has been deleted but still has executions. */
   saved: boolean;
   agents: number | null;
+  /** What kind of work the flow is for; empty for a flow with none or one that is not saved. */
+  purpose: string;
   /** Newest first. */
   runs: RunSummary[];
   last: RunSummary | null;
@@ -481,11 +499,11 @@ export const runsOf = (runs: RunSummary[], flowId: string): RunSummary[] =>
 /** Every saved flow, and every flow that only survives as executions. The ones used most recently come first; a flow
  *  never run goes after them, by name. */
 export function flowEntries(saved: Flow[], runs: RunSummary[]): FlowEntry[] {
-  const entry = (id: string, name: string, isSaved: boolean, agents: number | null): FlowEntry => {
+  const entry = (id: string, name: string, isSaved: boolean, agents: number | null, purpose = ''): FlowEntry => {
     const mine = runsOf(runs, id);
-    return { id, name, saved: isSaved, agents, runs: mine, last: mine[0] ?? null };
+    return { id, name, saved: isSaved, agents, purpose, runs: mine, last: mine[0] ?? null };
   };
-  const out = saved.map((f) => entry(f.id, f.name, true, f.nodes.length));
+  const out = saved.map((f) => entry(f.id, f.name, true, f.nodes.length, purposeOf(f)));
   const known = new Set(saved.map((f) => f.id));
   for (const id of new Set(runs.map((r) => r.flowId))) {
     if (known.has(id)) continue;

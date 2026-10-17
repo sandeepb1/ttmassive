@@ -121,6 +121,8 @@ export interface Flow {
   downshift?: boolean;
   /** Where agents with a ladder start: 0 the cheapest rung, 4 the strongest. */
   dial?: number;
+  /** What kind of work the flow is for, in a sentence. A flow is a template; what to do each time is the run's goal. */
+  purpose?: string;
 }
 
 export interface Tokens {

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
 import { orch } from './api';
 import { Icon, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
+import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, goalHint, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
 import type { Budget, Capability, Flow, Output, Question, RepoState, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
@@ -60,10 +60,12 @@ function remembered(): string {
   }
 }
 
-export function NewRunDialog({ flow, limits, recents, busy, error, web, onCreate, onClose }: {
+export function NewRunDialog({ flow, limits, recents, busy, error, web, initialGoal, onCreate, onClose }: {
   flow: Flow;
   /** There is a web account, so the links in the goal can be read for the agents. */
   web: boolean;
+  /** A goal to start with, such as the text a flow was just designed from. */
+  initialGoal?: string;
   limits: Budget;
   recents: RecentDir[];
   busy: boolean;
@@ -71,7 +73,7 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, onCreate
   onCreate: (goal: string, project: string, skipGrill: boolean, readLinks: boolean, docs: string[]) => void;
   onClose: () => void;
 }) {
-  const [goal, setGoal] = useState('');
+  const [goal, setGoal] = useState(initialGoal ?? '');
   const [readLinks, setReadLinks] = useState(true);
   const [docs, setDocs] = useState('');
   const [project, setProject] = useState(remembered() || recents[0]?.path || '');
@@ -134,7 +136,7 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, onCreate
         </>
       }
     >
-      <Field label="What should the team do?" hint="Say it the way you would to a colleague. The orchestrator will ask what it needs to know before it starts.">
+      <Field label="What should the team do this time?" hint={goalHint(flow)}>
         <textarea
           ref={goalRef}
           className="mc-field"
@@ -356,26 +358,33 @@ export function CustomRoleDialog({ busy, error, draft, onDesign, onAdd, onClose 
   );
 }
 
-export function SuggestDialog({ busy, error, onSuggest, onClose }: { busy: boolean; error: string | null; onSuggest: (goal: string) => void; onClose: () => void }) {
+export function SuggestDialog({ busy, error, onSuggest, onClose }: { busy: boolean; error: string | null; onSuggest: (goal: string, thenRun: boolean) => void; onClose: () => void }) {
   const [goal, setGoal] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
+  const ready = !busy && !!goal.trim();
   return (
     <Dialog
-      title="Suggest a flow"
+      title="Design a flow"
       onClose={busy ? undefined : onClose}
       foot={
         <>
           <button type="button" className="mc-btn" disabled={busy} onClick={onClose}>
             Cancel
           </button>
-          <button type="button" className="mc-btn mc-btn-primary" disabled={busy || !goal.trim()} onClick={() => onSuggest(goal.trim())}>
-            <Icon name="wand" /> {busy ? 'Designing…' : 'Suggest'}
+          <button type="button" className="mc-btn" disabled={!ready} onClick={() => onSuggest(goal.trim(), true)} title="Design the flow, then say what to do with it this time, starting from this text">
+            <Icon name="play" /> Design and run
+          </button>
+          <button type="button" className="mc-btn mc-btn-primary" disabled={!ready} onClick={() => onSuggest(goal.trim(), false)}>
+            <Icon name="wand" /> {busy ? 'Designing…' : 'Design'}
           </button>
         </>
       }
     >
-      <Field label="What is the work?" hint="Sonnet picks the agents, their models and who hands work to whom. It opens in the editor for you to change; nothing runs.">
+      <Field
+        label="What kind of work is this flow for?"
+        hint="Sonnet designs a reusable team: the agents, their models and who hands work to whom. It opens in the editor and nothing runs. Each time you run it you say what to do, so describe the kind of job, not one task. To use this text as the first task too, choose Design and run."
+      >
         <textarea
           ref={ref}
           className="mc-field"
@@ -383,7 +392,7 @@ export function SuggestDialog({ busy, error, onSuggest, onClose }: { busy: boole
           value={goal}
           maxLength={4000}
           disabled={busy}
-          placeholder="e.g. Find out why the nightly export is slow, fix it, and have it reviewed"
+          placeholder="e.g. Find the cause of a bug, fix it, and have the fix reviewed"
           onChange={(e) => setGoal(e.target.value)}
         />
       </Field>

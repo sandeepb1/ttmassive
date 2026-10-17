@@ -524,7 +524,7 @@ mod tests {
             max_retries: 2,
             budget: Budget::default(),
             downshift: false,
-            dial: 2,
+            dial: 2, purpose: String::new(),
         };
         Run::new("r1".into(), flow, "brief".into(), 100)
     }
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn a_runs_cost_is_what_openrouter_charged_for_its_agents_on_it() {
-        let mut r = Run::new("r".into(), Flow { id: "f".into(), name: "f".into(), nodes: vec![], edges: vec![], max_retries: 1, budget: Default::default(), downshift: false, dial: 2 }, "g".into(), 0);
+        let mut r = Run::new("r".into(), Flow { id: "f".into(), name: "f".into(), nodes: vec![], edges: vec![], max_retries: 1, budget: Default::default(), downshift: false, dial: 2 , purpose: String::new()}, "g".into(), 0);
         assert_eq!(r.cost_usd(), 0.0);
         let mk = |id: &str, account: Option<&str>| Node { id: id.into(), name: id.into(), role: Role::Builder, custom: None, engine: Engine::Claude, model: "m".into(), account: account.map(String::from), direct: false, web: false, effort: None, routing: crate::orch::graph::Routing::Pinned, ladder: Vec::new(), system_prompt: String::new(), checkpoint: false, token_cap: None, keep_model: false, x: 0.0, y: 0.0 };
         r.flow.nodes = vec![mk("plan", None), mk("or1", Some("a")), mk("or2", Some("a"))];

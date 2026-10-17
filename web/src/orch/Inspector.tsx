@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import { Icon, iconFor, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, DIAL_TEXT, ON_CAP_TEXT, OUTPUT_TEXT, ROUTING_TEXT, nextRung, providerOf, providerPatch, providersFor, rungFromKey, rungKey, withRoutingChange, asks, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
+import { MAX_PURPOSE, CAPABILITY_SHORT, DIAL_TEXT, ON_CAP_TEXT, OUTPUT_TEXT, ROUTING_TEXT, nextRung, providerOf, providerPatch, providersFor, rungFromKey, rungKey, withRoutingChange, asks, cacheHit, canCallDirectly, consistent, fmtTokens, modelKey, modelPatch, modelShown, openRouterChoices, priceNote, roleBlurb, roleLabel, totalTokens, usdLabel, writes } from './model';
 import { DEFAULT_DIAL, DEFAULT_ITERATIONS, EFFORTS, type Answerer, type Budget, type Capability, type Engine, type Flow, type FlowEdge, type FlowNode, type Models, type NodeRun, type OnCap, type Output, type Routing, type Rung, type Run } from './types';
 
 interface Props {
@@ -94,6 +94,9 @@ function FlowPanel({ flow, run, editable, limits, onLimits, onFlow }: Props) {
       <div className="mc-group">
         <h3 className="mc-group-title">This flow</h3>
         {!editable && <p className="mc-hint">Viewing an execution: these were fixed when it started. Go back to the design to change them.</p>}
+        <Field label="What this flow is for" hint="The kind of work it suits, in a sentence. It shows in the list and when you start a run. What to do each time is the goal you give the run.">
+          <textarea className="mc-field" rows={2} maxLength={MAX_PURPOSE} disabled={!editable} value={flow.purpose ?? ''} placeholder="e.g. Fix a bug and have the fix reviewed" onChange={(e) => onFlow({ purpose: e.target.value })} />
+        </Field>
         <Field label="Times a judge may send work back" hint="After this many, the run pauses and asks you.">
           <input className="mc-field mc-mono" type="number" min={0} max={5} disabled={!editable} value={flow.maxRetries} onChange={(e) => onFlow({ maxRetries: Math.min(5, Math.max(0, Math.round(Number(e.target.value) || 0))) })} />
         </Field>
