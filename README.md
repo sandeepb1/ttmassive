@@ -753,7 +753,7 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   enforced on what it may do, not on its name: an agent that changes files always reports a change and asks first, and
   one that gives verdicts can never be able to change files, so a reviewer cannot edit what it reviews. A custom agent
   that gives a verdict can send work back like a judge, and its role can be edited later in the details panel. **Write with Sonnet** drafts an agent's
-  instructions. **Save** keeps a flow. On the **Flows** list, **Design a flow** takes a description
+  instructions. **Save** keeps a flow. On the **Flows** list, **New flow ▾ › Design with AI…** takes a description
   of a *kind* of work ("find the cause of a bug, fix it and have the fix reviewed") and designs a reusable team for it
   (it opens for you to change; nothing runs). It works in three steps, shown as they go: **1** it reads a briefing of
   everything an agent could run on (your Claude and Codex plans and how full their 5-hour and 7-day windows are, Codex's own
@@ -766,21 +766,22 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   Settings (Sonnet unless you chose another) and step 3 the one chosen for *Write an agent's instructions*. A flow is a template: it keeps a one-sentence **purpose** (edit it
   under *This flow* in Settings), shown in the list and when you start a run, and what to do each time is the goal you give
   the run, which every agent receives. **Design and run** does both with one prompt: it designs the flow, then opens the
-  run dialog with your text as the first goal. A flow's menu has Duplicate, which opens a copy to edit, and
-  **Templates** under the table holds the built-in starters.
+  run dialog with your text as the first goal. A flow's menu has **Make a copy**, which opens a copy to edit.
 - **Flows and executions.** The orchestrator opens on **Flows**, a table of every flow with what it is for, how many
   agents it has, how many times it has run and how the last run went. **Folders are rows** at the top of the table: click
-  one to go in, use the breadcrumb to come back, **New folder** to make one, and a folder's menu to rename it (its flows
-  move with it) or delete it once it is empty. A flow's menu has **Move to a folder…**. A new flow, template or design is
-  made in the folder you are looking at. A folder can also be **linked to a real directory** (**Link a directory**, or a
-  folder's menu): the flows kept in it, and in the folders under it, run in that directory and only there, and the run
-  dialog shows it fixed. Inside a linked folder **Add a project** makes a folder for a directory inside the parent's, one
-  at a time by hand (typing the path, or choosing from the directories offered); a project's own directory wins over its
-  parent's. A project must lie inside its parent's directory, and a parent's directory must hold its projects. The server
-  enforces the link when a run starts, so it holds whatever the page sends. To run a flow in another directory, **Duplicate
-  to a folder…** puts a copy in a folder linked to that one. Flows are still kept in ttm, not in your repositories.
+  one to go in, use the breadcrumb to come back. At the top level **New folder** makes a **directory**: a folder linked to a
+  real directory on this machine (type the path or pick from the ones offered). The flows kept in it, and in the folders
+  inside it, run in that directory and only there, and the run dialog (*Runs in*) shows it fixed. Its row shows the
+  directory and the runs of everything inside it. Inside a directory **New folder** makes a plain folder to organise flows;
+  only a top-level folder can be linked, and the server enforces the link when a run starts, so it holds whatever the page
+  sends. To run a flow in another directory, **Copy to a folder…** puts a copy in that directory's folder. Flows are still
+  kept in ttm, not in your repositories. **New flow ▾** is one button for a blank flow, **Design with AI…** and the built-in
+  examples (an example is only a flow that ships with ttm; it opens as a copy to edit). Everything has a context menu: a
+  flow (Open, **Run…**, Move, Copy, Delete), a folder (Open, New folder inside, Rename, link or unlink its directory,
+  Delete), the empty space under the table, and the New flow button. A folder's menu renames it (its flows move with it) or
+  deletes it once it is empty, and a flow's menu has **Move to a folder…**. A new flow is made in the folder you are looking at.
   The search box looks in every folder, and the headings sort the table. **Runs**
-  next to **Flows** is a table of every execution, grouped by running, needs you, done and stopped, with its token use and
+  next to **Flows** is a table of every execution, grouped by running, needs you, done and stopped, with the directory it ran in, its token use and
   what its API models and web access cost.
   Click a flow to open it in **Design**. Its **Runs** tab lists that flow's executions, kept as its history; **Run**
   floats over the chart (and **New run** is on the Runs tab). Running an unsaved flow saves it first. Opening an

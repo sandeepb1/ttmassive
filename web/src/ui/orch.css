@@ -1567,6 +1567,22 @@ button.mc-tl-head:hover {
 .mc-menu-item[data-danger] .mc-menu-ico {
   color: inherit;
 }
+.mc-menu-head {
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--mc-faint);
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mc-menu-text {
+  display: grid;
+  gap: 0.0625rem;
+  padding: 0.25rem 0;
+}
+.mc-menu-hint {
+  color: var(--mc-dim);
+  font-size: 0.75rem;
+}
 .mc-menu-sep {
   height: 1px;
   margin: 0.25rem 0.25rem;
@@ -2043,6 +2059,7 @@ button.mc-tl-head:hover {
   max-width: 76rem;
   flex-direction: column;
   gap: 0.875rem;
+  min-height: 100%;
   margin: 0 auto;
   padding: 1.25rem 1rem 3rem;
 }
@@ -2179,7 +2196,7 @@ button.mc-tl-head:hover {
   width: 8.5rem;
 }
 .mc-col-act {
-  width: 5.5rem;
+  width: 6.5rem;
   text-align: right !important;
   white-space: nowrap;
 }
@@ -2206,40 +2223,6 @@ button.mc-tl-head:hover {
 }
 .mc-name-field {
   max-width: 18rem;
-}
-
-.mc-templates {
-  margin-top: 0.5rem;
-}
-.mc-templates-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  color: var(--mc-dim);
-  font-weight: 700;
-}
-.mc-template-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
-  gap: 0.5rem;
-  margin: 0.625rem 0 0;
-  padding: 0;
-  list-style: none;
-}
-.mc-template {
-  display: flex;
-  width: 100%;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.75rem;
-  border: 1px solid var(--mc-line);
-  border-radius: var(--radius-md);
-  background: var(--mc-panel);
-  text-align: left;
-  cursor: pointer;
-}
-.mc-template:hover {
-  border-color: var(--mc-glow);
 }
 
 /* The two pages of the orchestrator, and the two parts of a flow, as tabs in the top bar. */
@@ -2395,6 +2378,13 @@ button.mc-tl-head:hover {
 }
 
 /* A folder linked to a directory: what it points at, the note at the top of it, and the fixed project in the run dialog. */
+.mc-dirline {
+  display: block;
+}
+.mc-tr-folder[data-dir] .mc-cellname .mc-icon,
+.mc-tr-folder[data-dir] .mc-cellname svg {
+  color: var(--mc-glow);
+}
 .mc-dirtag {
   display: inline-block;
   margin-left: 0.625rem;

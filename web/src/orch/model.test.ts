@@ -1045,7 +1045,7 @@ test('the listing says which folders are linked and whether the place being look
   assert.equal(root.linked, null, 'the top level is not in a linked folder');
   const code = listing(entries, ['Code', 'Code/alpha'], 'Code', '', DEFAULT_SORT, dirs);
   assert.deepEqual(code.linked, { folder: 'Code', dir: '/Users/me/code' });
-  assert.deepEqual(code.folders.map((f) => [f.name, f.dir]), [['alpha', '/Users/me/code/alpha']], 'a project folder shows its own directory');
+  assert.deepEqual(code.folders.map((f) => [f.name, f.dir]), [['alpha', '/Users/me/code/alpha']], 'a folder shows its own directory');
   const inside = listing(entries, ['Code', 'Code/alpha', 'Code/notes'], 'Code/notes', '', DEFAULT_SORT, dirs);
   assert.deepEqual(inside.linked, { folder: 'Code', dir: '/Users/me/code' }, 'a folder with no link follows the one above');
   assert.deepEqual(listing(entries, [], 'Code', 'a', DEFAULT_SORT, dirs).linked, { folder: 'Code', dir: '/Users/me/code' }, 'and a search from there still knows');
@@ -1061,4 +1061,26 @@ test('each flow in the list knows the directory its runs are tied to', () => {
   const by = Object.fromEntries(flowEntries(saved, [], dirs).map((e) => [e.id, e.dir]));
   assert.deepEqual(by, { a: '/Users/me/code/alpha', b: '/Users/me/code', c: '' });
   assert.equal(flowEntries(saved, []).every((e) => e.dir === ''), true, 'with no links there is no directory');
+});
+
+test('a folder row totals the executions of the flows inside it and names the latest', () => {
+  const r = (id: string, created: number) => ({ ...summary_(id, 'x', created), project: '/Users/me/code' });
+  const entries = [
+    flowRow('A', { folder: 'Code', runs: [r('a2', 20), r('a1', 10)], last: r('a2', 20) }),
+    flowRow('B', { folder: 'Code/notes', runs: [r('b1', 30)], last: r('b1', 30) }),
+    flowRow('C', { folder: 'Other' }),
+  ];
+  const root = listing(entries, ['Code', 'Code/notes', 'Other'], '', '', DEFAULT_SORT, { Code: '/Users/me/code' });
+  const code = root.folders.find((f) => f.name === 'Code')!;
+  assert.equal(code.runs, 3, 'its own flows and those in folders inside it');
+  assert.equal(code.last?.id, 'b1', 'the latest of them all');
+  const other = root.folders.find((f) => f.name === 'Other')!;
+  assert.deepEqual([other.runs, other.last], [0, null]);
+});
+
+test('executions can be searched by the directory they ran in', () => {
+  const at = (id: string, project: string) => ({ ...summary_(id, 'f', 1), project });
+  const runs = [at('a', '/Users/me/alpha'), at('b', '/Users/me/beta'), summary_('c', 'f', 1)];
+  assert.deepEqual(filterRuns(runs, 'all', 'ALPHA').map((x) => x.id), ['a']);
+  assert.equal(filterRuns(runs, 'all', '').length, 3, 'one with no directory recorded still lists');
 });

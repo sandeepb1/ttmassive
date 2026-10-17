@@ -35,6 +35,8 @@ pub struct RunSummary {
     pub cost_usd: f64,
     /// Dollars its web access cost.
     pub web_usd: f64,
+    /// The directory it ran in.
+    pub project: String,
 }
 
 /// What `folders.json` holds.
@@ -202,9 +204,8 @@ impl Store {
         Ok(path)
     }
 
-    /// Link a folder to a directory, or take the link off with `None`. The directory must exist; a folder inside a linked one
-    /// must be linked to somewhere inside that one's directory, and one with linked folders inside it must contain theirs.
-    /// Returns the directory as it is kept: absolute, with symbolic links resolved.
+    /// Link a folder at the top level to a directory, or take the link off with `None`. The directory must exist. Returns the
+    /// directory as it is kept: absolute, with symbolic links resolved.
     pub fn link_folder(&self, path: &str, dir: Option<&str>) -> Result<Option<String>> {
         let path = super::graph::clean_folder(path).map_err(anyhow::Error::msg)?;
         if path.is_empty() || !self.list_folders().contains(&path) {
@@ -216,16 +217,11 @@ impl Store {
             self.write_folder_file(&file)?;
             return Ok(None);
         };
+        // A directory is a folder at the top level; the folders inside it only organise, and their flows run in its directory.
+        if path.contains('/') {
+            bail!("only a folder at the top level can be linked to a directory: the folders inside it run in its directory");
+        }
         let dir = resolve_dir(dir)?;
-        let dirs = self.folder_dirs();
-        if let Some((above, parent)) = self.linked_dir(path.rsplit_once('/').map_or("", |(p, _)| p)) {
-            if !Path::new(&dir).starts_with(&parent) {
-                bail!("a folder inside “{above}” must be linked to a directory inside {parent}");
-            }
-        }
-        if let Some((inner, d)) = dirs.iter().find(|(f, d)| **f != path && in_folder(f, &path) && !Path::new(d).starts_with(&dir)) {
-            bail!("“{inner}” inside this folder is linked to {d}, which is not inside {dir}");
-        }
         file.dirs.insert(path, dir.clone());
         self.write_folder_file(&file)?;
         Ok(Some(dir))
@@ -259,13 +255,11 @@ impl Store {
         for p in &folders {
             super::graph::clean_folder(p).map_err(anyhow::Error::msg)?;
         }
-        // A link goes with its folder. Where the folder lands inside another linked one, it must still be inside that directory.
+        // A link goes with its folder, which must stay at the top level for it to keep one.
         let mut file = self.read_folder_file();
         file.dirs = file.dirs.into_iter().map(|(f, d)| (if in_folder(&f, &from) { reparent(&f, &from, &to) } else { f }, d)).collect();
-        if let Some((above, parent)) = self.linked_dir(to.rsplit_once('/').map_or("", |(p, _)| p)) {
-            if let Some((inner, d)) = file.dirs.iter().find(|(f, d)| in_folder(f, &to) && !Path::new(d).starts_with(&parent)) {
-                bail!("“{inner}” is linked to {d}, which is not inside {parent}, the directory “{above}” is linked to");
-            }
+        if let Some(f) = file.dirs.keys().find(|f| f.contains('/')) {
+            bail!("“{f}” is linked to a directory, so it must stay at the top level");
         }
         for f in &flows {
             let mut moved = f.clone();
@@ -373,7 +367,7 @@ impl Store {
             .map(|r| {
                 let tokens = r.tokens().total();
                 let (cost_usd, web_usd) = (r.cost_usd(), r.web_usd());
-                RunSummary { id: r.id, flow_id: r.flow.id, flow_name: r.flow.name, goal: r.goal, status: r.status, created: r.created, tokens, cost_usd, web_usd }
+                RunSummary { id: r.id, flow_id: r.flow.id, flow_name: r.flow.name, goal: r.goal, status: r.status, created: r.created, tokens, cost_usd, web_usd, project: r.project }
             })
             .collect();
         v.sort_by(|a, b| b.created.cmp(&a.created));
@@ -646,63 +640,55 @@ mod tests {
     }
 
     #[test]
-    fn a_flow_is_tied_to_the_nearest_linked_folder_at_or_above_it() {
+    fn a_flow_is_tied_to_the_directory_of_the_top_level_folder_it_is_kept_in() {
         let (s, _d, code) = linked_store("near");
         s.create_folder("Code", Some(&text(&code))).unwrap();
-        s.create_folder("Code/alpha", Some(&text(&code.join("alpha")))).unwrap();
-        s.create_folder("Code/notes", None).unwrap();
+        s.create_folder("Code/notes/deep", None).unwrap();
         s.create_folder("Loose", None).unwrap();
-        let near = |f: &str| s.linked_dir(f).map(|(folder, dir)| (folder, dir));
-        assert_eq!(near("Code/alpha"), Some(("Code/alpha".into(), text(&code.join("alpha")))), "a project folder has its own");
-        assert_eq!(near("Code/alpha/deeper"), Some(("Code/alpha".into(), text(&code.join("alpha")))), "and what is under it follows");
-        assert_eq!(near("Code/notes"), Some(("Code".into(), text(&code))), "a folder with no link of its own follows the one above");
+        let near = |f: &str| s.linked_dir(f);
         assert_eq!(near("Code"), Some(("Code".into(), text(&code))));
-        assert_eq!(near("Loose"), None, "a folder in no linked one leaves a run free");
+        assert_eq!(near("Code/notes"), Some(("Code".into(), text(&code))), "a folder inside it runs in its directory");
+        assert_eq!(near("Code/notes/deep"), Some(("Code".into(), text(&code))));
+        assert_eq!(near("Loose"), None, "a folder that is not linked leaves a run free");
         assert_eq!(near(""), None);
     }
 
     #[test]
-    fn a_project_folder_must_be_inside_its_parents_directory_and_a_parent_must_contain_its_projects() {
-        let (s, d, code) = linked_store("inside");
+    fn only_a_folder_at_the_top_level_can_be_linked_to_a_directory() {
+        let (s, _d, code) = linked_store("top");
         s.create_folder("Code", Some(&text(&code))).unwrap();
-        s.create_folder("Code/alpha", Some(&text(&code.join("alpha")))).unwrap();
-        let other = fs::canonicalize(d.0.join("other")).unwrap();
-        let why = s.create_folder("Code/elsewhere", Some(&text(&other))).unwrap_err().to_string();
-        assert!(why.contains("inside") && why.contains(&text(&code)), "{why}");
-        assert!(!s.list_folders().contains(&"Code/elsewhere".to_string()));
-        // Moving the parent's link somewhere that no longer holds its project is refused.
-        let why = s.link_folder("Code", Some(&text(&other))).unwrap_err().to_string();
-        assert!(why.contains("Code/alpha") && why.contains("is not inside"), "{why}");
-        assert_eq!(s.folder_dirs().get("Code"), Some(&text(&code)), "and it stays as it was");
-        // A narrower parent that still holds it is fine.
-        s.link_folder("Code", Some(&text(&code))).unwrap();
+        let why = s.create_folder("Code/alpha", Some(&text(&code.join("alpha")))).unwrap_err().to_string();
+        assert!(why.contains("only a folder at the top level"), "{why}");
+        assert!(!s.list_folders().contains(&"Code/alpha".to_string()), "no half-made folder");
+        s.create_folder("Code/plain", None).unwrap();
+        assert!(s.link_folder("Code/plain", Some(&text(&code))).is_err());
+        assert_eq!(s.folder_dirs().len(), 1);
     }
 
     #[test]
     fn a_link_goes_with_its_folder_when_it_is_renamed_and_goes_when_it_is_deleted() {
         let (s, _d, code) = linked_store("moves");
         s.create_folder("Code", Some(&text(&code))).unwrap();
-        s.create_folder("Code/alpha", Some(&text(&code.join("alpha")))).unwrap();
+        s.create_folder("Code/notes", None).unwrap();
         s.rename_folder("Code", "Work").unwrap();
         let dirs = s.folder_dirs();
-        assert_eq!((dirs.get("Work"), dirs.get("Work/alpha"), dirs.get("Code")), (Some(&text(&code)), Some(&text(&code.join("alpha"))), None), "{dirs:?}");
-        s.delete_folder("Work/alpha").unwrap();
-        assert!(!s.folder_dirs().contains_key("Work/alpha"));
+        assert_eq!((dirs.get("Work"), dirs.get("Code")), (Some(&text(&code)), None), "{dirs:?}");
+        assert!(s.list_folders().contains(&"Work/notes".to_string()));
         s.delete_folder("Work").unwrap();
         assert!(s.folder_dirs().is_empty(), "nothing is left pointing at a folder that is gone");
     }
 
     #[test]
-    fn a_folder_cannot_be_moved_into_a_linked_one_it_does_not_fit_inside() {
-        let (s, d, code) = linked_store("fit");
-        let other = fs::canonicalize(d.0.join("other")).unwrap();
+    fn a_linked_folder_cannot_be_moved_below_the_top_level() {
+        let (s, _d, code) = linked_store("below");
         s.create_folder("Code", Some(&text(&code))).unwrap();
-        s.create_folder("Stray", Some(&text(&other))).unwrap();
-        s.create_folder("Code/keep", None).unwrap();
-        let why = s.rename_folder("Stray", "Code/stray").unwrap_err().to_string();
-        assert!(why.contains("not inside"), "{why}");
-        assert_eq!(s.folder_dirs().get("Stray"), Some(&text(&other)), "nothing moved");
-        assert!(s.list_folders().contains(&"Stray".to_string()));
+        s.create_folder("Group", None).unwrap();
+        let why = s.rename_folder("Code", "Group/Code").unwrap_err().to_string();
+        assert!(why.contains("must stay at the top level"), "{why}");
+        assert!(s.folder_dirs().contains_key("Code") && s.list_folders().contains(&"Code".to_string()), "nothing moved");
+        s.create_folder("Group/plain", None).unwrap();
+        s.rename_folder("Group", "Renamed").unwrap();
+        assert!(s.list_folders().contains(&"Renamed/plain".to_string()), "a folder with no link can go anywhere");
     }
 
     #[test]

@@ -7,7 +7,8 @@ import { Icon } from './bits';
 import type { IconName } from '../icons';
 
 export type MenuItem =
-  | { kind?: 'item'; label: string; icon?: IconName; danger?: boolean; disabled?: boolean; onSelect: () => void }
+  | { kind?: 'item'; label: string; /** A second, dimmer line saying more. */ hint?: string; icon?: IconName; danger?: boolean; disabled?: boolean; onSelect: () => void }
+  | { kind: 'heading'; label: string }
   | { kind: 'separator' };
 
 export interface MenuState {
@@ -116,6 +117,10 @@ export function ContextMenu({ menu, onClose }: { menu: MenuState; onClose: () =>
       {menu.items.map((it, i) =>
         it.kind === 'separator' ? (
           <div key={i} className="mc-menu-sep" role="separator" />
+        ) : it.kind === 'heading' ? (
+          <div key={i} className="mc-menu-head" role="presentation">
+            {it.label}
+          </div>
         ) : (
           <button
             key={i}
@@ -130,7 +135,10 @@ export function ContextMenu({ menu, onClose }: { menu: MenuState; onClose: () =>
             }}
           >
             <span className="mc-menu-ico">{it.icon && <Icon name={it.icon} />}</span>
-            {it.label}
+            <span className="mc-menu-text">
+              {it.label}
+              {it.hint && <span className="mc-menu-hint">{it.hint}</span>}
+            </span>
           </button>
         ),
       )}

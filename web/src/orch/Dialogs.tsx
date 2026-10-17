@@ -152,8 +152,8 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, initialG
         />
       </Field>
       <Field
-        label="Project folder"
-        hint={locked ? `Fixed: this flow is kept in “${locked.folder}”, which is linked to this directory. To run it somewhere else, duplicate it into another folder.` : needsGit ? 'Builders work in their own copy of this folder, so it needs to be a git repository with a commit.' : 'The folder the agents work in.'}
+        label="Runs in"
+        hint={locked ? `Fixed: this flow is kept in “${locked.folder}”, a folder for this directory, so it runs here. To run it somewhere else, copy it to another folder.` : needsGit ? 'Builders work in their own copy of this folder, so it needs to be a git repository with a commit.' : 'The folder the agents work in.'}
       >
         {locked ? (
           <div className="mc-locked mc-mono" aria-label="Project folder, fixed">

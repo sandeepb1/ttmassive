@@ -279,6 +279,8 @@ export interface RunSummary {
   flowId: string;
   flowName: string;
   goal: string;
+  /** The directory it ran in. */
+  project?: string;
   status: RunStatus;
   created: number;
   /** Everything the agents read and wrote, cache included. */

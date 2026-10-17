@@ -977,6 +977,9 @@ export interface FolderRow {
   flows: number;
   /** Folders directly inside it. */
   folders: number;
+  /** Executions of the flows in it and in the folders inside it, and the latest of them. */
+  runs: number;
+  last: RunSummary | null;
 }
 
 export interface Listing {
@@ -1012,7 +1015,11 @@ export function listing(entries: FlowEntry[], folders: string[], at: string, que
   const every = allFolders(folders, entries);
   const rows = every
     .filter((p) => parentOf(p) === at && p !== at)
-    .map((p) => ({ path: p, name: baseOf(p), dir: dirs[p] ?? '', flows: entries.filter((e) => inFolder(e.folder, p)).length, folders: every.filter((q2) => parentOf(q2) === p).length }))
+    .map((p): FolderRow => {
+      const within = entries.filter((e) => inFolder(e.folder, p));
+      const ran = within.flatMap((e) => e.runs);
+      return { path: p, name: baseOf(p), dir: dirs[p] ?? '', flows: within.length, folders: every.filter((q2) => parentOf(q2) === p).length, runs: ran.length, last: ran.reduce<RunSummary | null>((a, r) => (!a || r.created > a.created ? r : a), null) };
+    })
     .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
   return { crumbs: crumbs(at), folders: rows, flows: sortEntries(entries.filter((e) => e.folder === at), sort), linked: linkedDir(dirs, at), searching: false };
 }
@@ -1056,7 +1063,7 @@ export function runCounts(runs: RunSummary[]): Record<RunGroup, number> {
 /** The executions under a heading that match the words typed (in the goal or the flow's name), newest first. */
 export function filterRuns(runs: RunSummary[], group: RunGroup, query: string): RunSummary[] {
   const q = query.trim().toLowerCase();
-  return runs.filter((r) => (group === 'all' || runGroup(r.status) === group) && (!q || r.goal.toLowerCase().includes(q) || r.flowName.toLowerCase().includes(q))).sort((a, b) => b.created - a.created);
+  return runs.filter((r) => (group === 'all' || runGroup(r.status) === group) && (!q || r.goal.toLowerCase().includes(q) || r.flowName.toLowerCase().includes(q) || (r.project ?? '').toLowerCase().includes(q))).sort((a, b) => b.created - a.created);
 }
 
 // ---- advanced settings of an agent --------------------------------------------------------------

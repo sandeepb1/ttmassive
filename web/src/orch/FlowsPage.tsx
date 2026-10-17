@@ -1,6 +1,10 @@
 // The page the orchestrator opens on: every flow in a table, with folders as rows. Click a folder to go in, a flow to open
 // it in the design view. A search looks in every folder. What a flow is for, how many agents it has and how it last ran are
 // columns, so a long list can be told apart without opening anything.
+//
+// A folder at the top level is a directory: it is linked to a real one, and the runs of the flows kept in it (or in the
+// folders inside it) happen there. Inside a directory a folder only organises. Everything here has a context menu: a row,
+// the empty space under the table, and the New flow button.
 
 import { useEffect, useMemo, useState } from 'react';
 import { browseDirs } from '../dirs';
@@ -13,19 +17,21 @@ import type { Flow } from './types';
 interface Props {
   entries: FlowEntry[];
   folders: string[];
-  /** The folders linked to a directory, and the directory each is linked to. */
+  /** The top-level folders that are directories, and the real directory each is linked to. */
   folderDirs: Record<string, string>;
   starters: Flow[];
   /** The folder being looked at; empty for the top level. */
   at: string;
   onAt: (path: string) => void;
   onOpen: (e: FlowEntry) => void;
+  /** Open the saved flow and ask for the goal of a run. */
+  onRun: (e: FlowEntry) => void;
   onNewFlow: () => void;
   onDesign: () => void;
   onUseStarter: (f: Flow) => void;
   /** Make a folder, linked to a directory when one is given. Returns why not, if it could not be. */
   onNewFolder: (path: string, dir?: string) => Promise<string | null>;
-  /** Link a folder to a directory, or take the link off with `null`. Returns why not, if it could not be. */
+  /** Link a top-level folder to a directory, or take the link off with `null`. Returns why not, if it could not be. */
   onLinkFolder: (path: string, dir: string | null) => Promise<string | null>;
   /** A copy of the flow, in the folder, opened to edit. */
   onDuplicateTo: (e: FlowEntry, folder: string) => void;
@@ -43,42 +49,80 @@ const COLUMNS: { key: SortKey; label: string; cls: string }[] = [
   { key: 'last', label: 'Last run', cls: 'mc-col-last' },
 ];
 
+const isTop = (path: string) => !path.includes('/');
+
 export function FlowsPage(p: Props) {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<Sort>(DEFAULT_SORT);
+  // A plain folder being named (`rename` null) or renamed, in the table.
   const [naming, setNaming] = useState<{ rename: string | null } | null>(null);
   const [moving, setMoving] = useState<FlowEntry | null>(null);
-  const [duplicating, setDuplicating] = useState<FlowEntry | null>(null);
-  // Linking: a new folder made for a directory (`path` null), or an existing folder being linked.
+  const [copying, setCopying] = useState<FlowEntry | null>(null);
+  // The dialog for a directory: a new folder made for one (`path` null), or a top-level folder being pointed at another.
   const [linking, setLinking] = useState<{ path: string | null } | null>(null);
-  const [showTemplates, setShowTemplates] = useState(p.entries.length === 0);
   const press = useLongPress(p.openMenu);
   const view = useMemo(() => listing(p.entries, p.folders, p.at, query, sort, p.folderDirs), [p.entries, p.folders, p.at, query, sort, p.folderDirs]);
+  const where = p.at ? p.at.replace(/\//g, ' › ') : '';
 
+  // At the top level a folder is a directory; below it, it only organises.
+  const newFolder = () => (p.at ? setNaming({ rename: null }) : setLinking({ path: null }));
+  const newFlowItems = (): MenuItem[] => [
+    { kind: 'heading', label: where ? `New flow in ${where}` : 'New flow' },
+    { label: 'Blank flow', hint: 'Draw the agents yourself', icon: 'plus', onSelect: p.onNewFlow },
+    { label: 'Design with AI…', hint: 'Describe the kind of work; Sonnet designs a reusable team', icon: 'wand', onSelect: p.onDesign },
+    ...(p.starters.length ? [{ kind: 'separator' } as MenuItem, { kind: 'heading', label: 'Start from an example' } as MenuItem] : []),
+    ...p.starters.map((f): MenuItem => ({ label: f.name, hint: `${f.nodes.length} agents · ${f.purpose ?? ''}`.replace(/ · $/, ''), icon: 'workflow', onSelect: () => p.onUseStarter(f) })),
+  ];
+  const spaceItems = (): MenuItem[] => [
+    { label: p.at ? 'New folder' : 'New folder (for a directory)…', icon: 'folder', onSelect: newFolder },
+    { kind: 'separator' },
+    ...newFlowItems(),
+  ];
   const flowItems = (e: FlowEntry): MenuItem[] => {
     const base = p.flowMenu(e);
-    return e.saved
-      ? [base[0]!, { label: 'Move to a folder…', icon: 'folder', onSelect: () => setMoving(e) }, { label: 'Duplicate to a folder…', icon: 'files', onSelect: () => setDuplicating(e) }, ...base.slice(1)]
-      : base;
+    if (!e.saved) return base;
+    return [
+      base[0]!,
+      { label: 'Run…', hint: e.dir ? `In ${tildePath(e.dir)}` : 'Choose a directory when you start it', icon: 'play', onSelect: () => p.onRun(e) },
+      { kind: 'separator' },
+      { label: 'Move to a folder…', icon: 'folder', onSelect: () => setMoving(e) },
+      { label: 'Copy to a folder…', icon: 'files', onSelect: () => setCopying(e) },
+      ...base.slice(1),
+    ];
   };
-  const folderItems = (f: FolderRow): MenuItem[] => [
-    { label: 'Open', icon: 'folder', onSelect: () => p.onAt(f.path) },
-    { label: 'Rename', icon: 'edit', onSelect: () => setNaming({ rename: f.path }) },
-    { label: f.dir ? 'Change the directory…' : 'Link to a directory…', icon: 'branch', onSelect: () => setLinking({ path: f.path }) },
-    ...(f.dir ? [{ label: 'Remove the link', icon: 'minus' as const, onSelect: () => void p.onLinkFolder(f.path, null) }] : []),
-    { kind: 'separator' },
-    { label: f.flows ? 'Delete folder (move its flows out first)' : 'Delete folder', icon: 'trash', danger: true, disabled: f.flows > 0, onSelect: () => p.onDeleteFolder(f.path) },
-  ];
+  const folderItems = (f: FolderRow): MenuItem[] => {
+    const top = isTop(f.path);
+    return [
+      { label: 'Open', icon: 'folder', onSelect: () => p.onAt(f.path) },
+      { label: 'New folder inside', icon: 'plus', onSelect: () => (p.onAt(f.path), setNaming({ rename: null })) },
+      { kind: 'separator' },
+      { label: 'Rename', icon: 'edit', onSelect: () => setNaming({ rename: f.path }) },
+      ...(top ? [{ label: f.dir ? 'Change the directory…' : 'Link to a directory…', icon: 'branch' as const, onSelect: () => setLinking({ path: f.path }) }] : []),
+      ...(top && f.dir ? [{ label: 'Unlink from its directory', icon: 'minus' as const, onSelect: () => void p.onLinkFolder(f.path, null) }] : []),
+      { kind: 'separator' },
+      { label: f.flows ? 'Delete (move its flows out first)' : 'Delete folder', icon: 'trash', danger: true, disabled: f.flows > 0, onSelect: () => p.onDeleteFolder(f.path) },
+    ];
+  };
   const more = (items: () => MenuItem[]) => (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     const r = e.currentTarget.getBoundingClientRect();
     p.openMenu({ x: r.right, y: r.bottom, items: items() });
   };
+  const dropdown = (e: React.MouseEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    p.openMenu({ x: r.right - 288, y: r.bottom + 4, items: newFlowItems() });
+  };
+  // The empty space has a menu too, unless the click was on a field, which keeps the browser's own.
+  const space = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('input,textarea,a')) return;
+    e.preventDefault();
+    p.openMenu({ x: e.clientX, y: e.clientY, items: spaceItems() });
+  };
 
   const nothing = view.folders.length === 0 && view.flows.length === 0 && !naming;
 
   return (
-    <div className="mc-page">
+    <div className="mc-page" onContextMenu={space}>
       <div className="mc-page-head">
         <nav className="mc-crumbs" aria-label="Folder">
           {view.crumbs.map((c, i) => (
@@ -95,17 +139,11 @@ export function FlowsPage(p: Props) {
           ))}
         </nav>
         <span className="mc-spacer" />
-        <button type="button" className="mc-btn" onClick={() => setNaming({ rename: null })}>
+        <button type="button" className="mc-btn" onClick={newFolder} title={p.at ? 'Make a folder here to organise flows' : 'Make a folder for a directory: its flows run there'}>
           <Icon name="folder" /> <span className="mc-hide-narrow">New folder</span>
         </button>
-        <button type="button" className="mc-btn" onClick={() => setLinking({ path: null })} title={view.linked ? 'A project is a directory inside the linked one; its flows run there' : 'Make a folder for a directory on this machine; the flows kept in it run there'}>
-          <Icon name="branch" /> <span className="mc-hide-narrow">{view.linked ? 'Add a project' : 'Link a directory'}</span>
-        </button>
-        <button type="button" className="mc-btn" onClick={p.onDesign} title="Describe the kind of work and let Sonnet design a reusable team">
-          <Icon name="wand" /> Design a flow
-        </button>
-        <button type="button" className="mc-btn mc-btn-primary" onClick={p.onNewFlow}>
-          <Icon name="plus" /> New flow
+        <button type="button" className="mc-btn mc-btn-primary" aria-haspopup="menu" onClick={dropdown} title="A blank flow, one designed for you, or an example">
+          <Icon name="plus" /> New flow <Icon name="chevron-down" />
         </button>
       </div>
 
@@ -113,8 +151,7 @@ export function FlowsPage(p: Props) {
         <p className="mc-linkbar" role="note">
           <Icon name="branch" />
           <span>
-            Runs of the flows kept here use <b className="mc-mono">{tildePath(view.linked.dir)}</b>
-            {view.linked.folder !== p.at ? ` (linked from “${view.linked.folder}”)` : ''}. To run one somewhere else, duplicate it into another folder.
+            Runs of the flows kept {view.linked.folder === p.at ? 'here' : `in “${view.linked.folder}”`} happen in <b className="mc-mono">{tildePath(view.linked.dir)}</b>. To run one somewhere else, copy it to another folder.
           </span>
         </p>
       )}
@@ -155,24 +192,38 @@ export function FlowsPage(p: Props) {
             </tr>
           )}
           {view.folders.map((f) => (
-            <tr key={f.path} className="mc-tr mc-tr-folder" {...menuOn(p.openMenu, () => folderItems(f))} {...press(() => folderItems(f))}>
+            <tr key={f.path} className="mc-tr mc-tr-folder" data-dir={f.dir ? '' : undefined} {...menuOn(p.openMenu, () => folderItems(f))} {...press(() => folderItems(f))}>
               <td className="mc-col-name">
                 {naming?.rename === f.path ? (
                   <NameField initial={f.path.split('/').pop() ?? ''} label={`Rename ${f.path}`} onDone={(name) => (setNaming(null), name && name !== f.path.split('/').pop() && p.onRenameFolder(f.path, childPath(parentOf(f.path), name)))} />
                 ) : (
                   <button type="button" className="mc-anchor mc-cellname" onClick={() => p.onAt(f.path)}>
-                    <Icon name="folder" /> {f.path.split('/').pop()}
+                    <Icon name={f.dir ? 'branch' : 'folder'} /> {f.path.split('/').pop()}
                   </button>
                 )}
               </td>
               <td className="mc-col-purpose mc-muted">
-                {f.flows} {f.flows === 1 ? 'flow' : 'flows'}
-                {f.folders ? ` · ${f.folders} ${f.folders === 1 ? 'folder' : 'folders'}` : ''}
-                {f.dir && <span className="mc-dirtag mc-mono" title={f.dir}>→ {tildePath(f.dir)}</span>}
+                {f.dir ? (
+                  <span className="mc-mono mc-dirline" title={`Its flows run in ${f.dir}`}>
+                    {tildePath(f.dir)}
+                  </span>
+                ) : null}
+                <span className="mc-dirline">
+                  {f.flows} {f.flows === 1 ? 'flow' : 'flows'}
+                  {f.folders ? ` · ${f.folders} ${f.folders === 1 ? 'folder' : 'folders'}` : ''}
+                </span>
               </td>
               <td className="mc-col-num" />
-              <td className="mc-col-num" />
-              <td className="mc-col-last" />
+              <td className="mc-col-num" title={runsLabel(f.runs)}>
+                {f.runs || ''}
+              </td>
+              <td className="mc-col-last">
+                {f.last && (
+                  <>
+                    <StatusPill status={f.last.status} /> <span className="mc-muted">{whenLabel(f.last.created)}</span>
+                  </>
+                )}
+              </td>
               <td className="mc-col-act">
                 <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Actions for the folder ${f.path}`} onClick={more(() => folderItems(f))}>
                   <Icon name="more" />
@@ -191,7 +242,12 @@ export function FlowsPage(p: Props) {
                     runs only
                   </span>
                 )}
-                {view.searching && e.folder && <span className="mc-where">{e.folder.replace(/\//g, ' › ')}</span>}
+                {view.searching && (e.folder || e.dir) && (
+                  <span className="mc-where">
+                    {e.folder.replace(/\//g, ' › ')}
+                    {e.dir ? ` · runs in ${tildePath(e.dir)}` : ''}
+                  </span>
+                )}
               </td>
               <td className="mc-col-purpose">
                 <div className="mc-clamp">{e.purpose}</div>
@@ -210,6 +266,11 @@ export function FlowsPage(p: Props) {
                 )}
               </td>
               <td className="mc-col-act">
+                {e.saved && (
+                  <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Run ${e.name}`} title={e.dir ? `Run in ${tildePath(e.dir)}` : 'Run'} onClick={() => p.onRun(e)}>
+                    <Icon name="play" />
+                  </button>
+                )}
                 <button type="button" className="mc-btn mc-btn-quiet mc-btn-icon" aria-label={`Actions for ${e.name}`} onClick={more(() => flowItems(e))}>
                   <Icon name="more" />
                 </button>
@@ -219,31 +280,16 @@ export function FlowsPage(p: Props) {
           {nothing && (
             <tr>
               <td colSpan={6} className="mc-empty">
-                {query.trim() ? 'No flow matches that.' : p.at ? 'This folder is empty. Open a flow and move it here, or make a new one.' : 'No flows yet. Design one from a description, start from a template below, or build one.'}
+                {query.trim()
+                  ? 'No flow matches that.'
+                  : p.at
+                    ? 'Nothing here yet. Use New flow to start one in this folder, or move a flow in from its menu.'
+                    : 'No flows yet. Use New flow to start blank, have one designed for you, or begin from an example. Make a folder for a directory to keep the flows that work on it together.'}
               </td>
             </tr>
           )}
         </tbody>
       </table>
-
-      <section className="mc-templates" aria-label="Templates">
-        <button type="button" className="mc-anchor mc-templates-head" aria-expanded={showTemplates} onClick={() => setShowTemplates((s) => !s)}>
-          <Icon name={showTemplates ? 'chevron-down' : 'chevron'} /> Templates
-        </button>
-        {showTemplates && (
-          <ul className="mc-template-list">
-            {p.starters.map((f) => (
-              <li key={f.id}>
-                <button type="button" className="mc-template" onClick={() => p.onUseStarter(f)}>
-                  <span className="mc-cellname">{f.name}</span>
-                  <span className="mc-muted">{f.purpose}</span>
-                  <span className="mc-muted">{f.nodes.length} agents · opens as a copy to edit</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
 
       {moving && (
         <MoveDialog
@@ -254,17 +300,13 @@ export function FlowsPage(p: Props) {
           onClose={() => setMoving(null)}
         />
       )}
-      {duplicating && (
-        <MoveDialog entry={duplicating} folders={p.folders} verb="Duplicate" onMove={(folder) => (setDuplicating(null), p.onDuplicateTo(duplicating, folder))} onClose={() => setDuplicating(null)} />
-      )}
+      {copying && <MoveDialog entry={copying} folders={p.folders} verb="Copy" onMove={(folder) => (setCopying(null), p.onDuplicateTo(copying, folder))} onClose={() => setCopying(null)} />}
       {linking && (
-        <LinkDialog
-          parent={view.linked}
-          at={p.at}
+        <DirectoryDialog
           path={linking.path}
           current={linking.path ? (p.folderDirs[linking.path] ?? '') : ''}
           onSubmit={async (name, dir) => {
-            const why = linking.path ? await p.onLinkFolder(linking.path, dir) : await p.onNewFolder(childPath(p.at, name), dir);
+            const why = linking.path ? await p.onLinkFolder(linking.path, dir) : await p.onNewFolder(name, dir);
             if (!why) setLinking(null);
             return why;
           }}
@@ -296,7 +338,7 @@ function NameField({ initial, label, onDone }: { initial: string; label: string;
   );
 }
 
-function MoveDialog({ entry, folders, verb, onMove, onClose }: { entry: FlowEntry; folders: string[]; verb: 'Move' | 'Duplicate'; onMove: (folder: string) => void; onClose: () => void }) {
+function MoveDialog({ entry, folders, verb, onMove, onClose }: { entry: FlowEntry; folders: string[]; verb: 'Move' | 'Copy'; onMove: (folder: string) => void; onClose: () => void }) {
   const targets = moveTargets(folders);
   const [target, setTarget] = useState(entry.folder);
   const [fresh, setFresh] = useState('');
@@ -370,16 +412,9 @@ function DirectoryField({ value, onChange, label }: { value: string; onChange: (
   );
 }
 
-/** Make a folder for a directory (a project, when it is made inside a linked folder), or link a folder that is already there. */
-function LinkDialog({ parent, at, path, current, onSubmit, onClose }: {
-  parent: { folder: string; dir: string } | null;
-  at: string;
-  path: string | null;
-  current: string;
-  onSubmit: (name: string, dir: string) => Promise<string | null>;
-  onClose: () => void;
-}) {
-  const [dir, setDir] = useState(current ? tildePath(current) : parent ? `${tildePath(parent.dir)}/` : '~/');
+/** A new top-level folder for a directory, or an existing top-level folder pointed at another one. */
+function DirectoryDialog({ path, current, onSubmit, onClose }: { path: string | null; current: string; onSubmit: (name: string, dir: string) => Promise<string | null>; onClose: () => void }) {
+  const [dir, setDir] = useState(current ? tildePath(current) : '~/');
   const [name, setName] = useState('');
   const [named, setNamed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -395,10 +430,9 @@ function LinkDialog({ parent, at, path, current, onSubmit, onClose }: {
     setBusy(false);
     if (err) setWhy(err);
   };
-  const title = path ? `Link “${baseOf(path)}” to a directory` : parent ? 'Add a project' : 'Link a directory';
   return (
     <Dialog
-      title={title}
+      title={path ? `Directory of “${baseOf(path)}”` : 'New folder'}
       onClose={busy ? undefined : onClose}
       foot={
         <>
@@ -406,7 +440,7 @@ function LinkDialog({ parent, at, path, current, onSubmit, onClose }: {
             Cancel
           </button>
           <button type="button" className="mc-btn mc-btn-primary" disabled={!ready} onClick={() => void go()}>
-            {path ? 'Link' : parent ? 'Add project' : 'Link'}
+            {path ? 'Save' : 'Create folder'}
           </button>
         </>
       }
@@ -415,7 +449,7 @@ function LinkDialog({ parent, at, path, current, onSubmit, onClose }: {
         <label className="mc-label">Directory</label>
         <DirectoryField value={dir} onChange={setDir} label="Directory" />
         <p className="mc-hint">
-          {parent ? `A project is a directory inside ${tildePath(parent.dir)}.` : 'A directory on this machine.'} Flows kept in the folder run there, and only there; to run one somewhere else, duplicate it into another folder.
+          A folder at the top level stands for a directory on this machine. Runs of the flows kept in it, or in the folders you make inside it, happen there and only there. To run a flow somewhere else, copy it to another folder.
         </p>
       </div>
       {path === null && (
@@ -423,18 +457,15 @@ function LinkDialog({ parent, at, path, current, onSubmit, onClose }: {
           <label className="mc-label" htmlFor="mc-link-name">
             Folder name
           </label>
-          <input
-            id="mc-link-name"
-            className="mc-field"
-            value={shown}
-            maxLength={40}
-            placeholder="Name of the folder"
-            onChange={(e) => (setNamed(true), setName(e.target.value))}
-          />
-          <p className="mc-hint">{chosen ? `It will be ${childPath(at, chosen).replace(/\//g, ' › ')}.` : 'It takes the directory’s name unless you give it another.'}</p>
+          <input id="mc-link-name" className="mc-field" value={shown} maxLength={40} placeholder="Name of the folder" onChange={(e) => (setNamed(true), setName(e.target.value))} />
+          <p className="mc-hint">{chosen ? `It will be called ${chosen}.` : 'It takes the directory’s name unless you give it another.'}</p>
         </div>
       )}
-      {why && <p className="mc-error" role="alert">{why}</p>}
+      {why && (
+        <p className="mc-error" role="alert">
+          {why}
+        </p>
+      )}
     </Dialog>
   );
 }

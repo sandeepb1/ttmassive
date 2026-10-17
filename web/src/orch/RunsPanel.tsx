@@ -4,7 +4,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Icon, StatusPill } from './bits';
 import { menuOn, useLongPress, type MenuItem, type MenuState } from './ContextMenu';
-import { RUN_GROUPS, filterRuns, fmtTokens, runCounts, usdLabel, whenLabel, type RunGroup } from './model';
+import { RUN_GROUPS, filterRuns, fmtTokens, runCounts, tildePath, usdLabel, whenLabel, type RunGroup } from './model';
 import type { RunSummary } from './types';
 
 interface Props {
@@ -30,7 +30,7 @@ export function RunsPanel(p: Props) {
   const press = useLongPress(p.openMenu);
   const counts = useMemo(() => runCounts(p.runs), [p.runs]);
   const shown = useMemo(() => filterRuns(p.runs, group, query), [p.runs, group, query]);
-  const cols = p.showFlow ? 8 : 7;
+  const cols = p.showFlow ? 9 : 8;
 
   return (
     <div className="mc-page">
@@ -47,7 +47,7 @@ export function RunsPanel(p: Props) {
             </button>
           ))}
         </div>
-        <input className="mc-field" type="search" value={query} placeholder="Search by goal or flow" aria-label="Search executions" onChange={(e) => setQuery(e.target.value)} />
+        <input className="mc-field" type="search" value={query} placeholder="Search by goal, flow or directory" aria-label="Search executions" onChange={(e) => setQuery(e.target.value)} />
       </div>
 
       <table className="mc-table" aria-label="Executions">
@@ -55,6 +55,7 @@ export function RunsPanel(p: Props) {
           <tr>
             <th className="mc-col-name">Goal</th>
             {p.showFlow && <th className="mc-col-flow">Flow</th>}
+            <th className="mc-col-flow">Directory</th>
             <th className="mc-col-last">Status</th>
             <th className="mc-col-when">Started</th>
             <th className="mc-col-num">Tokens</th>
@@ -74,6 +75,9 @@ export function RunsPanel(p: Props) {
                 </button>
               </td>
               {p.showFlow && <td className="mc-col-flow mc-muted">{r.flowName}</td>}
+              <td className="mc-col-flow mc-muted mc-mono" title={r.project}>
+                {r.project ? tildePath(r.project) : '—'}
+              </td>
               <td className="mc-col-last">
                 <StatusPill status={r.status} />
               </td>

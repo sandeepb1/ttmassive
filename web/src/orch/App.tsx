@@ -398,8 +398,9 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     setFlowTab('design');
     fit();
   };
-  const openEntry = async (e: FlowEntry) => {
-    if (e.id !== flow.id && !mayLeave()) return;
+  /** Opens the flow; false when it could not be (the person kept their unsaved changes, or only its runs were unreadable). */
+  const openEntry = async (e: FlowEntry): Promise<boolean> => {
+    if (e.id !== flow.id && !mayLeave()) return false;
     const savedFlow = lists.saved.find((f) => f.id === e.id);
     if (savedFlow) {
       if (e.id !== flow.id) edit(structuredClone(savedFlow), false);
@@ -408,8 +409,16 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
       // Only its executions are left: open the flow as it was in the latest one.
       const r = await orch.getRun(e.last.id);
       if (r.ok) edit(structuredClone(r.data.flow), true);
-      else say(r.error);
+      else return (say(r.error), false);
     }
+    return true;
+  };
+  /** Open a saved flow and ask for the goal of a run, in its directory when its folder has one. */
+  const runEntry = async (e: FlowEntry) => {
+    if (!(await openEntry(e))) return;
+    setRunGoal('');
+    setError(null);
+    setDialog(true);
   };
   // A new flow is made in the folder being looked at.
   const useTemplate = (f: Flow) => {
@@ -729,7 +738,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   };
   const flowMenu = (e: FlowEntry): MenuItem[] => {
     const items: MenuItem[] = [{ label: 'Open', icon: 'workflow', onSelect: () => void openEntry(e) }];
-    if (e.saved) items.push({ label: 'Duplicate', icon: 'files', onSelect: () => duplicate(e) });
+    if (e.saved) items.push({ label: 'Make a copy', icon: 'files', onSelect: () => duplicate(e) });
     if (e.runs.some((r) => isFinished(r.status))) items.push({ label: 'Delete finished executions', icon: 'minus', onSelect: () => clearFinished(e) });
     items.push({ kind: 'separator' }, e.saved ? { label: 'Delete flow', icon: 'trash', danger: true, onSelect: () => removeFlow(e) } : { label: 'Delete executions', icon: 'trash', danger: true, onSelect: () => removeFlow(e) });
     return items;
@@ -852,6 +861,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               at={at}
               onAt={setAt}
               onOpen={(e) => void openEntry(e)}
+              onRun={(e) => void runEntry(e)}
               onNewFlow={newFlow}
               onDesign={() => (setError(null), setSuggesting(true))}
               onUseStarter={useTemplate}
