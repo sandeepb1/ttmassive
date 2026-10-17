@@ -48,6 +48,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/models", get(models))
         .route("/api/orch/flows", get(flows))
         .route("/api/orch/flows/suggest", post(suggest))
+        .route("/api/orch/flows/review", post(review_flow))
+        .route("/api/orch/flows/optimise", post(optimise_flow))
         .route("/api/orch/flows/edit", post(edit_flow))
         .route("/api/orch/flows/{id}", axum::routing::put(save_flow).delete(delete_flow))
         .route("/api/orch/flows/{id}/move", post(move_flow))
@@ -85,6 +87,24 @@ async fn flows(State(st): St) -> Response {
 #[derive(Deserialize)]
 struct GoalBody {
     goal: String,
+}
+
+#[derive(Deserialize)]
+struct StageBody {
+    goal: String,
+    flow: super::graph::Flow,
+}
+
+/// Step two of designing a flow: check the design against the kind of work and what is available.
+async fn review_flow(State(st): St, Json(b): Json<StageBody>) -> Result<Response, Fail> {
+    let (flow, summary) = st.orch.review_flow(&st, &b.goal, b.flow).await?;
+    Ok(json_nocache(json!({"flow": flow, "summary": summary})))
+}
+
+/// Step three: rewrite every agent's prompt for its model and its place in the team.
+async fn optimise_flow(State(st): St, Json(b): Json<StageBody>) -> Result<Response, Fail> {
+    let (flow, summary) = st.orch.optimise_flow(&st, &b.goal, b.flow).await?;
+    Ok(json_nocache(json!({"flow": flow, "summary": summary})))
 }
 
 async fn suggest(State(st): St, Json(b): Json<GoalBody>) -> Result<Response, Fail> {

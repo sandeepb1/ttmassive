@@ -5,7 +5,7 @@ import { ReactFlowProvider } from '@xyflow/react';
 import type { RecentDir } from '../dirs';
 import { orch, watchRun } from './api';
 import { Icon, iconFor } from './bits';
-import { CustomRoleDialog, GrillDialog, NewRunDialog, QuestionsDialog, RerunProblemDialog, SuggestDialog, type RoleDraft } from './Dialogs';
+import { CustomRoleDialog, DesignNotesDialog, GrillDialog, NewRunDialog, QuestionsDialog, RerunProblemDialog, SuggestDialog, type RoleDraft } from './Dialogs';
 import { Assistant } from './Assistant';
 import { ContextMenu, type MenuItem, type MenuState } from './ContextMenu';
 import { FlowCanvas, useViewportCenter } from './FlowCanvas';
@@ -17,7 +17,7 @@ import { RunBar } from './RunBar';
 import { FlowsPage } from './FlowsPage';
 import { RunsPanel } from './RunsPanel';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, allFolders, inFolder, parentOf, pruneInputs, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, designReport, allFolders, inFolder, parentOf, pruneInputs, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type DesignNote, type DesignStep, type FlowEntry } from './model';
 import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
 const INSPECTOR_KEY = 'ttm.orch.inspector';
@@ -185,6 +185,9 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   /** The goal the run dialog starts with: the text a flow was just designed from, when the person chose Design and run. */
   const [runGoal, setRunGoal] = useState('');
   const [suggesting, setSuggesting] = useState(false);
+  // Which of the three steps of designing a flow is under way, and what each did once the flow is made.
+  const [designStep, setDesignStep] = useState<DesignStep | null>(null);
+  const [designNotes, setDesignNotes] = useState<DesignNote[] | null>(null);
   const [roles, setRoles] = useState<RoleDef[]>(getCatalog());
   const [customOpen, setCustomOpen] = useState(false);
   const [draft, setDraft] = useState<RoleDraft | null>(null);
@@ -523,20 +526,39 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
         say(`Moved “${e.name}”`);
       },
     );
-  const suggest = (goal: string, thenRun = false) =>
-    void act(
-      () => orch.suggest(goal),
-      ({ notes, ...f }) => {
-        edit({ ...f, folder: at }, true);
-        edited.current = true;
-        setSuggesting(false);
-        // Design and run: the same words are the first task, so the run dialog opens with them, to be checked and started.
-        setRunGoal(thenRun ? goal : '');
-        setDialog(thenRun);
-        // Which agents run on OpenRouter, and why, so a paid model is never a surprise.
-        say([thenRun ? 'Here is a flow for it, and your text as the first task. Check the folder, then start.' : 'Here is a flow for it. Change anything, then run it with a goal of its own.', ...(notes ?? [])].join(' '));
-      },
-    );
+  // Designing a flow is three steps, each its own request so none is long and the page can say where it is. A step that fails
+  // leaves what the one before made.
+  const suggest = async (goal: string, thenRun = false) => {
+    setBusy(true);
+    setError(null);
+    setDesignStep(1);
+    const first = await orch.suggest(goal);
+    if (!first.ok) {
+      setBusy(false);
+      setDesignStep(null);
+      setError(first.error);
+      return;
+    }
+    const { notes, ...designed } = first.data;
+    let made: Flow = designed;
+    setDesignStep(2);
+    const reviewed = await orch.reviewFlow(goal, made);
+    if (reviewed.ok) made = reviewed.data.flow;
+    setDesignStep(3);
+    const tuned = await orch.optimiseFlow(goal, made);
+    if (tuned.ok) made = tuned.data.flow;
+    setBusy(false);
+    setDesignStep(null);
+    const report = designReport(notes ?? [], reviewed.ok ? { ok: true, summary: reviewed.data.summary } : { ok: false, error: reviewed.error }, tuned.ok ? { ok: true, summary: tuned.data.summary } : { ok: false, error: tuned.error });
+    edit({ ...made, folder: at }, true);
+    edited.current = true;
+    setSuggesting(false);
+    // Design and run: the same words are the first task, so the run dialog opens with them, to be checked and started.
+    setRunGoal(thenRun ? goal : '');
+    setDialog(thenRun);
+    if (thenRun) say('Here is a flow for it, and your text as the first task. Check the folder, then start.');
+    else setDesignNotes(report);
+  };
   const designRole = async (description: string) => {
     setDesigning(true);
     setCustomError(null);
@@ -930,7 +952,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             </div>
           )}
           {customOpen && <CustomRoleDialog busy={designing} error={customError} draft={draft} onDesign={designRole} onAdd={addCustom} onClose={() => (setCustomOpen(false), setDraft(null), setCustomError(null))} />}
-          {suggesting && <SuggestDialog busy={busy} error={error} onSuggest={suggest} onClose={() => (setSuggesting(false), setError(null))} />}
+          {suggesting && <SuggestDialog busy={busy} step={designStep} error={error} onSuggest={(g, run) => void suggest(g, run)} onClose={() => (setSuggesting(false), setError(null))} />}
+      {designNotes && <DesignNotesDialog notes={designNotes} onClose={() => setDesignNotes(null)} />}
           {rerunProblem && <RerunProblemDialog message={rerunProblem.message} project={rerunProblem.project} git={rerunProblem.git} busy={busy} onFix={() => void fixAndRerun()} onClose={() => setRerunProblem(null)} />}
         {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} initialGoal={runGoal} onCreate={createRun} onClose={() => (setDialog(false), setRunGoal(''), setError(null))} />}
           {run?.status.state === 'grilling' && (

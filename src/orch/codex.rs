@@ -279,13 +279,13 @@ impl Server {
 
     /// Models this account can use, read live so names never go stale.
     pub async fn models(&self) -> Result<Vec<String>> {
+        Ok(self.models_info().await?.into_iter().map(|m| m.id).collect())
+    }
+
+    /// The same, with what Codex says about each.
+    pub async fn models_info(&self) -> Result<Vec<ModelInfo>> {
         let r = self.request("model/list", json!({})).await?;
-        Ok(r.get("data")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|m| m.get("model").and_then(Value::as_str).map(String::from))
-            .collect())
+        Ok(parse_models(&r))
     }
 
     pub async fn start_thread(&self, spec: &Spec) -> Result<Thread> {
@@ -342,6 +342,34 @@ impl Hub {
         *slot = Some(server.clone());
         Ok(server)
     }
+}
+
+/// A model Codex offers, and what it says about it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelInfo {
+    pub id: String,
+    pub description: String,
+    /// The reasoning efforts it supports, lightest first.
+    pub efforts: Vec<String>,
+    pub is_default: bool,
+}
+
+/// The models in a `model/list` answer.
+pub fn parse_models(r: &Value) -> Vec<ModelInfo> {
+    r.get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = m.get("model").and_then(Value::as_str)?.to_owned();
+            Some(ModelInfo {
+                id,
+                description: m.get("description").and_then(Value::as_str).unwrap_or("").trim().to_owned(),
+                efforts: m.get("supportedReasoningEfforts").and_then(Value::as_array).into_iter().flatten().filter_map(|e| e.get("reasoningEffort").and_then(Value::as_str).map(String::from)).collect(),
+                is_default: m.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
+            })
+        })
+        .collect()
 }
 
 /// A short line for the live transcript about what a notification says the agent is doing.
@@ -698,5 +726,21 @@ mod tests {
         let models = server.models().await.unwrap();
         eprintln!("models: {models:?}");
         assert!(models.iter().any(|m| m.starts_with("gpt-")), "{models:?}");
+    }
+
+    #[test]
+    fn the_model_list_is_read_with_what_each_model_says_about_itself() {
+        let r = json!({"data": [
+            {"id": "gpt-6.1-sol", "model": "gpt-6.1-sol", "description": "Latest workhorse.", "isDefault": true,
+             "supportedReasoningEfforts": [{"reasoningEffort": "low", "description": "Fast"}, {"reasoningEffort": "high", "description": "Deep"}]},
+            {"model": "gpt-6-luna"},
+            {"description": "no model id, so left out"}
+        ]});
+        let m = parse_models(&r);
+        assert_eq!(m.len(), 2);
+        assert_eq!((m[0].id.as_str(), m[0].description.as_str(), m[0].is_default), ("gpt-6.1-sol", "Latest workhorse.", true));
+        assert_eq!(m[0].efforts, ["low", "high"]);
+        assert_eq!((m[1].description.as_str(), m[1].efforts.len(), m[1].is_default), ("", 0, false), "a model that says little still counts");
+        assert!(parse_models(&json!({})).is_empty());
     }
 }

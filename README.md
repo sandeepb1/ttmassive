@@ -754,8 +754,16 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   one that gives verdicts can never be able to change files, so a reviewer cannot edit what it reviews. A custom agent
   that gives a verdict can send work back like a judge, and its role can be edited later in the details panel. **Write with Sonnet** drafts an agent's
   instructions. **Save** keeps a flow. On the **Flows** list, **Design a flow** takes a description
-  of a *kind* of work ("find the cause of a bug, fix it and have the fix reviewed") and has Sonnet design a reusable
-  team for it (it opens for you to change; nothing runs). A flow is a template: it keeps a one-sentence **purpose** (edit it
+  of a *kind* of work ("find the cause of a bug, fix it and have the fix reviewed") and designs a reusable team for it
+  (it opens for you to change; nothing runs). It works in three steps, shown as they go: **1** it reads a briefing of
+  everything an agent could run on (your Claude and Codex plans and how full their 5-hour and 7-day windows are, Codex's own
+  description of each of its models, every paid account's models with prices, context size and what is left on the account,
+  the web services, the pages you chose about how models compare, and what a run may spend) and designs the team, custom
+  roles included; **2** it reviews that team against the kind of work and the briefing, adding or removing agents and
+  changing roles or models where the first design missed something or crowded a nearly full plan; **3** it rewrites every
+  agent's system prompt for the model that agent runs on and the place it has in the team. A step that cannot run leaves what
+  the one before made, and says so in the notes shown at the end. Steps 1 and 2 use the model chosen for *Design a flow* in
+  Settings (Sonnet unless you chose another) and step 3 the one chosen for *Write an agent's instructions*. A flow is a template: it keeps a one-sentence **purpose** (edit it
   under *This flow* in Settings), shown in the list and when you start a run, and what to do each time is the goal you give
   the run, which every agent receives. **Design and run** does both with one prompt: it designs the flow, then opens the
   run dialog with your text as the first goal. A flow's menu has Duplicate, which opens a copy to edit, and

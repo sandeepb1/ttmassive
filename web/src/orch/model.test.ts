@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, ADV, isDefaultAdvanced, advancedCount, parseDuration, formatDuration, parseWhole, parseUsdCap, parseToolNames, feeders, withAdvanced, pruneInputs, fallbackChoices, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, ADV, isDefaultAdvanced, advancedCount, parseDuration, formatDuration, parseWhole, parseUsdCap, parseToolNames, feeders, withAdvanced, pruneInputs, fallbackChoices, DESIGN_STEP_TEXT, designReport, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -998,4 +998,21 @@ test('a retry can go to any model the flow could use', () => {
   assert.deepEqual(keys, ['claude:opus', 'claude:haiku', 'codex:gpt-6-luna', 'or:a1:x/y'], 'a direct call has no tools and cannot take over an agent');
   const orRung = fallbackChoices(models).find((c) => c.key === 'or:a1:x/y')!.rung;
   assert.deepEqual([orRung.engine, orRung.account], ['codex', 'a1'], 'it runs on the CLI that runs that model');
+});
+
+test('the three steps of designing a flow are each named while they run', () => {
+  assert.deepEqual(Object.keys(DESIGN_STEP_TEXT), ['1', '2', '3']);
+  assert.ok(DESIGN_STEP_TEXT[1].startsWith('Step 1 of 3') && DESIGN_STEP_TEXT[3].startsWith('Step 3 of 3'));
+});
+
+test('the notes on a design say what each step did, and a step that failed says the earlier result stands', () => {
+  const ok = designReport(['Builder runs on x/y through OpenRouter.'], { ok: true, summary: 'Swapped the judge to haiku.' }, { ok: true, summary: 'Tuned six prompts.' });
+  assert.deepEqual(ok.map((n) => [n.step, n.failed ?? false]), [['Design', false], ['Review', false], ['Prompts', false]]);
+  assert.equal(ok[1]!.text, 'Swapped the judge to haiku.');
+  const bad = designReport([], { ok: false, error: 'timed out' }, { ok: true, summary: 'Tuned.' });
+  assert.equal(bad.length, 2, 'no design notes, then the two steps');
+  assert.equal(bad[0]!.failed, true);
+  assert.ok(bad[0]!.text.includes('timed out') && bad[0]!.text.includes('first design stands'));
+  const lost = designReport([], { ok: true, summary: 'Fine.' }, { ok: false, error: 'no answer' });
+  assert.ok(lost[1]!.failed && lost[1]!.text.includes('as the design first wrote them'));
 });

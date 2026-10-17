@@ -198,15 +198,107 @@ impl Service {
         crate::openrouter::launch::flow_models(&crate::secrets::load(&st.data_dir).await).into_iter().filter(|m| !m.direct).collect()
     }
 
-    /// A flow for a goal, and a line for each agent that was given an OpenRouter model, saying why.
-    pub async fn suggest_flow(&self, st: &Arc<AppState>, goal: &str) -> Result<(Flow, Vec<String>), Fail> {
-        if goal.trim().is_empty() {
-            return Err(Fail::Bad("say what you want done".into()));
+    /// Everything an agent could run on, written for a designer to read: your plans and how full they are, each account's
+    /// models with their prices and what is left on it, the web services, the pages about how models compare, and what a run
+    /// may spend. A lookup that is slow or fails is left out rather than holding the design up.
+    async fn briefing(&self, st: &Arc<AppState>) -> String {
+        use super::briefing as b;
+        let wait = std::time::Duration::from_secs(5);
+        let accounts = crate::secrets::load(&st.data_dir).await;
+        let windows = self.refresh_windows(st).await;
+        let codex_info = match self.codex.get().await {
+            Ok(s) => s.models_info().await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        let codex_models: Vec<b::PlanModel> = if codex_info.is_empty() {
+            FALLBACK_CODEX.iter().map(|m| b::PlanModel { id: (*m).into(), note: String::new(), efforts: Vec::new() }).collect()
+        } else {
+            codex_info.into_iter().map(|m| b::PlanModel { id: m.id, note: m.description, efforts: m.efforts }).collect()
+        };
+        let catalog = tokio::time::timeout(wait, crate::openrouter::catalog::get(&st.data_dir, false)).await.ok().and_then(Result::ok);
+        let mut by_account: Vec<(String, String, Vec<b::AccountModel>)> = Vec::new();
+        for m in crate::openrouter::launch::flow_models(&accounts).into_iter().filter(|m| !m.direct) {
+            let known = catalog.as_ref().and_then(|c| c.models.iter().find(|x| x.id == m.id));
+            let note: String = known.map(|k| k.description.split(". ").next().unwrap_or("").trim().chars().take(140).collect()).unwrap_or_default();
+            let entry = b::AccountModel {
+                id: m.id.clone(),
+                engine: if m.driver == crate::openrouter::launch::Driver::Claude { "claude" } else { "codex" },
+                price_in: m.price_in,
+                price_out: m.price_out,
+                tools: m.tools,
+                context: known.map(|k| k.context),
+                reasoning: known.map(|k| k.reasoning),
+                note,
+            };
+            match by_account.iter_mut().find(|(id, _, _)| *id == m.account) {
+                Some((_, _, list)) => list.push(entry),
+                None => by_account.push((m.account.clone(), m.account_name.clone(), vec![entry])),
+            }
         }
+        let mut paid = Vec::new();
+        for (id, name, models) in by_account {
+            let balance = match accounts.get(&id) {
+                Some(a) if a.kind == crate::secrets::Kind::Openrouter => tokio::time::timeout(wait, crate::openrouter::catalog::remote(a)).await.ok().and_then(Result::ok).and_then(|r| balance_words(&r)),
+                _ => None,
+            };
+            paid.push(b::Account { name, balance, models });
+        }
+        let pool = crate::web::pool::Pool::of(&accounts);
+        let tools: Vec<&'static str> = [(crate::web::types::Tool::Search, "search the web"), (crate::web::types::Tool::Scrape, "read a page"), (crate::web::types::Tool::Map, "list a site's pages"), (crate::web::types::Tool::Crawl, "crawl a site")]
+            .into_iter()
+            .filter(|(t, _)| pool.offers(*t))
+            .map(|(_, label)| label)
+            .collect();
+        let web = (!tools.is_empty()).then(|| b::Web { tools, services: accounts.web_accounts().filter_map(|a| a.kind.web()).map(|p| p.name().to_owned()).collect() });
+        let intel = tokio::time::timeout(wait, crate::openrouter::intel::notes(&st.data_dir, &accounts)).await.ok().flatten();
+        let limits = *self.limits.lock().unwrap_or_else(|e| e.into_inner());
+        b::render(&b::Briefing {
+            claude: b::Plan { five_hour: windows.claude_5h, seven_day: windows.claude_7d, models: b::claude_models() },
+            codex: b::Plan { five_hour: windows.codex_5h, seven_day: windows.codex_7d, models: codex_models },
+            accounts: paid,
+            web,
+            limits,
+            intel,
+        })
+    }
+
+    fn needs_kind(kind: &str) -> Result<(), Fail> {
+        match kind.trim() {
+            "" => Err(Fail::Bad("say what kind of work the flow is for".into())),
+            k if k.len() > 4000 => Err(Fail::Bad("that description is too long".into())),
+            _ => Ok(()),
+        }
+    }
+
+    /// Step one of designing a flow: a first design for a kind of work, from everything there is to run agents on. Also a line for
+    /// each agent that was given an OpenRouter model, saying why.
+    pub async fn suggest_flow(&self, st: &Arc<AppState>, goal: &str) -> Result<(Flow, Vec<String>), Fail> {
+        Self::needs_kind(goal)?;
         let models = self.codex_models().await;
         let id = format!("f{}", new_id());
-        let (flow, notes, _) = prompts::suggest_flow(goal, &id, &models, &self.or_models(st).await, self.via("suggest").await.as_ref(), &self.scratch).await?;
+        let briefing = self.briefing(st).await;
+        let (flow, notes, _) = prompts::design_stage(goal, &id, &models, &self.or_models(st).await, &briefing, self.via("suggest").await.as_ref(), &self.scratch).await?;
         Ok((flow, notes))
+    }
+
+    /// Step two: the design is checked against the kind of work and what is available, and corrected. Returns the flow and what
+    /// was changed, or that nothing needed to be.
+    pub async fn review_flow(&self, st: &Arc<AppState>, goal: &str, flow: Flow) -> Result<(Flow, String), Fail> {
+        Self::needs_kind(goal)?;
+        flow.validate().map_err(Fail::Bad)?;
+        let models = self.codex_models().await;
+        let briefing = self.briefing(st).await;
+        let (flow, summary, _) = prompts::review_stage(goal, &flow, &models, &self.or_models(st).await, &briefing, self.via("suggest").await.as_ref(), &self.scratch).await?;
+        Ok((flow, summary))
+    }
+
+    /// Step three: every agent's prompt is rewritten for its model and its place in the team.
+    pub async fn optimise_flow(&self, st: &Arc<AppState>, goal: &str, flow: Flow) -> Result<(Flow, String), Fail> {
+        Self::needs_kind(goal)?;
+        flow.validate().map_err(Fail::Bad)?;
+        let briefing = self.briefing(st).await;
+        let (flow, summary, _) = prompts::optimise_stage(goal, &flow, &briefing, self.via("nodePrompt").await.as_ref(), &self.scratch).await?;
+        Ok((flow, summary))
     }
 
     /// Change a flow as the user asks. Returns the changed flow and what was done; nothing is saved.
@@ -704,5 +796,33 @@ impl Service {
         flow.validate().map_err(Fail::Bad)?;
         self.store.save_flow(flow).context("saving the flow")?;
         Ok(())
+    }
+}
+
+/// What is left on an account, in words, from what it says about itself.
+fn balance_words(r: &crate::openrouter::catalog::Remote) -> Option<String> {
+    let usd = |n: f64| format!("${n:.2}");
+    match (r.remaining, r.usage, r.limit) {
+        (Some(left), _, Some(limit)) => Some(format!("{} left of {}", usd(left), usd(limit))),
+        (Some(left), _, None) => Some(format!("{} left", usd(left))),
+        (None, Some(used), Some(limit)) => Some(format!("{} of {} used", usd(used), usd(limit))),
+        (None, Some(used), None) => Some(format!("{} used", usd(used))),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod briefing_tests {
+    use super::*;
+    use crate::openrouter::catalog::Remote;
+
+    #[test]
+    fn what_is_left_on_an_account_is_put_in_words() {
+        let r = |remaining, usage, limit| Remote { remaining, usage, limit, ..Default::default() };
+        assert_eq!(balance_words(&r(Some(9.123), Some(0.877), Some(10.0))).as_deref(), Some("$9.12 left of $10.00"));
+        assert_eq!(balance_words(&r(Some(4.0), None, None)).as_deref(), Some("$4.00 left"));
+        assert_eq!(balance_words(&r(None, Some(1.5), Some(5.0))).as_deref(), Some("$1.50 of $5.00 used"));
+        assert_eq!(balance_words(&r(None, Some(1.5), None)).as_deref(), Some("$1.50 used"));
+        assert_eq!(balance_words(&r(None, None, None)), None, "an account that says nothing is left unsaid");
     }
 }

@@ -544,11 +544,139 @@ async fn helper_call_web(via: &Endpoint, system: &str, prompt: &str, schema: Val
     Ok((answer, Outcome { structured: r.reply.structured, text: r.reply.text, tokens: r.reply.tokens, cost_usd: r.reply.cost_usd.unwrap_or(0.0), credits: r.credits, web_usd: r.web_usd, is_error: false, session: None }))
 }
 
-/// Sonnet designs a flow for a goal.
-pub async fn suggest_flow(goal: &str, flow_id: &str, codex_models: &[String], or_models: &[FlowModel], via: Option<&Endpoint>, cwd: &Path) -> Result<(Flow, Vec<String>, Outcome)> {
-    let (v, outcome) = helper_call(via, "sonnet", &suggest_system(!or_models.is_empty()), &suggest_prompt(goal, codex_models, or_models), suggest_schema(), cwd).await?;
+// ---------------------------------------------------------------------------- designing a flow, in three steps
+//
+// Design a flow is three calls, each a step the page asks for in turn so each is short and the page can show where it is:
+// a first design from everything there is to run agents on, a review of whether it has the right agents on the right models,
+// and a rewrite of every agent's prompt for the model it will run on. A step that cannot run leaves what the one before made.
+
+/// Said to the designer and the reviewer: the briefing at the head of the request decides the models.
+const BRIEFING_RULE: &str = "\nThe request starts with what is available to run agents on and how full each of your plans is. It decides which \
+models to use, ahead of the defaults above: never choose a model that is not listed, and do not crowd a plan that is nearly full.";
+
+fn design_prompt(kind: &str, briefing: &str) -> String {
+    format!("# Kind of work\n\n{}\n\n{briefing}", kind.trim())
+}
+
+/// Step one: Sonnet designs a flow for a kind of work, knowing what there is to run it on.
+pub async fn design_stage(kind: &str, flow_id: &str, codex_models: &[String], or_models: &[FlowModel], briefing: &str, via: Option<&Endpoint>, cwd: &Path) -> Result<(Flow, Vec<String>, Outcome)> {
+    let system = format!("{}{BRIEFING_RULE}", suggest_system(!or_models.is_empty()));
+    let (v, outcome) = helper_call(via, "sonnet", &system, &design_prompt(kind, briefing), suggest_schema(), cwd).await?;
     let (flow, notes) = flow_from_suggestion_with(&v, flow_id, codex_models, or_models)?;
     Ok((flow, notes, outcome))
+}
+
+const REVIEW_TASK: &str = "Review this team as a careful engineering lead would, against the kind of work above and what is available to run it on. \
+Change only what is wrong, and keep every agent's id.\n\
+- Coverage: does the team do every part of this kind of work, in a sensible order? Is there a check where a mistake would be costly, and \
+nothing that checks work it also did?\n\
+- Economy: no agent without a clear job, no two with the same job, none that only passes text along. Fewer is better.\n\
+- Roles: each role fits its job (reading, running checks, changing files). A custom role is for a job no built-in role describes, \
+and only then.\n\
+- Models: each model suits its job and is on the list above. Count how full each plan is: do not put many agents on a plan that is \
+nearly full, give simple jobs the cheaper models, and a model that has no tool use cannot run an agent.\n\
+- Wiring: what feeds each agent is what it needs; a judge can send work back to the agent that changes things.\n\
+In summary, say each change you made and why, in plain sentences, or say that the team is right as it stands.";
+
+fn review_prompt(kind: &str, briefing: &str, flow: &Flow) -> String {
+    format!(
+        "# The team now\n\n```json\n{}\n```\n\n# Kind of work\n\n{}\n\n{briefing}\n# Your task\n\n{REVIEW_TASK}\n",
+        serde_json::to_string_pretty(&edit_view(flow)).unwrap_or_default(),
+        kind.trim()
+    )
+}
+
+/// Step two: the team is checked against the kind of work and what is available, and corrected. Agents it keeps stay the same
+/// agents, so what the first step set on them (and the user's settings) is not lost.
+pub async fn review_stage(kind: &str, flow: &Flow, codex_models: &[String], or_models: &[FlowModel], briefing: &str, via: Option<&Endpoint>, cwd: &Path) -> Result<(Flow, String, Outcome)> {
+    let system = format!("{}{BRIEFING_RULE}", edit_system(!or_models.is_empty()));
+    let (v, outcome) = helper_call(via, "sonnet", &system, &review_prompt(kind, briefing, flow), edit_schema(), cwd).await?;
+    let (changed, summary) = flow_from_edit_with(flow, &v, codex_models, or_models)?;
+    Ok((changed, summary, outcome))
+}
+
+const OPTIMISE_SYSTEM: &str = "You write the system prompts for a team of AI agents, as a prompt engineer would. Each agent's prompt is read by \
+the model named for it at the start of every turn, ahead of a brief that changes with each run. So a prompt describes the agent's standing \
+job, never one task, and it stays the same from run to run.\n\
+For each agent write the best prompt for its role, its model, and its place in the team:\n\
+- Open with who it is and what it is for, in a sentence.\n\
+- Say what it receives (from the agents named as feeding it, or the brief) and what it must hand on, and what the next agents need from it.\n\
+- Give it a method. For a smaller or faster model (haiku, luna, mini, flash, lite) number the steps and be explicit about what a good \
+result looks like. For a stronger one (opus, sol, astra, pro) state the aim and the criteria and trust its judgement; do not micromanage.\n\
+- Set boundaries that fit its role: an agent that only reads must not try to change anything; a judge must check, cite evidence, and \
+approve only when the work meets the brief; one that changes files keeps to what the plan asked.\n\
+- Say when to stop, and when to say it cannot do the job rather than guess.\n\
+Do not describe the answer format: the format is enforced separately. Do not name other agents by id, mention a particular task, or add \
+dates or anything that changes. Write plain instructions, 80 to 220 words each. Return every agent's id with its prompt, and a summary of \
+how you tuned them in one or two sentences.";
+
+fn optimise_schema() -> Value {
+    json!({"type": "object", "additionalProperties": false, "required": ["prompts", "summary"], "properties": {
+        "prompts": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "system_prompt"], "properties": {"id": text(), "system_prompt": text()}}},
+        "summary": text()
+    }})
+}
+
+/// Each agent as the prompt writer needs it: its job, its model, what feeds it and where its work goes, and what it says now.
+fn optimise_prompt(kind: &str, briefing: &str, flow: &Flow) -> String {
+    let name_of = |id: &str| flow.node(id).map_or(id.to_owned(), |n| n.name.clone());
+    let mut s = format!("# Kind of work\n\n{}\n\n{briefing}\n# The team\n", kind.trim());
+    for n in &flow.nodes {
+        let feeds: Vec<String> = flow.inputs_of(&n.id).into_iter().map(name_of).collect();
+        let sends: Vec<String> = flow.edges.iter().filter(|e| e.from == n.id && e.kind == EdgeKind::Forward).map(|e| name_of(&e.to)).collect();
+        let back: Vec<String> = flow.edges.iter().filter(|e| e.from == n.id && e.kind == EdgeKind::Retry).map(|e| name_of(&e.to)).collect();
+        let on = if n.account.is_some() { format!("{} (paid per token)", n.model) } else { format!("{} on your {} plan", n.model, if n.engine == Engine::Claude { "Claude" } else { "Codex" }) };
+        s.push_str(&format!("\n## {} (id {})\n- Role: {}\n- Model: {on}\n", n.name, n.id, describe_role(&n.role_label(), n.capability(), n.output())));
+        s.push_str(&format!("- Fed by: {}\n- Hands its work to: {}\n", if feeds.is_empty() { "the brief only".into() } else { feeds.join(", ") }, if sends.is_empty() { "nobody: it ends the flow".into() } else { sends.join(", ") }));
+        if n.decides() && !back.is_empty() {
+            s.push_str(&format!("- It judges, and can send work back to: {}\n", back.join(", ")));
+        }
+        if n.asks() {
+            s.push_str("- It asks the person questions and can send the plan back to be changed.\n");
+        }
+        if n.web {
+            s.push_str("- It has web search and page reading.\n");
+        }
+        s.push_str(&format!("- Its prompt now: {}\n", if n.system_prompt.trim().is_empty() { "(none)" } else { n.system_prompt.trim() }));
+    }
+    s
+}
+
+/// Longest an optimised prompt may be, in characters; a longer one is a sign it went wrong, and the old one stays.
+const MAX_OPTIMISED: usize = 4000;
+
+/// Put the rewritten prompts onto the agents they are for. One that is empty, too long, for an agent that is not there, or that
+/// is only the same words again, leaves the agent as it was. Returns the flow and the names of the agents that changed.
+pub fn apply_prompts(flow: &Flow, v: &Value) -> (Flow, Vec<String>) {
+    let mut out = flow.clone();
+    let mut changed = Vec::new();
+    for p in v.get("prompts").and_then(Value::as_array).into_iter().flatten() {
+        let id = p.get("id").and_then(Value::as_str).unwrap_or("").trim();
+        let new = p.get("system_prompt").and_then(Value::as_str).unwrap_or("").trim();
+        if new.is_empty() || new.chars().count() > MAX_OPTIMISED {
+            continue;
+        }
+        if let Some(n) = out.nodes.iter_mut().find(|n| n.id == id) {
+            if n.system_prompt.trim() != new {
+                n.system_prompt = new.to_owned();
+                changed.push(n.name.clone());
+            }
+        }
+    }
+    (out, changed)
+}
+
+/// Step three: every agent's prompt is rewritten for the model it runs on and the place it has in the team.
+pub async fn optimise_stage(kind: &str, flow: &Flow, briefing: &str, via: Option<&Endpoint>, cwd: &Path) -> Result<(Flow, String, Outcome)> {
+    let (v, outcome) = helper_call(via, "sonnet", OPTIMISE_SYSTEM, &optimise_prompt(kind, briefing, flow), optimise_schema(), cwd).await?;
+    let (tuned, changed) = apply_prompts(flow, &v);
+    let said = v.get("summary").and_then(Value::as_str).unwrap_or("").trim();
+    let summary = match (changed.len(), said.is_empty()) {
+        (0, _) => "The prompts were already as they should be.".to_owned(),
+        (n, true) => format!("Rewrote the prompts of {n} agent{}.", if n == 1 { "" } else { "s" }),
+        (_, false) => said.chars().take(400).collect(),
+    };
+    Ok((tuned, summary, outcome))
 }
 
 // ---------------------------------------------------------------------------- editing a flow from a request
@@ -1427,6 +1555,69 @@ mod tests {
         assert!(!prompt.contains("# Goal"));
         let schema = suggest_schema();
         assert!(schema["required"].as_array().unwrap().contains(&json!("purpose")) && schema["properties"]["purpose"].is_object());
+    }
+
+    // ---- designing in three steps
+
+    #[test]
+    fn the_designer_is_given_the_briefing_and_told_it_decides_the_models() {
+        let p = design_prompt("  Fix a bug and have the fix reviewed ", "# What you can use\n\n## Your Claude Code plan\n");
+        assert!(p.starts_with("# Kind of work\n\nFix a bug and have the fix reviewed\n\n# What you can use"), "{p}");
+        assert!(BRIEFING_RULE.contains("never choose a model that is not listed") && BRIEFING_RULE.contains("nearly full"));
+        assert!(suggest_system(false).contains("KIND of work"), "the design is still for a kind of work");
+    }
+
+    #[test]
+    fn the_reviewer_sees_the_team_the_kind_of_work_and_what_it_must_check() {
+        let f = flow_from_suggestion(&suggestion(), "f", &models()).unwrap();
+        let p = review_prompt("Fix bugs", "# What you can use\n", &f);
+        assert!(p.starts_with("# The team now\n\n```json"), "{p}");
+        assert!(p.contains("\"id\": \"n2\"") && p.contains("Fix bugs") && p.contains("# What you can use"));
+        for check in ["Coverage", "Economy", "Roles", "Models", "Wiring"] {
+            assert!(p.contains(&format!("- {check}:")), "it is asked to check {check}");
+        }
+        assert!(p.contains("nearly full") && p.contains("no tool use"), "the models check names what the briefing tells it");
+    }
+
+    #[test]
+    fn the_prompt_writer_is_told_each_agents_job_model_and_neighbours() {
+        let mut f = flow_from_suggestion(&suggestion(), "f", &models()).unwrap();
+        f.nodes[1].system_prompt = "Build it.".into();
+        f.nodes[1].account = Some("or".into());
+        let p = optimise_prompt("Fix bugs", "# What you can use\n", &f);
+        assert!(p.contains("## Builder (id n2)") && p.contains("- Fed by: Planner") && p.contains("- Hands its work to: Judge"), "{p}");
+        assert!(p.contains("- Model: gpt-6.1-sol (paid per token)"), "{p}");
+        assert!(p.contains("- Its prompt now: Build it."));
+        assert!(p.contains("It judges, and can send work back to: Builder"), "the judge knows where it can send work back");
+        assert!(p.contains("- Fed by: the brief only"), "the first agent is fed by the brief");
+        assert!(p.contains("nobody: it ends the flow"));
+        assert!(OPTIMISE_SYSTEM.contains("never one task") && OPTIMISE_SYSTEM.contains("number the steps") && OPTIMISE_SYSTEM.contains("trust its judgement"));
+        let schema = optimise_schema();
+        assert_eq!(schema["required"], json!(["prompts", "summary"]));
+        assert_eq!(schema["properties"]["prompts"]["items"]["required"], json!(["id", "system_prompt"]));
+    }
+
+    #[test]
+    fn rewritten_prompts_go_onto_the_agents_they_are_for_and_nothing_else_changes() {
+        let f = flow_from_suggestion(&suggestion(), "f", &models()).unwrap();
+        let before: Vec<String> = f.nodes.iter().map(|n| n.system_prompt.clone()).collect();
+        let answer = json!({"prompts": [
+            {"id": "n1", "system_prompt": "  You plan work. Be brief.  "},
+            {"id": "n3", "system_prompt": before[2]},
+            {"id": "ghost", "system_prompt": "for an agent that is not there"},
+            {"id": "n2", "system_prompt": "   "}
+        ], "summary": "Tuned."});
+        let (out, changed) = apply_prompts(&f, &answer);
+        assert_eq!(out.nodes[0].system_prompt, "You plan work. Be brief.", "trimmed");
+        assert_eq!(changed, ["Planner"], "only the one that really changed is reported");
+        assert_eq!(out.nodes[1].system_prompt, before[1], "an empty answer leaves the agent alone");
+        assert_eq!(out.nodes[2].system_prompt, before[2], "the same words again are no change");
+        assert_eq!((out.nodes.len(), out.edges.len()), (f.nodes.len(), f.edges.len()), "only prompts are touched");
+        assert_eq!(out.nodes[0].model, f.nodes[0].model);
+        assert_eq!(out.validate(), Ok(()));
+        let long = apply_prompts(&f, &json!({"prompts": [{"id": "n1", "system_prompt": "x".repeat(MAX_OPTIMISED + 1)}]}));
+        assert_eq!(long.1, Vec::<String>::new(), "a prompt that ran away is not used");
+        assert_eq!(apply_prompts(&f, &json!({})).1.len(), 0, "an answer with no prompts changes nothing");
     }
 
     #[test]

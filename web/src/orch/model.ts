@@ -1143,3 +1143,29 @@ export function fallbackChoices(models: Models): { key: string; label: string; r
     .map((m) => ({ key: `or:${m.account}:${m.id}`, label: several ? `${m.accountName} · ${m.id}` : m.id, rung: { engine: m.driver, model: m.id, account: m.account, effort: null } as Rung }));
   return [...plan('claude', models.claude), ...plan('codex', models.codex), ...paid];
 }
+
+// ---- designing a flow, in three steps ---------------------------------------------------------
+
+export type DesignStep = 1 | 2 | 3;
+
+/** What the page says while a step of designing a flow is under way. */
+export const DESIGN_STEP_TEXT: Record<DesignStep, string> = {
+  1: 'Step 1 of 3 · Looking at your plans, accounts and models, and designing a team for the work',
+  2: 'Step 2 of 3 · Checking it has the right agents, on models that fit and that you have room for',
+  3: 'Step 3 of 3 · Writing each agent’s prompt for the model it runs on',
+};
+
+export interface DesignNote {
+  step: 'Design' | 'Review' | 'Prompts';
+  text: string;
+  /** The step could not run, and the design before it stands. */
+  failed?: boolean;
+}
+
+/** What came of each step, for the notes shown once the flow is made. A step that failed says so and leaves the earlier result. */
+export function designReport(design: string[], review: { ok: true; summary: string } | { ok: false; error: string }, prompts: { ok: true; summary: string } | { ok: false; error: string }): DesignNote[] {
+  const notes: DesignNote[] = design.map((text) => ({ step: 'Design' as const, text }));
+  notes.push(review.ok ? { step: 'Review', text: review.summary } : { step: 'Review', text: `It could not be done (${review.error}), so the first design stands.`, failed: true });
+  notes.push(prompts.ok ? { step: 'Prompts', text: prompts.summary } : { step: 'Prompts', text: `It could not be done (${prompts.error}), so the prompts are as the design first wrote them.`, failed: true });
+  return notes;
+}

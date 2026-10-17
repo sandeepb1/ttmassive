@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
 import { orch } from './api';
 import { Icon, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, OUTPUT_TEXT, answersFor, goalHint, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer } from './model';
+import { CAPABILITY_SHORT, DESIGN_STEP_TEXT, OUTPUT_TEXT, answersFor, goalHint, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer, type DesignNote, type DesignStep } from './model';
 import type { Budget, Capability, Flow, Output, Question, RepoState, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
@@ -358,7 +358,7 @@ export function CustomRoleDialog({ busy, error, draft, onDesign, onAdd, onClose 
   );
 }
 
-export function SuggestDialog({ busy, error, onSuggest, onClose }: { busy: boolean; error: string | null; onSuggest: (goal: string, thenRun: boolean) => void; onClose: () => void }) {
+export function SuggestDialog({ busy, step, error, onSuggest, onClose }: { busy: boolean; step: DesignStep | null; error: string | null; onSuggest: (goal: string, thenRun: boolean) => void; onClose: () => void }) {
   const [goal, setGoal] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
@@ -398,10 +398,37 @@ export function SuggestDialog({ busy, error, onSuggest, onClose }: { busy: boole
       </Field>
       {busy && (
         <div className="mc-thinking" role="status">
-          <span className="mc-spinner" /> Designing a team for it. This takes up to half a minute.
+          <span className="mc-spinner" /> {step ? DESIGN_STEP_TEXT[step] : 'Designing a team for it'}. Each step can take up to a minute.
         </div>
       )}
       {error && <p className="mc-error">{error}</p>}
+    </Dialog>
+  );
+}
+
+/** How a flow was made, once it has been: what each of the three steps found or changed. */
+export function DesignNotesDialog({ notes, onClose }: { notes: DesignNote[]; onClose: () => void }) {
+  return (
+    <Dialog
+      title="How this flow was designed"
+      onClose={onClose}
+      foot={
+        <button type="button" className="mc-btn mc-btn-primary" onClick={onClose}>
+          Open the flow
+        </button>
+      }
+    >
+      <p className="mc-hint">It is in the editor now and nothing has run. Change anything you like.</p>
+      <ul className="mc-notes">
+        {notes.map((n, i) => (
+          <li key={i} data-failed={n.failed || undefined}>
+            <span className="mc-pill" data-tone={n.failed ? 'warn' : 'idle'}>
+              {n.step}
+            </span>{' '}
+            {n.text}
+          </li>
+        ))}
+      </ul>
     </Dialog>
   );
 }

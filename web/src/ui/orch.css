@@ -2379,3 +2379,17 @@ button.mc-tl-head:hover {
   gap: 0.5rem;
   cursor: pointer;
 }
+
+/* What each step of designing a flow did. */
+.mc-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  line-height: 1.5;
+}
+.mc-notes li[data-failed] {
+  color: var(--mc-warn);
+}
