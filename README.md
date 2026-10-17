@@ -772,7 +772,14 @@ within the orchestrator.) In an installed iOS app the top bar sits below the sta
   agents it has, how many times it has run and how the last run went. **Folders are rows** at the top of the table: click
   one to go in, use the breadcrumb to come back, **New folder** to make one, and a folder's menu to rename it (its flows
   move with it) or delete it once it is empty. A flow's menu has **Move to a folder…**. A new flow, template or design is
-  made in the folder you are looking at. The search box looks in every folder, and the headings sort the table. **Runs**
+  made in the folder you are looking at. A folder can also be **linked to a real directory** (**Link a directory**, or a
+  folder's menu): the flows kept in it, and in the folders under it, run in that directory and only there, and the run
+  dialog shows it fixed. Inside a linked folder **Add a project** makes a folder for a directory inside the parent's, one
+  at a time by hand (typing the path, or choosing from the directories offered); a project's own directory wins over its
+  parent's. A project must lie inside its parent's directory, and a parent's directory must hold its projects. The server
+  enforces the link when a run starts, so it holds whatever the page sends. To run a flow in another directory, **Duplicate
+  to a folder…** puts a copy in a folder linked to that one. Flows are still kept in ttm, not in your repositories.
+  The search box looks in every folder, and the headings sort the table. **Runs**
   next to **Flows** is a table of every execution, grouped by running, needs you, done and stopped, with its token use and
   what its API models and web access cost.
   Click a flow to open it in **Design**. Its **Runs** tab lists that flow's executions, kept as its history; **Run**

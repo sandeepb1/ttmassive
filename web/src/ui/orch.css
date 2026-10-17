@@ -2393,3 +2393,38 @@ button.mc-tl-head:hover {
 .mc-notes li[data-failed] {
   color: var(--mc-warn);
 }
+
+/* A folder linked to a directory: what it points at, the note at the top of it, and the fixed project in the run dialog. */
+.mc-dirtag {
+  display: inline-block;
+  margin-left: 0.625rem;
+  color: var(--mc-glow);
+  font-size: 0.75rem;
+}
+.mc-linkbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid color-mix(in oklch, var(--mc-glow) 40%, var(--mc-line));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--mc-glow) 8%, transparent);
+  color: var(--mc-dim);
+  line-height: 1.5;
+}
+.mc-linkbar b {
+  color: var(--mc-fg);
+}
+.mc-locked {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  padding: 0.4rem 0.625rem;
+  border: 1px solid var(--mc-line);
+  border-radius: var(--radius-md);
+  background: var(--mc-raise);
+  color: var(--mc-dim);
+  overflow-wrap: anywhere;
+}

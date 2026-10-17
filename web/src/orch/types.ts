@@ -356,6 +356,8 @@ export interface FlowLists {
   starters: Flow[];
   /** Every folder, parents before what is inside them. */
   folders?: string[];
+  /** The folders linked to a directory, and the directory each is linked to. */
+  folderDirs?: Record<string, string>;
 }
 
 export interface Window {

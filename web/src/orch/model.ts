@@ -489,6 +489,8 @@ export interface FlowEntry {
   purpose: string;
   /** The folder it is kept in; empty at the top level. */
   folder: string;
+  /** The directory its runs are tied to, because its folder or one above it is linked to one; empty when they are free. */
+  dir: string;
   /** Newest first. */
   runs: RunSummary[];
   last: RunSummary | null;
@@ -500,10 +502,10 @@ export const runsOf = (runs: RunSummary[], flowId: string): RunSummary[] =>
 
 /** Every saved flow, and every flow that only survives as executions. The ones used most recently come first; a flow
  *  never run goes after them, by name. */
-export function flowEntries(saved: Flow[], runs: RunSummary[]): FlowEntry[] {
+export function flowEntries(saved: Flow[], runs: RunSummary[], folderDirs: Record<string, string> = {}): FlowEntry[] {
   const entry = (id: string, name: string, isSaved: boolean, agents: number | null, purpose = '', folder = ''): FlowEntry => {
     const mine = runsOf(runs, id);
-    return { id, name, saved: isSaved, agents, purpose, folder, runs: mine, last: mine[0] ?? null };
+    return { id, name, saved: isSaved, agents, purpose, folder, dir: linkedDir(folderDirs, folder)?.dir ?? '', runs: mine, last: mine[0] ?? null };
   };
   const out = saved.map((f) => entry(f.id, f.name, true, f.nodes.length, purposeOf(f), f.folder ?? ''));
   const known = new Set(saved.map((f) => f.id));
@@ -952,9 +954,25 @@ export function sortEntries(list: FlowEntry[], sort: Sort): FlowEntry[] {
   });
 }
 
+/** Where a folder, or the nearest one above it, is linked to a directory: that folder and its directory. `null` when none is. */
+export function linkedDir(dirs: Record<string, string>, folder: string): { folder: string; dir: string } | null {
+  let at = folder;
+  for (;;) {
+    const dir = dirs[at];
+    if (dir) return { folder: at, dir };
+    if (!at) return null;
+    at = parentOf(at);
+  }
+}
+
+/** A directory with your home folder shortened to `~`, as it is easiest to read. */
+export const tildePath = (dir: string): string => dir.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~');
+
 export interface FolderRow {
   path: string;
   name: string;
+  /** The directory this folder is itself linked to; empty when it is not. */
+  dir: string;
   /** Flows in it and in the folders inside it. */
   flows: number;
   /** Folders directly inside it. */
@@ -965,6 +983,8 @@ export interface Listing {
   crumbs: { name: string; path: string }[];
   folders: FolderRow[];
   flows: FlowEntry[];
+  /** The folder being looked at, or the one above it, is linked to a directory: its flows run there. */
+  linked: { folder: string; dir: string } | null;
   /** A search is on: the flows are from every folder and the folders are left out. */
   searching: boolean;
 }
@@ -983,18 +1003,18 @@ export function allFolders(folders: string[], entries: Pick<FlowEntry, 'folder'>
 }
 
 /** What the flows table shows for the folder `at`: the folders directly inside it, then its flows. A search looks in every folder. */
-export function listing(entries: FlowEntry[], folders: string[], at: string, query: string, sort: Sort): Listing {
+export function listing(entries: FlowEntry[], folders: string[], at: string, query: string, sort: Sort, dirs: Record<string, string> = {}): Listing {
   const q = query.trim().toLowerCase();
   if (q) {
     const hit = (e: FlowEntry) => [e.name, e.purpose, e.folder].some((s) => s.toLowerCase().includes(q));
-    return { crumbs: crumbs(at), folders: [], flows: sortEntries(entries.filter(hit), sort), searching: true };
+    return { crumbs: crumbs(at), folders: [], flows: sortEntries(entries.filter(hit), sort), linked: linkedDir(dirs, at), searching: true };
   }
   const every = allFolders(folders, entries);
   const rows = every
     .filter((p) => parentOf(p) === at && p !== at)
-    .map((p) => ({ path: p, name: baseOf(p), flows: entries.filter((e) => inFolder(e.folder, p)).length, folders: every.filter((q2) => parentOf(q2) === p).length }))
+    .map((p) => ({ path: p, name: baseOf(p), dir: dirs[p] ?? '', flows: entries.filter((e) => inFolder(e.folder, p)).length, folders: every.filter((q2) => parentOf(q2) === p).length }))
     .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-  return { crumbs: crumbs(at), folders: rows, flows: sortEntries(entries.filter((e) => e.folder === at), sort), searching: false };
+  return { crumbs: crumbs(at), folders: rows, flows: sortEntries(entries.filter((e) => e.folder === at), sort), linked: linkedDir(dirs, at), searching: false };
 }
 
 /** Where a flow can be moved to: the top level, then every folder. */

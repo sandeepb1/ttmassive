@@ -6,7 +6,7 @@ import {
   addEdge, answerFor, answersFor, cacheHit, choose, hasChoices, startingAnswer, writeInstead, connectionProblem, defaultModel, emptyFlow, flowProblem, fmtTokens, freeId, gauges, layers,
   builderBranches, consistent, decides, getCatalog, newCustomNode, newNode, pauseInfo, removeNode, roleDef, roleIconName, roleLabel, runOrder, runTokens,
   setCatalog, STAGES, statusLabel, tidy, writes, duplicateNode, isFinished, logView, skillCount, clock, liveLines,
-  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, ADV, isDefaultAdvanced, advancedCount, parseDuration, formatDuration, parseWhole, parseUsdCap, parseToolNames, feeders, withAdvanced, pruneInputs, fallbackChoices, DESIGN_STEP_TEXT, designReport, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
+  offered, resumeLabel, untilLabel, rerunRequest, unnumbered, waitingQuestions, providerOf, providerPatch, providersFor, orGauges, hasLink, ladderSummary, nextRung, rungFromKey, rungKey, withRoutingChange, asks, edgeLabel, rounds, turnFacts, turnLength, turnTone, turnsOf, canCallDirectly, runCredits, runWebUsd, purposeOf, goalHint, canEdit, MAX_PURPOSE, parentOf, baseOf, childPath, inFolder, cleanFolderName, crumbs, sortBy, sortEntries, allFolders, listing, moveTargets, runGroup, runCounts, filterRuns, DEFAULT_SORT, linkedDir, tildePath, ADV, isDefaultAdvanced, advancedCount, parseDuration, formatDuration, parseWhole, parseUsdCap, parseToolNames, feeders, withAdvanced, pruneInputs, fallbackChoices, DESIGN_STEP_TEXT, designReport, modelKey, modelPatch, openRouterChoices, parseModelKey, priceNote, runCost, usdLabel,
 } from './model.ts';
 import { DEFAULT_LIMITS } from './types.ts';
 import type { Rung, Turn, Capability, Flow, FlowNode, Models, Output, Role, Run, RunSummary, UsageSnapshot } from './types.ts';
@@ -831,7 +831,7 @@ test('the design assistant has something to change only once a flow has agents',
 
 // ---- folders and the flows table
 
-const flowRow = (name: string, o: Partial<import('./model.ts').FlowEntry> = {}): import('./model.ts').FlowEntry => ({ id: name, name, saved: true, agents: 3, purpose: '', folder: '', runs: [], last: null, ...o });
+const flowRow = (name: string, o: Partial<import('./model.ts').FlowEntry> = {}): import('./model.ts').FlowEntry => ({ id: name, name, saved: true, agents: 3, purpose: '', folder: '', dir: '', runs: [], last: null, ...o });
 const ranAt = (created: number, state: 'done' | 'running' = 'done') => ({ id: `r${created}`, flowId: 'x', flowName: 'x', goal: 'g', status: { state }, created, tokens: 0 }) as unknown as RunSummary;
 
 test('a folder path is taken apart and put together the way the server keeps it', () => {
@@ -1015,4 +1015,50 @@ test('the notes on a design say what each step did, and a step that failed says 
   assert.ok(bad[0]!.text.includes('timed out') && bad[0]!.text.includes('first design stands'));
   const lost = designReport([], { ok: true, summary: 'Fine.' }, { ok: false, error: 'no answer' });
   assert.ok(lost[1]!.failed && lost[1]!.text.includes('as the design first wrote them'));
+});
+
+// ---- folders linked to a directory
+
+test('a flow is tied to the nearest linked folder at or above it', () => {
+  const dirs = { Code: '/Users/me/code', 'Code/alpha': '/Users/me/code/alpha' };
+  assert.deepEqual(linkedDir(dirs, 'Code/alpha'), { folder: 'Code/alpha', dir: '/Users/me/code/alpha' });
+  assert.deepEqual(linkedDir(dirs, 'Code/alpha/deep'), { folder: 'Code/alpha', dir: '/Users/me/code/alpha' });
+  assert.deepEqual(linkedDir(dirs, 'Code/notes'), { folder: 'Code', dir: '/Users/me/code' }, 'one with no link of its own follows the one above');
+  assert.equal(linkedDir(dirs, 'Loose'), null);
+  assert.equal(linkedDir(dirs, ''), null);
+  assert.equal(linkedDir({}, 'Code'), null);
+});
+
+test('a directory is shown with the home folder as a tilde', () => {
+  assert.equal(tildePath('/Users/sandeep/Documents/odev/app'), '~/Documents/odev/app');
+  assert.equal(tildePath('/home/ana/code'), '~/code');
+  assert.equal(tildePath('/Users/sandeep'), '~');
+  assert.equal(tildePath('/opt/work/app'), '/opt/work/app', 'somewhere outside a home folder is left as it is');
+  assert.equal(tildePath('/Users/sandeepish/x'), '~/x', 'the whole of the user name is what is replaced');
+});
+
+test('the listing says which folders are linked and whether the place being looked at is', () => {
+  const dirs = { Code: '/Users/me/code', 'Code/alpha': '/Users/me/code/alpha' };
+  const entries = [flowRow('A', { folder: 'Code/alpha' }), flowRow('B', { folder: 'Code' }), flowRow('C')];
+  const root = listing(entries, ['Code', 'Code/alpha', 'Loose'], '', '', DEFAULT_SORT, dirs);
+  assert.deepEqual(root.folders.map((f) => [f.name, f.dir]), [['Code', '/Users/me/code'], ['Loose', '']]);
+  assert.equal(root.linked, null, 'the top level is not in a linked folder');
+  const code = listing(entries, ['Code', 'Code/alpha'], 'Code', '', DEFAULT_SORT, dirs);
+  assert.deepEqual(code.linked, { folder: 'Code', dir: '/Users/me/code' });
+  assert.deepEqual(code.folders.map((f) => [f.name, f.dir]), [['alpha', '/Users/me/code/alpha']], 'a project folder shows its own directory');
+  const inside = listing(entries, ['Code', 'Code/alpha', 'Code/notes'], 'Code/notes', '', DEFAULT_SORT, dirs);
+  assert.deepEqual(inside.linked, { folder: 'Code', dir: '/Users/me/code' }, 'a folder with no link follows the one above');
+  assert.deepEqual(listing(entries, [], 'Code', 'a', DEFAULT_SORT, dirs).linked, { folder: 'Code', dir: '/Users/me/code' }, 'and a search from there still knows');
+});
+
+test('each flow in the list knows the directory its runs are tied to', () => {
+  const saved = [
+    { ...emptyFlow('a', 'In a project'), folder: 'Code/alpha', nodes: [{} as FlowNode] },
+    { ...emptyFlow('b', 'In the parent'), folder: 'Code', nodes: [{} as FlowNode] },
+    { ...emptyFlow('c', 'Loose'), folder: 'Notes', nodes: [{} as FlowNode] },
+  ];
+  const dirs = { Code: '/Users/me/code', 'Code/alpha': '/Users/me/code/alpha' };
+  const by = Object.fromEntries(flowEntries(saved, [], dirs).map((e) => [e.id, e.dir]));
+  assert.deepEqual(by, { a: '/Users/me/code/alpha', b: '/Users/me/code', c: '' });
+  assert.equal(flowEntries(saved, []).every((e) => e.dir === ''), true, 'with no links there is no directory');
 });

@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 use super::graph::{Flow, id_ok};
 use super::run::Run;
@@ -33,6 +35,33 @@ pub struct RunSummary {
     pub cost_usd: f64,
     /// Dollars its web access cost.
     pub web_usd: f64,
+}
+
+/// What `folders.json` holds.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct FolderFile {
+    #[serde(default)]
+    folders: Vec<String>,
+    /// Folder path to the directory it is linked to.
+    #[serde(default)]
+    dirs: BTreeMap<String, String>,
+}
+
+/// A directory as typed (`~/code/app` is fine): it must exist and be a directory. Returns it absolute, with links resolved.
+fn resolve_dir(text: &str) -> Result<String> {
+    let t = text.trim();
+    let expanded = match t.strip_prefix("~/").or(if t == "~" { Some("") } else { None }) {
+        Some(rest) => crate::agentlog::home().context("there is no home folder to start from")?.join(rest),
+        None => PathBuf::from(t),
+    };
+    if !expanded.is_absolute() {
+        bail!("give the directory's full path, or start it with ~/");
+    }
+    let real = fs::canonicalize(&expanded).map_err(|_| anyhow::anyhow!("there is no directory at {t}"))?;
+    if !real.is_dir() {
+        bail!("{t} is not a directory");
+    }
+    Ok(real.to_string_lossy().into_owned())
 }
 
 /// Whether `path` is `folder` or inside it.
@@ -94,12 +123,25 @@ impl Store {
         v
     }
 
+    /// Folders made on purpose, and which of them are linked to a directory.
+    fn read_folder_file(&self) -> FolderFile {
+        fs::read(self.root.join("folders.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    fn write_folder_file(&self, f: &FolderFile) -> Result<()> {
+        fs::create_dir_all(&self.root)?;
+        let path = self.root.join("folders.json");
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_vec_pretty(f)?)?;
+        fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
     /// Every folder there is: those made on purpose (so an empty one stays), those flows are kept in, and the folders above
     /// them. Sorted, so a folder comes before what is inside it.
     pub fn list_folders(&self) -> Vec<String> {
-        let declared: Vec<String> = fs::read(self.root.join("folders.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let mut all = std::collections::BTreeSet::new();
-        for path in declared.into_iter().chain(self.list_flows().into_iter().map(|f| f.folder)) {
+        for path in self.read_folder_file().folders.into_iter().chain(self.list_flows().into_iter().map(|f| f.folder)) {
             let mut at = String::new();
             for name in path.split('/').filter(|n| !n.is_empty()) {
                 if !at.is_empty() {
@@ -112,27 +154,81 @@ impl Store {
         all.into_iter().collect()
     }
 
-    fn save_declared(&self, folders: &[String]) -> Result<()> {
-        fs::create_dir_all(&self.root)?;
-        let path = self.root.join("folders.json");
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec_pretty(folders)?)?;
-        fs::rename(&tmp, &path)?;
-        Ok(())
+    /// The folders that are linked to a directory, and the directory each is linked to.
+    pub fn folder_dirs(&self) -> BTreeMap<String, String> {
+        let exists: std::collections::HashSet<String> = self.list_folders().into_iter().collect();
+        self.read_folder_file().dirs.into_iter().filter(|(f, _)| exists.contains(f)).collect()
     }
 
-    /// Make a folder (and the ones above it). Returns its tidy path.
-    pub fn create_folder(&self, path: &str) -> Result<String> {
+    /// The directory a flow kept in `folder` is tied to: that of the folder itself, or else of the nearest folder above it that
+    /// is linked. Returns that folder too. `None` when no folder from there up is linked, which leaves a run's directory free.
+    pub fn linked_dir(&self, folder: &str) -> Option<(String, String)> {
+        let dirs = self.folder_dirs();
+        let mut at = folder.to_owned();
+        loop {
+            if let Some(d) = dirs.get(&at) {
+                return Some((at, d.clone()));
+            }
+            if at.is_empty() {
+                return None;
+            }
+            at = at.rsplit_once('/').map_or(String::new(), |(parent, _)| parent.to_owned());
+        }
+    }
+
+    /// Make a folder (and the ones above it), linked to `dir` when one is given. Returns its tidy path.
+    pub fn create_folder(&self, path: &str, dir: Option<&str>) -> Result<String> {
         let path = super::graph::clean_folder(path).map_err(anyhow::Error::msg)?;
         if path.is_empty() {
             bail!("give the folder a name");
         }
-        let mut declared = self.list_folders();
-        if !declared.contains(&path) {
-            declared.push(path.clone());
+        let mut file = self.read_folder_file();
+        for p in self.list_folders() {
+            if !file.folders.contains(&p) {
+                file.folders.push(p);
+            }
         }
-        self.save_declared(&declared)?;
+        if !file.folders.contains(&path) {
+            file.folders.push(path.clone());
+        }
+        self.write_folder_file(&file)?;
+        if let Some(d) = dir.filter(|d| !d.trim().is_empty()) {
+            if let Err(e) = self.link_folder(&path, Some(d)) {
+                // A folder that cannot have the directory it was made for is not left behind half made.
+                let _ = self.delete_folder(&path);
+                return Err(e);
+            }
+        }
         Ok(path)
+    }
+
+    /// Link a folder to a directory, or take the link off with `None`. The directory must exist; a folder inside a linked one
+    /// must be linked to somewhere inside that one's directory, and one with linked folders inside it must contain theirs.
+    /// Returns the directory as it is kept: absolute, with symbolic links resolved.
+    pub fn link_folder(&self, path: &str, dir: Option<&str>) -> Result<Option<String>> {
+        let path = super::graph::clean_folder(path).map_err(anyhow::Error::msg)?;
+        if path.is_empty() || !self.list_folders().contains(&path) {
+            bail!("there is no such folder");
+        }
+        let mut file = self.read_folder_file();
+        let Some(dir) = dir.filter(|d| !d.trim().is_empty()) else {
+            file.dirs.remove(&path);
+            self.write_folder_file(&file)?;
+            return Ok(None);
+        };
+        let dir = resolve_dir(dir)?;
+        let dirs = self.folder_dirs();
+        if let Some((above, parent)) = self.linked_dir(path.rsplit_once('/').map_or("", |(p, _)| p)) {
+            if !Path::new(&dir).starts_with(&parent) {
+                bail!("a folder inside “{above}” must be linked to a directory inside {parent}");
+            }
+        }
+        if let Some((inner, d)) = dirs.iter().find(|(f, d)| **f != path && in_folder(f, &path) && !Path::new(d).starts_with(&dir)) {
+            bail!("“{inner}” inside this folder is linked to {d}, which is not inside {dir}");
+        }
+        file.dirs.insert(path, dir.clone());
+        self.write_folder_file(&file)?;
+        Ok(Some(dir))
     }
 
     /// Rename a folder, which moves what is inside it with it. Returns how many flows moved. Refuses a name that is taken, or
@@ -159,20 +255,29 @@ impl Store {
             moved.folder = reparent(&f.folder, &from, &to);
             moved.validate().map_err(anyhow::Error::msg)?;
         }
-        let declared: Vec<String> = all.iter().map(|p| if in_folder(p, &from) { reparent(p, &from, &to) } else { p.clone() }).collect();
-        for p in &declared {
+        let folders: Vec<String> = all.iter().map(|p| if in_folder(p, &from) { reparent(p, &from, &to) } else { p.clone() }).collect();
+        for p in &folders {
             super::graph::clean_folder(p).map_err(anyhow::Error::msg)?;
+        }
+        // A link goes with its folder. Where the folder lands inside another linked one, it must still be inside that directory.
+        let mut file = self.read_folder_file();
+        file.dirs = file.dirs.into_iter().map(|(f, d)| (if in_folder(&f, &from) { reparent(&f, &from, &to) } else { f }, d)).collect();
+        if let Some((above, parent)) = self.linked_dir(to.rsplit_once('/').map_or("", |(p, _)| p)) {
+            if let Some((inner, d)) = file.dirs.iter().find(|(f, d)| in_folder(f, &to) && !Path::new(d).starts_with(&parent)) {
+                bail!("“{inner}” is linked to {d}, which is not inside {parent}, the directory “{above}” is linked to");
+            }
         }
         for f in &flows {
             let mut moved = f.clone();
             moved.folder = reparent(&f.folder, &from, &to);
             self.save_flow(&moved)?;
         }
-        self.save_declared(&declared)?;
+        file.folders = folders;
+        self.write_folder_file(&file)?;
         Ok(flows.len())
     }
 
-    /// Remove a folder that has no flows in it, with any empty folders inside it.
+    /// Remove a folder that has no flows in it, with any empty folders inside it, and their links.
     pub fn delete_folder(&self, path: &str) -> Result<()> {
         let path = super::graph::clean_folder(path).map_err(anyhow::Error::msg)?;
         if path.is_empty() {
@@ -181,8 +286,10 @@ impl Store {
         if self.list_flows().iter().any(|f| in_folder(&f.folder, &path)) {
             bail!("the folder has flows in it: move or delete them first");
         }
-        let kept: Vec<String> = self.list_folders().into_iter().filter(|p| !in_folder(p, &path)).collect();
-        self.save_declared(&kept)
+        let mut file = self.read_folder_file();
+        file.folders = self.list_folders().into_iter().filter(|p| !in_folder(p, &path)).collect();
+        file.dirs.retain(|f, _| !in_folder(f, &path));
+        self.write_folder_file(&file)
     }
 
     /// Put a flow in a folder (`""` for the top level). The folder is made if it is new.
@@ -435,10 +542,10 @@ mod tests {
         assert!(s.list_folders().is_empty());
         s.save_flow(&flow_in("a", "Work/Bugs")).unwrap();
         assert_eq!(s.list_folders(), ["Work", "Work/Bugs"], "a folder a flow is in brings the ones above it");
-        assert_eq!(s.create_folder(" Personal / Notes ").unwrap(), "Personal/Notes");
+        assert_eq!(s.create_folder(" Personal / Notes ", None).unwrap(), "Personal/Notes");
         assert_eq!(s.list_folders(), ["Personal", "Personal/Notes", "Work", "Work/Bugs"]);
-        assert!(s.create_folder("").is_err() && s.create_folder("a/b/c/d/e").is_err());
-        assert_eq!(s.create_folder("Work").unwrap(), "Work", "making one that exists is fine");
+        assert!(s.create_folder("", None).is_err() && s.create_folder("a/b/c/d/e", None).is_err());
+        assert_eq!(s.create_folder("Work", None).unwrap(), "Work", "making one that exists is fine");
     }
 
     #[test]
@@ -448,13 +555,13 @@ mod tests {
         s.save_flow(&flow_in("a", "Work")).unwrap();
         s.save_flow(&flow_in("b", "Work/Bugs")).unwrap();
         s.save_flow(&flow_in("c", "")).unwrap();
-        s.create_folder("Work/Empty").unwrap();
+        s.create_folder("Work/Empty", None).unwrap();
         assert_eq!(s.rename_folder("Work", "Jobs").unwrap(), 2);
         let at = |id: &str| s.load_flow(id).unwrap().folder;
         assert_eq!((at("a"), at("b"), at("c")), ("Jobs".into(), "Jobs/Bugs".into(), String::new()));
         assert_eq!(s.list_folders(), ["Jobs", "Jobs/Bugs", "Jobs/Empty"]);
         assert!(s.rename_folder("Jobs", "Jobs/Inside").is_err(), "not into itself");
-        s.create_folder("Taken").unwrap();
+        s.create_folder("Taken", None).unwrap();
         assert!(s.rename_folder("Jobs", "Taken").is_err(), "not onto another");
         assert!(s.rename_folder("Nope", "X").is_err());
         assert_eq!(at("a"), "Jobs", "a refused rename changes nothing");
@@ -465,7 +572,7 @@ mod tests {
         let dir = tmp("fdel");
         let s = Store::new(&dir.0);
         s.save_flow(&flow_in("a", "Work/Bugs")).unwrap();
-        s.create_folder("Work/Empty/Deeper").unwrap();
+        s.create_folder("Work/Empty/Deeper", None).unwrap();
         assert!(s.delete_folder("Work").unwrap_err().to_string().contains("flows in it"));
         assert!(s.list_folders().contains(&"Work/Empty/Deeper".to_string()), "nothing was removed");
         s.delete_folder("Work/Empty").unwrap();
@@ -487,5 +594,124 @@ mod tests {
         assert_eq!(s.load_flow("a").unwrap().folder, "");
         assert!(s.move_flow("nope", "X").is_err());
         assert!(s.move_flow("a", "a/b/c/d/e").is_err());
+    }
+
+    /// A store, and a folder tree of real directories to link to: `code/alpha`, `code/beta` and `other`.
+    fn linked_store(name: &str) -> (Store, Tmp, PathBuf) {
+        let dir = tmp(name);
+        let code = dir.0.join("code");
+        for sub in ["code/alpha", "code/beta", "other"] {
+            fs::create_dir_all(dir.0.join(sub)).unwrap();
+        }
+        let store = Store::new(&dir.0.join("data"));
+        let code = fs::canonicalize(code).unwrap();
+        (store, dir, code)
+    }
+
+    fn text(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_folder_is_linked_to_a_real_directory_which_is_kept_in_full() {
+        let (s, _d, code) = linked_store("link");
+        assert_eq!(s.create_folder("Code", Some(&text(&code))).unwrap(), "Code");
+        assert_eq!(s.folder_dirs().get("Code"), Some(&text(&code)));
+        assert!(s.link_folder("Code", Some("/no/such/place")).unwrap_err().to_string().contains("no directory at /no/such/place"));
+        assert!(s.link_folder("Code", Some("relative/dir")).unwrap_err().to_string().contains("full path"));
+        let file = code.join("alpha/not-a-dir");
+        fs::write(&file, "x").unwrap();
+        assert!(s.link_folder("Code", Some(&text(&file))).unwrap_err().to_string().contains("not a directory"));
+        assert_eq!(s.folder_dirs().get("Code"), Some(&text(&code)), "a refused link leaves the old one");
+        assert_eq!(s.link_folder("Code", None).unwrap(), None);
+        assert!(s.folder_dirs().is_empty(), "the link comes off and the folder stays");
+        assert!(s.list_folders().contains(&"Code".to_string()));
+        assert!(s.link_folder("Nope", Some(&text(&code))).is_err(), "only a folder that exists");
+    }
+
+    #[test]
+    fn a_link_may_be_typed_from_the_home_folder() {
+        let Some(home) = crate::agentlog::home() else { return };
+        let (s, _d, _) = linked_store("home");
+        s.create_folder("Home", Some("~")).unwrap();
+        assert_eq!(s.folder_dirs().get("Home"), Some(&text(&fs::canonicalize(home).unwrap())));
+    }
+
+    #[test]
+    fn a_folder_with_a_directory_it_cannot_have_is_not_left_behind() {
+        let (s, _d, _) = linked_store("half");
+        assert!(s.create_folder("Ghost", Some("/no/such/place")).is_err());
+        assert!(!s.list_folders().contains(&"Ghost".to_string()));
+        assert!(s.folder_dirs().is_empty());
+    }
+
+    #[test]
+    fn a_flow_is_tied_to_the_nearest_linked_folder_at_or_above_it() {
+        let (s, _d, code) = linked_store("near");
+        s.create_folder("Code", Some(&text(&code))).unwrap();
+        s.create_folder("Code/alpha", Some(&text(&code.join("alpha")))).unwrap();
+        s.create_folder("Code/notes", None).unwrap();
+        s.create_folder("Loose", None).unwrap();
+        let near = |f: &str| s.linked_dir(f).map(|(folder, dir)| (folder, dir));
+        assert_eq!(near("Code/alpha"), Some(("Code/alpha".into(), text(&code.join("alpha")))), "a project folder has its own");
+        assert_eq!(near("Code/alpha/deeper"), Some(("Code/alpha".into(), text(&code.join("alpha")))), "and what is under it follows");
+        assert_eq!(near("Code/notes"), Some(("Code".into(), text(&code))), "a folder with no link of its own follows the one above");
+        assert_eq!(near("Code"), Some(("Code".into(), text(&code))));
+        assert_eq!(near("Loose"), None, "a folder in no linked one leaves a run free");
+        assert_eq!(near(""), None);
+    }
+
+    #[test]
+    fn a_project_folder_must_be_inside_its_parents_directory_and_a_parent_must_contain_its_projects() {
+        let (s, d, code) = linked_store("inside");
+        s.create_folder("Code", Some(&text(&code))).unwrap();
+        s.create_folder("Code/alpha", Some(&text(&code.join("alpha")))).unwrap();
+        let other = fs::canonicalize(d.0.join("other")).unwrap();
+        let why = s.create_folder("Code/elsewhere", Some(&text(&other))).unwrap_err().to_string();
+        assert!(why.contains("inside") && why.contains(&text(&code)), "{why}");
+        assert!(!s.list_folders().contains(&"Code/elsewhere".to_string()));
+        // Moving the parent's link somewhere that no longer holds its project is refused.
+        let why = s.link_folder("Code", Some(&text(&other))).unwrap_err().to_string();
+        assert!(why.contains("Code/alpha") && why.contains("is not inside"), "{why}");
+        assert_eq!(s.folder_dirs().get("Code"), Some(&text(&code)), "and it stays as it was");
+        // A narrower parent that still holds it is fine.
+        s.link_folder("Code", Some(&text(&code))).unwrap();
+    }
+
+    #[test]
+    fn a_link_goes_with_its_folder_when_it_is_renamed_and_goes_when_it_is_deleted() {
+        let (s, _d, code) = linked_store("moves");
+        s.create_folder("Code", Some(&text(&code))).unwrap();
+        s.create_folder("Code/alpha", Some(&text(&code.join("alpha")))).unwrap();
+        s.rename_folder("Code", "Work").unwrap();
+        let dirs = s.folder_dirs();
+        assert_eq!((dirs.get("Work"), dirs.get("Work/alpha"), dirs.get("Code")), (Some(&text(&code)), Some(&text(&code.join("alpha"))), None), "{dirs:?}");
+        s.delete_folder("Work/alpha").unwrap();
+        assert!(!s.folder_dirs().contains_key("Work/alpha"));
+        s.delete_folder("Work").unwrap();
+        assert!(s.folder_dirs().is_empty(), "nothing is left pointing at a folder that is gone");
+    }
+
+    #[test]
+    fn a_folder_cannot_be_moved_into_a_linked_one_it_does_not_fit_inside() {
+        let (s, d, code) = linked_store("fit");
+        let other = fs::canonicalize(d.0.join("other")).unwrap();
+        s.create_folder("Code", Some(&text(&code))).unwrap();
+        s.create_folder("Stray", Some(&text(&other))).unwrap();
+        s.create_folder("Code/keep", None).unwrap();
+        let why = s.rename_folder("Stray", "Code/stray").unwrap_err().to_string();
+        assert!(why.contains("not inside"), "{why}");
+        assert_eq!(s.folder_dirs().get("Stray"), Some(&text(&other)), "nothing moved");
+        assert!(s.list_folders().contains(&"Stray".to_string()));
+    }
+
+    #[test]
+    fn a_folder_that_is_not_linked_has_no_directory_and_the_file_survives_a_reread() {
+        let (s, d, code) = linked_store("reread");
+        s.create_folder("Plain", None).unwrap();
+        s.create_folder("Code", Some(&text(&code))).unwrap();
+        let again = Store::new(&d.0.join("data"));
+        assert_eq!(again.folder_dirs().len(), 1);
+        assert_eq!(again.list_folders(), ["Code", "Plain"]);
     }
 }

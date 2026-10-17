@@ -54,6 +54,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/orch/flows/{id}", axum::routing::put(save_flow).delete(delete_flow))
         .route("/api/orch/flows/{id}/move", post(move_flow))
         .route("/api/orch/folders", post(create_folder))
+        .route("/api/orch/folders/link", post(link_folder))
         .route("/api/orch/folders/rename", post(rename_folder))
         .route("/api/orch/folders/delete", post(delete_folder))
         .route("/api/orch/node-prompt", post(node_prompt))
@@ -155,8 +156,28 @@ struct PathBody {
     path: String,
 }
 
-async fn create_folder(State(st): St, Json(b): Json<PathBody>) -> Result<Response, Fail> {
-    Ok(json_nocache(json!({"path": st.orch.create_folder(&b.path)?})))
+#[derive(Deserialize)]
+struct NewFolderBody {
+    path: String,
+    /// A directory to link it to.
+    #[serde(default)]
+    dir: Option<String>,
+}
+
+async fn create_folder(State(st): St, Json(b): Json<NewFolderBody>) -> Result<Response, Fail> {
+    Ok(json_nocache(json!({"path": st.orch.create_folder(&b.path, b.dir.as_deref())?})))
+}
+
+#[derive(Deserialize)]
+struct LinkBody {
+    path: String,
+    /// The directory to link it to; left out or empty takes the link off.
+    #[serde(default)]
+    dir: Option<String>,
+}
+
+async fn link_folder(State(st): St, Json(b): Json<LinkBody>) -> Result<Response, Fail> {
+    Ok(json_nocache(json!({"dir": st.orch.link_folder(&b.path, b.dir.as_deref())?})))
 }
 
 #[derive(Deserialize)]

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { RecentDir } from '../dirs';
 import { orch } from './api';
 import { Icon, Field, Switch } from './bits';
-import { CAPABILITY_SHORT, DESIGN_STEP_TEXT, OUTPUT_TEXT, answersFor, goalHint, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer, type DesignNote, type DesignStep } from './model';
+import { CAPABILITY_SHORT, tildePath, DESIGN_STEP_TEXT, OUTPUT_TEXT, answersFor, goalHint, waitingQuestions, hasLink, choose, consistent, hasChoices, startingAnswer, writes, writeInstead, type Answer, type DesignNote, type DesignStep } from './model';
 import type { Budget, Capability, Flow, Output, Question, RepoState, Run } from './types';
 
 const PROJECT_KEY = 'ttm.orch.project';
@@ -60,12 +60,14 @@ function remembered(): string {
   }
 }
 
-export function NewRunDialog({ flow, limits, recents, busy, error, web, initialGoal, onCreate, onClose }: {
+export function NewRunDialog({ flow, limits, recents, busy, error, web, initialGoal, locked, onCreate, onClose }: {
   flow: Flow;
   /** There is a web account, so the links in the goal can be read for the agents. */
   web: boolean;
   /** A goal to start with, such as the text a flow was just designed from. */
   initialGoal?: string;
+  /** The flow is kept in a folder linked to a directory, so its runs use that one. */
+  locked?: { folder: string; dir: string } | null;
   limits: Budget;
   recents: RecentDir[];
   busy: boolean;
@@ -76,7 +78,7 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, initialG
   const [goal, setGoal] = useState(initialGoal ?? '');
   const [readLinks, setReadLinks] = useState(true);
   const [docs, setDocs] = useState('');
-  const [project, setProject] = useState(remembered() || recents[0]?.path || '');
+  const [project, setProject] = useState(locked?.dir ?? (remembered() || recents[0]?.path || ''));
   const [skip, setSkip] = useState(false);
   const goalRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => goalRef.current?.focus(), []);
@@ -114,7 +116,8 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, initialG
   const go = () => {
     if (!ready || busy) return;
     try {
-      localStorage.setItem(PROJECT_KEY, project.trim());
+      // A fixed directory is not a choice, so it is not what the next run starts from.
+      if (!locked) localStorage.setItem(PROJECT_KEY, project.trim());
     } catch {
       /* a private window: the choice is simply not remembered */
     }
@@ -148,9 +151,18 @@ export function NewRunDialog({ flow, limits, recents, busy, error, web, initialG
           onKeyDown={(e) => (e.metaKey || e.ctrlKey) && e.key === 'Enter' && go()}
         />
       </Field>
-      <Field label="Project folder" hint={needsGit ? 'Builders work in their own copy of this folder, so it needs to be a git repository with a commit.' : 'The folder the agents work in.'}>
-        <input className="mc-field mc-mono" value={project} placeholder="/path/to/project" onChange={(e) => setProject(e.target.value)} />
-        {recents.length > 0 && (
+      <Field
+        label="Project folder"
+        hint={locked ? `Fixed: this flow is kept in “${locked.folder}”, which is linked to this directory. To run it somewhere else, duplicate it into another folder.` : needsGit ? 'Builders work in their own copy of this folder, so it needs to be a git repository with a commit.' : 'The folder the agents work in.'}
+      >
+        {locked ? (
+          <div className="mc-locked mc-mono" aria-label="Project folder, fixed">
+            <Icon name="folder" /> {tildePath(locked.dir)}
+          </div>
+        ) : (
+          <input className="mc-field mc-mono" value={project} placeholder="/path/to/project" onChange={(e) => setProject(e.target.value)} />
+        )}
+        {!locked && recents.length > 0 && (
           <div className="mc-chips" style={{ marginTop: '0.5rem' }}>
             {recents.slice(0, 6).map((r) => (
               <button key={r.path} type="button" className="mc-chip" aria-pressed={project === r.path} onClick={() => setProject(r.path)} title={r.path}>

@@ -395,6 +395,11 @@ impl Service {
         if !project.is_dir() {
             return Err(Fail::Bad("the project must be a folder".into()));
         }
+        // A flow kept in a folder linked to a directory runs only there. The saved flow says where it is kept, not the page.
+        let folder = self.store.load_flow(&flow.id).map_or_else(|| flow.folder.clone(), |f| f.folder);
+        if let Some(why) = lock_error(self.store.linked_dir(&folder), &project) {
+            return Err(Fail::Bad(why));
+        }
         // Builders work on copies made from the latest commit, so say so now rather than when one reaches its turn.
         if flow.nodes.iter().any(|n| n.writes()) && super::worktree::repo_state(&project).await != super::worktree::RepoState::Ready {
             return Err(Fail::Bad(
@@ -721,11 +726,16 @@ impl Service {
 
     /// Flows the user can start from: their own, then the built-in ones.
     pub fn flows(&self) -> serde_json::Value {
-        json!({"saved": self.store.list_flows(), "starters": super::starters::all(), "folders": self.store.list_folders()})
+        json!({"saved": self.store.list_flows(), "starters": super::starters::all(), "folders": self.store.list_folders(), "folderDirs": self.store.folder_dirs()})
     }
 
-    pub fn create_folder(&self, path: &str) -> Result<String, Fail> {
-        self.store.create_folder(path).map_err(|e| Fail::Bad(e.to_string()))
+    pub fn create_folder(&self, path: &str, dir: Option<&str>) -> Result<String, Fail> {
+        self.store.create_folder(path, dir).map_err(|e| Fail::Bad(e.to_string()))
+    }
+
+    /// Link a folder to a directory (or take the link off). Returns the directory as it is kept.
+    pub fn link_folder(&self, path: &str, dir: Option<&str>) -> Result<Option<String>, Fail> {
+        self.store.link_folder(path, dir).map_err(|e| Fail::Bad(e.to_string()))
     }
 
     /// Rename a folder, moving what is inside it. Returns how many flows moved.
@@ -824,5 +834,62 @@ mod briefing_tests {
         assert_eq!(balance_words(&r(None, Some(1.5), Some(5.0))).as_deref(), Some("$1.50 of $5.00 used"));
         assert_eq!(balance_words(&r(None, Some(1.5), None)).as_deref(), Some("$1.50 used"));
         assert_eq!(balance_words(&r(None, None, None)), None, "an account that says nothing is left unsaid");
+    }
+}
+
+/// Why a flow kept in a linked folder may not run on `project`, if it may not: a folder's directory is where its flows run. The
+/// way out, which the message gives, is to duplicate the flow into a folder that is linked to the other directory.
+fn lock_error(linked: Option<(String, String)>, project: &std::path::Path) -> Option<String> {
+    let (folder, dir) = linked?;
+    match std::fs::canonicalize(&dir) {
+        Err(_) => Some(format!("“{folder}” is linked to {dir}, which is not there any more. Link the folder to a directory that is, or move the flow out of it.")),
+        Ok(real) if real == project => None,
+        Ok(_) => Some(format!("this flow is kept in “{folder}”, which is linked to {dir}, so its runs use that directory. Duplicate the flow into another folder to run it somewhere else.")),
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    fn dirs(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("ttm-lock-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (a, b) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        (std::fs::canonicalize(a).unwrap(), std::fs::canonicalize(b).unwrap())
+    }
+
+    #[test]
+    fn a_flow_in_no_linked_folder_runs_anywhere() {
+        let (a, _) = dirs("free");
+        assert_eq!(lock_error(None, &a), None);
+    }
+
+    #[test]
+    fn a_flow_in_a_linked_folder_runs_only_in_its_directory() {
+        let (a, b) = dirs("locked");
+        let linked = Some(("Code/app".to_string(), a.to_string_lossy().into_owned()));
+        assert_eq!(lock_error(linked.clone(), &a), None, "its own directory is fine");
+        let why = lock_error(linked, &b).expect("another directory is refused");
+        assert!(why.contains("“Code/app”") && why.contains(&*a.to_string_lossy()) && why.contains("Duplicate the flow into another folder"), "{why}");
+    }
+
+    #[test]
+    fn a_link_to_a_directory_that_has_gone_says_so_instead_of_running_elsewhere() {
+        let (a, b) = dirs("gone");
+        let dir = a.to_string_lossy().into_owned();
+        std::fs::remove_dir_all(&a).unwrap();
+        let why = lock_error(Some(("Code".into(), dir)), &b).unwrap();
+        assert!(why.contains("not there any more") && why.contains("“Code”"), "{why}");
+    }
+
+    #[test]
+    fn a_link_that_goes_through_a_symbolic_link_still_means_the_same_directory() {
+        let (a, _) = dirs("sym");
+        let link = a.parent().unwrap().join("alias");
+        std::os::unix::fs::symlink(&a, &link).unwrap();
+        assert_eq!(lock_error(Some(("X".into(), link.to_string_lossy().into_owned())), &a), None, "the alias and the directory are one place");
     }
 }

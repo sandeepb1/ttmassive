@@ -17,7 +17,7 @@ import { RunBar } from './RunBar';
 import { FlowsPage } from './FlowsPage';
 import { RunsPanel } from './RunsPanel';
 import { UsageMeters } from './UsageMeters';
-import { CAPABILITY_TEXT, STAGES, designReport, allFolders, inFolder, parentOf, pruneInputs, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type DesignNote, type DesignStep, type FlowEntry } from './model';
+import { CAPABILITY_TEXT, STAGES, designReport, allFolders, inFolder, linkedDir, parentOf, pruneInputs, emptyFlow, flowEntries, flowProblem, gauges, getCatalog, offered, orGauges, rerunRequest, isFinished, newCustomNode, newNode, roleDef, setCatalog, tidy, type DesignNote, type DesignStep, type FlowEntry } from './model';
 import { DEFAULT_LIMITS, type Budget, type Flow, type FlowLists, type Models, type Role, type RoleDef, type Run, type RunSummary, type UsageSnapshot } from './types';
 
 const INSPECTOR_KEY = 'ttm.orch.inspector';
@@ -368,7 +368,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     [editFlow, models],
   );
 
-  const entries = useMemo(() => flowEntries(lists.saved, runs), [lists.saved, runs]);
+  const entries = useMemo(() => flowEntries(lists.saved, runs, lists.folderDirs), [lists.saved, runs, lists.folderDirs]);
   const isSaved = lists.saved.some((f) => f.id === flow.id);
   // This flow's executions, newest first.
   const flowRuns = useMemo(() => entries.find((e) => e.id === flow.id)?.runs ?? [], [entries, flow.id]);
@@ -420,10 +420,12 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
     if (!mayLeave()) return;
     edit({ ...emptyFlow(newFlowId(), 'New flow'), folder: at }, false);
   };
-  const duplicate = (e: FlowEntry) => {
+  const duplicate = (e: FlowEntry) => duplicateTo(e, undefined);
+  /** A copy of a saved flow, in `folder` (its own when not given), opened unsaved to edit. This is how a flow gets to run somewhere else. */
+  const duplicateTo = (e: FlowEntry, folder: string | undefined) => {
     const f = lists.saved.find((x) => x.id === e.id);
     if (!f || !mayLeave()) return;
-    edit({ ...cloneFlow(f), name: `${f.name} copy`.slice(0, 60) }, true);
+    edit({ ...cloneFlow(f), name: `${f.name} copy`.slice(0, 60), folder: folder ?? f.folder ?? '' }, true);
   };
   const toDesign = () => {
     setRunId(null);
@@ -495,7 +497,17 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
   };
   // ------------------------------------------------------------------ folders
   const folders = useMemo(() => allFolders(lists.folders ?? [], entries), [lists.folders, entries]);
-  const newFolder = (path: string) => void act(() => orch.createFolder(path), () => void refreshLists());
+  // These two answer with why they could not, because the dialog that asked shows it where the person is looking.
+  const newFolder = async (path: string, dir?: string): Promise<string | null> => {
+    const r = await orch.createFolder(path, dir);
+    await refreshLists();
+    return r.ok ? null : r.error;
+  };
+  const linkFolder = async (path: string, dir: string | null): Promise<string | null> => {
+    const r = await orch.linkFolder(path, dir);
+    await refreshLists();
+    return r.ok ? null : r.error;
+  };
   const renameFolder = (from: string, to: string) =>
     void act(
       () => orch.renameFolder(from, to),
@@ -835,6 +847,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
             <FlowsPage
               entries={entries}
               folders={folders}
+              folderDirs={lists.folderDirs ?? {}}
               starters={lists.starters}
               at={at}
               onAt={setAt}
@@ -843,6 +856,8 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
               onDesign={() => (setError(null), setSuggesting(true))}
               onUseStarter={useTemplate}
               onNewFolder={newFolder}
+              onLinkFolder={linkFolder}
+              onDuplicateTo={duplicateTo}
               onRenameFolder={renameFolder}
               onDeleteFolder={deleteFolder}
               onMove={moveFlow}
@@ -955,7 +970,7 @@ export function App({ initialRun, onExit, onSession, onRoute }: { initialRun: st
           {suggesting && <SuggestDialog busy={busy} step={designStep} error={error} onSuggest={(g, run) => void suggest(g, run)} onClose={() => (setSuggesting(false), setError(null))} />}
       {designNotes && <DesignNotesDialog notes={designNotes} onClose={() => setDesignNotes(null)} />}
           {rerunProblem && <RerunProblemDialog message={rerunProblem.message} project={rerunProblem.project} git={rerunProblem.git} busy={busy} onFix={() => void fixAndRerun()} onClose={() => setRerunProblem(null)} />}
-        {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} initialGoal={runGoal} onCreate={createRun} onClose={() => (setDialog(false), setRunGoal(''), setError(null))} />}
+        {dialog && <NewRunDialog flow={flow} limits={limits} recents={recents} busy={busy} error={error} web={!!models.web} initialGoal={runGoal} locked={linkedDir(lists.folderDirs ?? {}, flow.folder ?? '')} onCreate={createRun} onClose={() => (setDialog(false), setRunGoal(''), setError(null))} />}
           {run?.status.state === 'grilling' && (
             <GrillDialog
               run={run}
